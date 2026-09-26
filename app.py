@@ -67,6 +67,7 @@ def log(*args):
 PHRASES = [
     (" eau de toilette ", " edt "),
     (" eau de parfum ", " edp "),
+    (" essence de parfum ", " edp "),
     (" extrait de parfum ", " extrait "),
     (" eau de cologne ", " edc "),
     (" men and women ", " unisex "),
@@ -83,6 +84,8 @@ STOP = {
     "perfume", "perfumes", "fragrance", "fragrances", "for", "and", "men", "women", "man", "woman",
     "unisex", "him", "her", "homme", "femme", "pour", "edt", "edp", "edc", "extrait", "parfum",
     "eau", "de", "ml", "oz", "spray", "the", "by", "new", "with",
+    "edition", "limited", "collection", "special",
+    "woody", "floral", "oriental", "fruity", "spicy", "aromatic", "aquatic", "chypre", "fougere", "gourmand", "citrus",
 }
 
 
@@ -98,6 +101,8 @@ def as_text(v):
 def norm_text(s):
     s = as_text(s).lower().replace("&", " and ")
     s = re.sub(r"[^a-z0-9]+", " ", s)
+    s = re.sub(r"\b\d+(?:\s\d+)?\s*(?:ml|oz)\b", " ", s)      # drop sizes: "100ml", "100 ml", "1 7 oz"
+    s = re.sub(r"\b(\d+)\s+(am|pm)\b", r"\1\2", s)            # "9 am" -> "9am"
     s = f" {s.strip()} "
     for a, b in PHRASES:
         s = s.replace(a, b)
@@ -111,7 +116,7 @@ def key(s):
 def tokens(normed):
     out = set()
     for t in normed.split():
-        if t in STOP or t.isdigit() or re.fullmatch(r"\d+(ml|oz)", t):
+        if t in STOP or re.fullmatch(r"\d+(ml|oz)", t):
             continue
         out.add(t)
     return out
@@ -155,7 +160,13 @@ def norm_barcode(v):
 def token_hit(t, pool):
     if t in pool:
         return True
-    return any(abs(len(p) - len(t)) <= 2 and difflib.SequenceMatcher(None, t, p).ratio() >= 0.85 for p in pool)
+    for p in pool:
+        if abs(len(p) - len(t)) > 2:
+            continue
+        need = 0.8 if min(len(p), len(t)) >= 5 else 0.85
+        if difflib.SequenceMatcher(None, t, p).ratio() >= need:
+            return True
+    return False
 
 
 def name_score(fi_tokens, sm_tokens):
@@ -220,7 +231,7 @@ def fetch_samawa_catalog(brands):
     collections = fetch_paged("/collections.json", "collections", "collections")
     for c in collections:
         ckey, hkey = key(c.get("title")), key(c.get("handle"))
-        if any(bk and (bk in ckey or bk in hkey) for bk in bkeys):
+        if any(bk and (bk in ckey or bk in hkey or (len(ckey) >= 4 and ckey in bk)) for bk in bkeys):
             log(f"[SAMAWA] Brand collection found: '{c.get('title')}' ({c.get('handle')})")
             for p in fetch_paged(f"/collections/{c['handle']}/products.json", c["handle"], "products"):
                 by_id[p["id"]] = p
@@ -346,18 +357,20 @@ def match_one(fields, brand, brand_entries, by_barcode):
     fi_gender = detect_gender(norm_text(fields.get(F_CATEGORY)))
     brand_tokens = tokens(norm_text(brand))
     fi_tokens = tokens(norm_text(fields.get(F_PERFUME) or product_name)) - brand_tokens
-    if not fi_tokens:
-        return None, "no name tokens", 0.0
 
     def score(e):
         # returns None when the candidate is impossible (wrong size / type / gender)
         if fi_size and (not e["size"] or abs(e["size"] - fi_size) > 0.5):
             return None
-        if fi_type and e["type"] and fi_type != e["type"]:
-            return None
         if fi_gender and e["gender"] and "unisex" not in (fi_gender, e["gender"]) and fi_gender != e["gender"]:
             return None
-        return name_score(fi_tokens, e["tokens"] - brand_tokens)
+        s = name_score(fi_tokens, e["tokens"] - brand_tokens)
+        if fi_type and e["type"] and fi_type != e["type"]:
+            s -= 0.12   # EDT vs EDP: allowed only if the name is a near-perfect match
+        return round(s, 3)
+
+    def method(base, e):
+        return f"{base}(type {fi_type}->{e['type']})" if fi_type and e["type"] and fi_type != e["type"] else base
 
     scored = [(s, e) for e in brand_entries if (s := score(e)) is not None]
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -368,11 +381,13 @@ def match_one(fields, brand, brand_entries, by_barcode):
     if bc and bc in by_barcode:
         e = by_barcode[bc]
         s = score(e)
-        if s is not None and s >= 0.6 and s >= top - 0.001:
-            return e, "barcode", s
+        if s is not None and ((not fi_tokens) or (s >= 0.6 and s >= top - 0.001)):
+            return e, method("barcode", e), s
         log(f"[BARCODE-REJECT] {product_name} -> barcode points to '{e['title']}' (score={s}), using name match")
 
     # 2) fuzzy
+    if not fi_tokens:
+        return None, "no name tokens", 0.0
     if not scored:
         return None, "no candidate with same size/type/gender", 0.0
     best_score, best = scored[0]
@@ -386,7 +401,7 @@ def match_one(fields, brand, brand_entries, by_barcode):
             log(f"[DUPLICATE] {product_name}: {len(tied)} Samawa listings, picked '{best['title']}'")
         else:
             return None, f"ambiguous ({tied[0]['title']} | {tied[1]['title']})", best_score
-    return best, "fuzzy", best_score
+    return best, method("fuzzy", best), best_score
 
 
 def run_match(brands, rematch=False):
@@ -409,7 +424,9 @@ def run_match(brands, rematch=False):
 
     for brand in brands:
         bkey, bnorm = key(brand), norm_text(brand)
-        brand_entries = [e for e in entries if e["vendor_key"].startswith(bkey) or bnorm in e["title_norm"]]
+        # vendor "Dior" also counts for brand "Christian Dior" (vendor name inside brand name)
+        brand_entries = [e for e in entries if e["vendor_key"].startswith(bkey) or bnorm in e["title_norm"]
+                         or (len(e["vendor_key"]) >= 4 and e["vendor_key"] in bkey)]
         log(f"\n[BRAND] ===== {brand}: {len(brand_entries)} Samawa variants =====")
 
         for rec in fetch_fi_for_brand(brand):
@@ -436,7 +453,7 @@ def run_match(brands, rematch=False):
             # B) find a match
             e, method, score = match_one(f, brand, brand_entries, by_barcode)
             if e:
-                summary["matched_barcode" if method == "barcode" else "matched_fuzzy"] += 1
+                summary["matched_barcode" if method.startswith("barcode") else "matched_fuzzy"] += 1
                 log(f"[MATCH:{method} {score}] {pname} -> {e['title']} | AED {e['price']} | stock={e['available']}")
                 sf = samawa_fields(e)
             else:
