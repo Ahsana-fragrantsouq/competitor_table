@@ -56,7 +56,7 @@ AT_HEADERS = {"Authorization": f"Bearer {AIRTABLE_TOKEN}", "Content-Type": "appl
 SAMAWA_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
 
 run_lock = threading.Lock()
-state = {"last_summary": None}
+state = {"last_summary": None, "catalog_incomplete": False}
 
 
 def log(*args):
@@ -199,15 +199,37 @@ def slim(p):
     }
 
 
+RETRY_WAITS = [10, 30, 60, 120, 180]  # seconds to wait between retries when Samawa is busy (429 / 5xx)
+
+
+def samawa_get(path, page, label):
+    """GET one page from Samawa. Retries on 429 / 5xx / network errors. Returns Response or None."""
+    for attempt, wait in enumerate([0] + RETRY_WAITS):
+        if wait:
+            log(f"[SAMAWA] {label} page {page}: retry {attempt}/{len(RETRY_WAITS)} in {wait}s")
+            time.sleep(wait)
+        try:
+            r = requests.get(f"{SAMAWA_BASE}{path}", params={"limit": 250, "page": page},
+                             headers=SAMAWA_HEADERS, timeout=60)
+        except requests.RequestException as ex:
+            log(f"[SAMAWA] {label} page {page}: network error {ex}")
+            continue
+        if r.status_code == 429 or r.status_code >= 500:
+            log(f"[SAMAWA] {label} page {page}: HTTP {r.status_code} (Samawa busy)")
+            continue
+        return r
+    log(f"[SAMAWA] {label} page {page}: giving up after {len(RETRY_WAITS)} retries")
+    return None
+
+
 def fetch_paged(path, label, list_key):
     items, page = [], 1
     while page <= MAX_PAGES:
-        r = requests.get(f"{SAMAWA_BASE}{path}", params={"limit": 250, "page": page},
-                         headers=SAMAWA_HEADERS, timeout=60)
-        if r.status_code == 429:
-            log(f"[SAMAWA] {label}: rate limited, waiting 20s")
-            time.sleep(20)
-            continue
+        r = samawa_get(path, page, label)
+        if r is None:
+            state["catalog_incomplete"] = True
+            log(f"[SAMAWA] {label}: continuing with {len(items)} items downloaded so far")
+            break
         if r.status_code in (400, 404):
             log(f"[SAMAWA] {label}: stopped at page {page} (HTTP {r.status_code})")
             break
@@ -223,7 +245,7 @@ def fetch_paged(path, label, list_key):
         if len(batch) < 250:
             break
         page += 1
-        time.sleep(1)
+        time.sleep(2)
     return items
 
 
@@ -415,7 +437,12 @@ def run_match(brands, rematch=False):
     summary = {"brands": brands, "rematch": rematch, "matched_barcode": 0, "matched_fuzzy": 0, "existing_link_refreshed": 0,
                "link_gone": 0, "unmatched": 0, "created": 0, "updated": 0, "unmatched_list": []}
 
+    state["catalog_incomplete"] = False
     entries, by_barcode, by_handle = build_index(fetch_samawa_catalog(brands))
+    safe_mode = state["catalog_incomplete"]
+    summary["catalog_incomplete"] = safe_mode
+    if safe_mode:
+        log("[SAFE-MODE] Samawa download was incomplete -> will NOT clear links or untick stock this run")
 
     # existing Competitor rows, keyed by French Inventories record id
     comp_rows = at_list(COMP_TABLE, {"fields[]": [C_LINK_FI, C_URL]})
@@ -449,6 +476,8 @@ def run_match(brands, rematch=False):
                     updates.append({"id": row["id"], "fields": samawa_fields(e)})
                     summary["existing_link_refreshed"] += 1
                     log(f"[REFRESH] {pname} -> AED {e['price']} | stock={e['available']}")
+                elif safe_mode:
+                    log(f"[SAFE-MODE] {pname} -> handle '{handle}' not downloaded, left unchanged")
                 else:
                     updates.append({"id": row["id"], "fields": {C_STOCK: False}})
                     summary["link_gone"] += 1
@@ -470,7 +499,7 @@ def run_match(brands, rematch=False):
             if row:
                 if sf:
                     updates.append({"id": row["id"], "fields": sf})
-                elif rematch:
+                elif rematch and not safe_mode:
                     # rematch: clear the old (possibly wrong) link
                     updates.append({"id": row["id"], "fields": {C_URL: None, C_PRICE: None, C_STOCK: False}})
             else:
