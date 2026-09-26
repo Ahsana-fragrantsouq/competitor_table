@@ -101,7 +101,8 @@ def as_text(v):
 
 
 def norm_text(s):
-    s = unicodedata.normalize("NFKD", as_text(s)).encode("ascii", "ignore").decode()  # remove accents
+    s = re.sub(r"[\u2018\u2019\u201a\u201b`\u00b4]", " ", as_text(s))  # curly apostrophes -> space (L’Interdit = L'Interdit)
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()  # remove accents
     s = s.lower().replace("&", " and ")
     s = re.sub(r"[^a-z0-9]+", " ", s)
     s = re.sub(r"\b\d+(?:\s\d+)?\s*(?:ml|oz)\b", " ", s)      # drop sizes: "100ml", "100 ml", "1 7 oz"
