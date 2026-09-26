@@ -167,26 +167,72 @@ def name_score(fi_tokens, sm_tokens):
 
 
 # ---------------------------------------------------------------- Samawa
-def fetch_samawa_catalog():
-    log("[SAMAWA] Downloading catalog from products.json ...")
-    products, page = [], 1
-    while page <= 200:
-        r = requests.get(f"{SAMAWA_BASE}/products.json", params={"limit": 250, "page": page},
+MAX_PAGES = 100  # Shopify storefront hard limit: page 101+ returns 400 (max 25,000 items per list)
+
+
+def slim(p):
+    # keep only what matching needs (drops body_html/images) -> much less memory on 512 MB instance
+    return {
+        "id": p.get("id"),
+        "handle": p.get("handle", ""),
+        "title": p.get("title", ""),
+        "vendor": p.get("vendor", ""),
+        "tags": p.get("tags", []),
+        "variants": [{"title": v.get("title"), "sku": v.get("sku"), "price": v.get("price"),
+                      "available": v.get("available")} for v in p.get("variants", [])],
+    }
+
+
+def fetch_paged(path, label, list_key):
+    items, page = [], 1
+    while page <= MAX_PAGES:
+        r = requests.get(f"{SAMAWA_BASE}{path}", params={"limit": 250, "page": page},
                          headers=SAMAWA_HEADERS, timeout=60)
         if r.status_code == 429:
-            log("[SAMAWA] Rate limited, waiting 20s")
+            log(f"[SAMAWA] {label}: rate limited, waiting 20s")
             time.sleep(20)
             continue
+        if r.status_code in (400, 404):
+            log(f"[SAMAWA] {label}: stopped at page {page} (HTTP {r.status_code})")
+            break
         r.raise_for_status()
-        batch = r.json().get("products", [])
+        batch = r.json().get(list_key, [])
         if not batch:
             break
-        products.extend(batch)
-        log(f"[SAMAWA] Page {page}: {len(batch)} products (total {len(products)})")
+        if list_key == "products":
+            items.extend(slim(p) for p in batch)
+        else:
+            items.extend(batch)
+        log(f"[SAMAWA] {label} page {page}: {len(batch)} (total {len(items)})")
+        if len(batch) < 250:
+            break
         page += 1
         time.sleep(1)
-    log(f"[SAMAWA] Catalog downloaded: {len(products)} products")
-    return products
+    return items
+
+
+def fetch_samawa_catalog(brands):
+    by_id = {}
+
+    # 1) Brand collections first: complete per brand, not affected by the 25,000 cap
+    log("[SAMAWA] Looking for brand collections ...")
+    bkeys = [key(b) for b in brands]
+    collections = fetch_paged("/collections.json", "collections", "collections")
+    for c in collections:
+        ckey, hkey = key(c.get("title")), key(c.get("handle"))
+        if any(bk and (bk in ckey or bk in hkey) for bk in bkeys):
+            log(f"[SAMAWA] Brand collection found: '{c.get('title')}' ({c.get('handle')})")
+            for p in fetch_paged(f"/collections/{c['handle']}/products.json", c["handle"], "products"):
+                by_id[p["id"]] = p
+    log(f"[SAMAWA] From brand collections: {len(by_id)} products")
+
+    # 2) Full catalog (first 25,000 products) - also catches brands without a collection + barcodes
+    log("[SAMAWA] Downloading full catalog from products.json ...")
+    for p in fetch_paged("/products.json", "catalog", "products"):
+        by_id[p["id"]] = p
+
+    log(f"[SAMAWA] Catalog ready: {len(by_id)} unique products")
+    return list(by_id.values())
 
 
 def build_index(catalog):
@@ -335,7 +381,7 @@ def run_match(brands):
     summary = {"brands": brands, "matched_barcode": 0, "matched_fuzzy": 0, "existing_link_refreshed": 0,
                "link_gone": 0, "unmatched": 0, "created": 0, "updated": 0, "unmatched_list": []}
 
-    entries, by_barcode, by_handle = build_index(fetch_samawa_catalog())
+    entries, by_barcode, by_handle = build_index(fetch_samawa_catalog(brands))
 
     # existing Competitor rows, keyed by French Inventories record id
     comp_rows = at_list(COMP_TABLE, {"fields[]": [C_LINK_FI, C_URL]})
