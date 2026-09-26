@@ -17,6 +17,7 @@ import time
 import difflib
 import threading
 import traceback
+import unicodedata
 from urllib.parse import urlparse
 
 import requests
@@ -68,6 +69,7 @@ PHRASES = [
     (" eau de toilette ", " edt "),
     (" eau de parfum ", " edp "),
     (" essence de parfum ", " edp "),
+    (" pure parfum ", " parfum "),
     (" extrait de parfum ", " extrait "),
     (" eau de cologne ", " edc "),
     (" men and women ", " unisex "),
@@ -84,7 +86,7 @@ STOP = {
     "perfume", "perfumes", "fragrance", "fragrances", "for", "and", "men", "women", "man", "woman",
     "unisex", "him", "her", "homme", "femme", "pour", "edt", "edp", "edc", "extrait", "parfum",
     "eau", "de", "ml", "oz", "spray", "the", "by", "new", "with",
-    "edition", "limited", "collection", "special",
+    "edition", "limited", "collection", "special", "signature",
     "woody", "floral", "oriental", "fruity", "spicy", "aromatic", "aquatic", "chypre", "fougere", "gourmand", "citrus",
 }
 
@@ -99,7 +101,8 @@ def as_text(v):
 
 
 def norm_text(s):
-    s = as_text(s).lower().replace("&", " and ")
+    s = unicodedata.normalize("NFKD", as_text(s)).encode("ascii", "ignore").decode()  # remove accents
+    s = s.lower().replace("&", " and ")
     s = re.sub(r"[^a-z0-9]+", " ", s)
     s = re.sub(r"\b\d+(?:\s\d+)?\s*(?:ml|oz)\b", " ", s)      # drop sizes: "100ml", "100 ml", "1 7 oz"
     s = re.sub(r"\b(\d+)\s+(am|pm)\b", r"\1\2", s)            # "9 am" -> "9am"
@@ -110,7 +113,8 @@ def norm_text(s):
 
 
 def key(s):
-    return re.sub(r"[^a-z0-9]", "", as_text(s).lower())
+    s = unicodedata.normalize("NFKD", as_text(s)).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
 def tokens(normed):
@@ -163,7 +167,7 @@ def token_hit(t, pool):
     for p in pool:
         if abs(len(p) - len(t)) > 2:
             continue
-        need = 0.8 if min(len(p), len(t)) >= 5 else 0.85
+        need = 0.8 if len(p) == len(t) and len(t) >= 5 else 0.85
         if difflib.SequenceMatcher(None, t, p).ratio() >= need:
             return True
     return False
@@ -255,7 +259,7 @@ def build_index(catalog):
         tags = [t.lower() for t in p.get("tags", [])]
         full_n = norm_text(title)
         name_n = norm_text(re.split(r"\s-\s|,", title)[0])  # drop " - Aromatic Aquatic..." / ", Oriental Woody..."
-        p_type = detect_type(full_n) or next((t for t in ("extrait", "edp", "edt", "edc") if t in tags), None)
+        p_type = detect_type(full_n)
         p_size = parse_size(title) or next((parse_size(t) for t in tags if parse_size(t)), None)
         p_gender = detect_gender(full_n)
 
@@ -395,7 +399,7 @@ def match_one(fields, brand, brand_entries, by_barcode):
         return None, f"low score (best: {best['title']})", best_score
     tied = [e for s, e in scored if s >= best_score - 0.02]
     if len({e["handle"] for e in tied}) > 1:
-        if best_score >= 0.95:
+        if all(name_score(fi_tokens, e["tokens"] - brand_tokens) >= 0.95 for e in tied):
             # Samawa has duplicate listings of the same perfume -> prefer in stock, then cheapest
             best = sorted(tied, key=lambda e: (not e["available"], e["price"]))[0]
             log(f"[DUPLICATE] {product_name}: {len(tied)} Samawa listings, picked '{best['title']}'")
