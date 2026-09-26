@@ -254,6 +254,7 @@ def build_index(catalog):
                 "title": title,
                 "vendor_key": key(p.get("vendor")),
                 "title_key": key(title),
+                "title_norm": full_n,
                 "size": parse_size(v.get("title")) or p_size,
                 "type": p_type,
                 "gender": p_gender,
@@ -339,12 +340,6 @@ def pick_by_size(entries, size):
 
 
 def match_one(fields, brand, brand_entries, by_barcode):
-    # 1) barcode = exact match
-    bc = norm_barcode(fields.get(F_BARCODE))
-    if bc and bc in by_barcode:
-        return by_barcode[bc], "barcode", 1.0
-
-    # 2) fuzzy
     product_name = as_text(fields.get(F_PRODUCT))
     fi_size = parse_size(fields.get(F_SIZE)) or parse_size(product_name)
     fi_type = detect_type(norm_text(fields.get(F_TYPE))) or detect_type(norm_text(product_name))
@@ -354,31 +349,50 @@ def match_one(fields, brand, brand_entries, by_barcode):
     if not fi_tokens:
         return None, "no name tokens", 0.0
 
-    scored = []
-    for e in brand_entries:
+    def score(e):
+        # returns None when the candidate is impossible (wrong size / type / gender)
         if fi_size and (not e["size"] or abs(e["size"] - fi_size) > 0.5):
-            continue
+            return None
         if fi_type and e["type"] and fi_type != e["type"]:
-            continue
-        s = name_score(fi_tokens, e["tokens"] - brand_tokens)
+            return None
         if fi_gender and e["gender"] and "unisex" not in (fi_gender, e["gender"]) and fi_gender != e["gender"]:
-            s -= 0.15
-        scored.append((s, e))
+            return None
+        return name_score(fi_tokens, e["tokens"] - brand_tokens)
 
-    if not scored:
-        return None, "no candidate with same size/type", 0.0
+    scored = [(s, e) for e in brand_entries if (s := score(e)) is not None]
     scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[0][0] if scored else 0.0
+
+    # 1) barcode - trusted only if it passes size/type/gender AND no other product has a better name
+    bc = norm_barcode(fields.get(F_BARCODE))
+    if bc and bc in by_barcode:
+        e = by_barcode[bc]
+        s = score(e)
+        if s is not None and s >= 0.6 and s >= top - 0.001:
+            return e, "barcode", s
+        log(f"[BARCODE-REJECT] {product_name} -> barcode points to '{e['title']}' (score={s}), using name match")
+
+    # 2) fuzzy
+    if not scored:
+        return None, "no candidate with same size/type/gender", 0.0
     best_score, best = scored[0]
     if best_score < MATCH_THRESHOLD:
         return None, f"low score (best: {best['title']})", best_score
-    if len(scored) > 1 and scored[1][0] >= best_score - 0.02 and scored[1][1]["handle"] != best["handle"]:
-        return None, f"ambiguous ({best['title']} | {scored[1][1]['title']})", best_score
+    tied = [e for s, e in scored if s >= best_score - 0.02]
+    if len({e["handle"] for e in tied}) > 1:
+        if best_score >= 0.95:
+            # Samawa has duplicate listings of the same perfume -> prefer in stock, then cheapest
+            best = sorted(tied, key=lambda e: (not e["available"], e["price"]))[0]
+            log(f"[DUPLICATE] {product_name}: {len(tied)} Samawa listings, picked '{best['title']}'")
+        else:
+            return None, f"ambiguous ({tied[0]['title']} | {tied[1]['title']})", best_score
     return best, "fuzzy", best_score
 
 
-def run_match(brands):
+def run_match(brands, rematch=False):
     started = time.time()
-    summary = {"brands": brands, "matched_barcode": 0, "matched_fuzzy": 0, "existing_link_refreshed": 0,
+    log(f"[RUN] rematch={rematch}")
+    summary = {"brands": brands, "rematch": rematch, "matched_barcode": 0, "matched_fuzzy": 0, "existing_link_refreshed": 0,
                "link_gone": 0, "unmatched": 0, "created": 0, "updated": 0, "unmatched_list": []}
 
     entries, by_barcode, by_handle = build_index(fetch_samawa_catalog(brands))
@@ -394,15 +408,15 @@ def run_match(brands):
     creates, updates = [], []
 
     for brand in brands:
-        bkey = key(brand)
-        brand_entries = [e for e in entries if bkey in e["vendor_key"] or bkey in e["title_key"]]
+        bkey, bnorm = key(brand), norm_text(brand)
+        brand_entries = [e for e in entries if e["vendor_key"].startswith(bkey) or bnorm in e["title_norm"]]
         log(f"\n[BRAND] ===== {brand}: {len(brand_entries)} Samawa variants =====")
 
         for rec in fetch_fi_for_brand(brand):
             fid, f = rec["id"], rec.get("fields", {})
             pname = as_text(f.get(F_PRODUCT)) or as_text(f.get(F_PERFUME))
             row = comp_by_fi.get(fid)
-            existing_url = (row or {}).get("fields", {}).get(C_URL)
+            existing_url = None if rematch else (row or {}).get("fields", {}).get(C_URL)
 
             # A) row already has a Samawa link (manual or earlier run) -> keep link, refresh price/stock
             if existing_url:
@@ -434,6 +448,9 @@ def run_match(brands):
             if row:
                 if sf:
                     updates.append({"id": row["id"], "fields": sf})
+                elif rematch:
+                    # rematch: clear the old (possibly wrong) link
+                    updates.append({"id": row["id"], "fields": {C_URL: None, C_PRICE: None, C_STOCK: False}})
             else:
                 creates.append({"fields": {C_NAME: pname, C_LINK_FI: [fid], **sf}})
 
@@ -447,9 +464,9 @@ def run_match(brands):
 
 
 # ---------------------------------------------------------------- routes
-def _worker(brands):
+def _worker(brands, rematch=False):
     try:
-        state["last_summary"] = run_match(brands)
+        state["last_summary"] = run_match(brands, rematch)
     except Exception as ex:
         log(f"[ERROR] {ex}\n{traceback.format_exc()}")
         state["last_summary"] = {"error": str(ex)}
@@ -466,14 +483,16 @@ def health():
 def trigger():
     if RUN_SECRET and request.headers.get("X-Run-Secret") != RUN_SECRET:
         return jsonify({"error": "unauthorized"}), 401
-    brands = (request.get_json(silent=True) or {}).get("brands") or DEFAULT_BRANDS
+    body = request.get_json(silent=True) or {}
+    brands = body.get("brands") or DEFAULT_BRANDS
+    rematch = bool(body.get("rematch"))
     if not brands:
         return jsonify({"error": "no brands given"}), 400
     if not run_lock.acquire(blocking=False):
         return jsonify({"error": "a run is already in progress"}), 409
     log(f"[RUN] Started for brands: {brands}")
-    threading.Thread(target=_worker, args=(brands,), daemon=True).start()
-    return jsonify({"started": True, "brands": brands}), 202
+    threading.Thread(target=_worker, args=(brands, rematch), daemon=True).start()
+    return jsonify({"started": True, "brands": brands, "rematch": rematch}), 202
 
 
 @app.get("/samawa/run")
@@ -483,14 +502,15 @@ def trigger_from_url():
         log("[RUN-URL] Unauthorized attempt")
         return jsonify({"error": "unauthorized"}), 401
     brands = [b.strip() for b in request.args.get("brands", "").split(",") if b.strip()] or DEFAULT_BRANDS
+    rematch = request.args.get("rematch") == "1"
     if not brands:
         return jsonify({"error": "no brands given"}), 400
     if not run_lock.acquire(blocking=False):
         log("[RUN-URL] Rejected: a run is already in progress")
         return jsonify({"error": "a run is already in progress"}), 409
     log(f"[RUN-URL] Started from browser for brands: {brands}")
-    threading.Thread(target=_worker, args=(brands,), daemon=True).start()
-    return jsonify({"started": True, "brands": brands, "check_status": "/samawa/status"}), 202
+    threading.Thread(target=_worker, args=(brands, rematch), daemon=True).start()
+    return jsonify({"started": True, "brands": brands, "rematch": rematch, "check_status": "/samawa/status"}), 202
 
 
 @app.get("/samawa/status")
