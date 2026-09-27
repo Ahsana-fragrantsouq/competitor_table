@@ -578,8 +578,8 @@ def run_match(brands, rematch=False, fi_groups=None):
 
 
 
-# ================================================================ FRENCH FRAGRANCE (via Browse AI -> Airtable)
-# Browse AI scrapes frenchfragrance.com (Cloudflare blocks servers) into the Airtable table below.
+# ================================================================ FRENCH FRAGRANCE (PC scraper -> Airtable)
+# ff_scraper.py (runs on your PC with real Chrome, Cloudflare blocks servers) fills the Airtable table below.
 FF_TABLE = os.environ.get("FF_TABLE", "FF Catalog")
 FF_URL_F = "Product URL"        # product page link
 FF_NAME_F = "Name"              # product title
@@ -590,10 +590,10 @@ FF_STOCK_F = "Stock"            # e.g. "In stock" / "Out of stock"
 FF_VOLUME_F = "Volume"          # e.g. "125 ML" (optional)
 
 # Competitor table fields for French Fragrance
-C_FF_URL = "FF link"
-C_FF_PRICE = "FF Price"
-C_FF_STOCK = "FF Stock?"
-C_FF_SUGGEST = "FF Suggestion"
+C_FF_URL = "Frenchfragrance link"
+C_FF_PRICE = "Frenchfragrance price"
+C_FF_STOCK = "Frenchfragrance Stock?"
+C_FF_SUGGEST = "Frenchfragrance Suggestion"
 
 
 def parse_money(v):
