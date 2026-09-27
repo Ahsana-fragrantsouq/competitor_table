@@ -7,7 +7,7 @@ Flow:
   3. Match each product to Samawa: existing link -> barcode -> fuzzy (brand + name + size + type + gender)
   4. Create / update rows in the Competitor table with Samawa link, price and stock
 
-Brands :  read from Airtable "brands" table (checkbox "Samawa Track" ticked)
+Brands :  ALL brands from the Airtable "brands" table (optional checkbox filter via BRANDS_TRACK_FIELD)
 Trigger:  GET  /samawa/run?secret=XXX            (one-time run, manual)
           GET  /samawa/run?secret=XXX&brands=Afnan (test one brand)
 Status :  GET  /samawa/status
@@ -38,7 +38,7 @@ MATCH_THRESHOLD = float(os.environ.get("MATCH_THRESHOLD", "0.85"))
 # Brands come from the Airtable "brands" table: every record with the checkbox ticked is processed
 BRANDS_TABLE = os.environ.get("BRANDS_TABLE", "brands")
 BRANDS_NAME_FIELD = os.environ.get("BRANDS_NAME_FIELD", "Name")          # brand name field in brands table
-BRANDS_TRACK_FIELD = os.environ.get("BRANDS_TRACK_FIELD", "Samawa Track")  # checkbox: tick = compare with Samawa
+BRANDS_TRACK_FIELD = os.environ.get("BRANDS_TRACK_FIELD", "")  # optional checkbox filter; empty = ALL brands
 
 # French Inventories field names
 F_BRAND = "Brand"
@@ -229,9 +229,9 @@ def samawa_get(path, page, label):
     return None
 
 
-def fetch_paged(path, label, list_key):
+def fetch_paged(path, label, list_key, max_pages=MAX_PAGES):
     items, page = [], 1
-    while page <= MAX_PAGES:
+    while page <= max_pages:
         r = samawa_get(path, page, label)
         if r is None:
             state["catalog_incomplete"] = True
@@ -256,27 +256,26 @@ def fetch_paged(path, label, list_key):
     return items
 
 
-def fetch_samawa_catalog(brands):
-    by_id = {}
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "10"))   # brands per batch
 
-    # 1) Brand collections first: complete per brand, not affected by the 25,000 cap
-    log("[SAMAWA] Looking for brand collections ...")
+
+def collection_matches(c, bkeys):
+    ckey, hkey = key(c.get("title")), key(c.get("handle"))
+    # exact name, or brand inside collection name (brand >= 5 letters), or "Dior" inside "Christian Dior"
+    return any(bk and (bk in (ckey, hkey) or (len(bk) >= 5 and (bk in ckey or bk in hkey))
+                       or (len(ckey) >= 4 and ckey in bk)) for bk in bkeys)
+
+
+def fetch_brand_collections(brands, collections):
+    """Products from Samawa brand collections for these brands only (complete, not affected by 25,000 cap)."""
     bkeys = [key(b) for b in brands]
-    collections = fetch_paged("/collections.json", "collections", "collections")
+    by_id = {}
     for c in collections:
-        ckey, hkey = key(c.get("title")), key(c.get("handle"))
-        if any(bk and (bk in ckey or bk in hkey or (len(ckey) >= 4 and ckey in bk)) for bk in bkeys):
+        if collection_matches(c, bkeys):
             log(f"[SAMAWA] Brand collection found: '{c.get('title')}' ({c.get('handle')})")
-            for p in fetch_paged(f"/collections/{c['handle']}/products.json", c["handle"], "products"):
+            for p in fetch_paged(f"/collections/{c['handle']}/products.json", c["handle"], "products", max_pages=20):
                 by_id[p["id"]] = p
     log(f"[SAMAWA] From brand collections: {len(by_id)} products")
-
-    # 2) Full catalog (first 25,000 products) - also catches brands without a collection + barcodes
-    log("[SAMAWA] Downloading full catalog from products.json ...")
-    for p in fetch_paged("/products.json", "catalog", "products"):
-        by_id[p["id"]] = p
-
-    log(f"[SAMAWA] Catalog ready: {len(by_id)} unique products")
     return list(by_id.values())
 
 
@@ -375,11 +374,27 @@ def fetch_fi_for_brand(brand):
     return recs
 
 
-def fetch_tracked_brands():
-    recs = at_list(BRANDS_TABLE, {"filterByFormula": f"{{{BRANDS_TRACK_FIELD}}}", "fields[]": [BRANDS_NAME_FIELD]})
-    names = sorted({as_text(r.get("fields", {}).get(BRANDS_NAME_FIELD)).strip() for r in recs} - {""})
-    log(f"[BRANDS] {len(names)} brands ticked in '{BRANDS_TABLE}' ({BRANDS_TRACK_FIELD}): {names}")
-    return names
+def fetch_all_brand_products():
+    """Returns {brand name: [French Inventories records]} for all brands (or only ticked ones)."""
+    params = {"fields[]": [BRANDS_NAME_FIELD]}
+    if BRANDS_TRACK_FIELD:
+        params["filterByFormula"] = f"{{{BRANDS_TRACK_FIELD}}}"
+    id_to_name = {}
+    for r in at_list(BRANDS_TABLE, params):
+        name = as_text(r.get("fields", {}).get(BRANDS_NAME_FIELD)).strip()
+        if name and not name.isdigit():            # skip empty / barcode-like junk brand rows
+            id_to_name[r["id"]] = name
+    log(f"[BRANDS] {len(id_to_name)} brands read from '{BRANDS_TABLE}'")
+
+    log("[FI] Reading all French Inventories records ...")
+    groups = {}
+    for rec in at_list(FI_TABLE, {"fields[]": [F_BRAND, F_BARCODE, F_PERFUME, F_PRODUCT, F_SIZE, F_TYPE, F_CATEGORY]}):
+        for bid in rec.get("fields", {}).get(F_BRAND, []):      # Brand = linked record ids
+            if bid in id_to_name:
+                groups.setdefault(id_to_name[bid], []).append(rec)
+                break
+    log(f"[FI] {sum(len(v) for v in groups.values())} products in {len(groups)} brands (brands without products skipped)")
+    return groups
 
 
 # ---------------------------------------------------------------- matching
@@ -445,20 +460,22 @@ def match_one(fields, brand, brand_entries, by_barcode):
     return best, method("fuzzy", best), best_score, None
 
 
-def run_match(brands, rematch=False):
+def run_match(brands, rematch=False, fi_groups=None):
     started = time.time()
-    log(f"[RUN] rematch={rematch}")
-    summary = {"brands": brands, "rematch": rematch, "matched_barcode": 0, "matched_fuzzy": 0, "existing_link_refreshed": 0,
-               "link_gone": 0, "unmatched": 0, "created": 0, "updated": 0, "unmatched_list": []}
+    batches = [brands[i:i + BATCH_SIZE] for i in range(0, len(brands), BATCH_SIZE)]
+    log(f"[RUN] rematch={rematch} | {len(brands)} brands in {len(batches)} batches of {BATCH_SIZE}")
+    summary = {"brands": len(brands), "rematch": rematch, "batches_done": 0, "batches_total": len(batches),
+               "matched_barcode": 0, "matched_fuzzy": 0, "existing_link_refreshed": 0, "link_gone": 0,
+               "unmatched": 0, "created": 0, "updated": 0, "unmatched_list": []}
+    state["last_summary"] = summary          # live progress in /samawa/status
 
+    # 1) things downloaded ONCE for the whole run
     state["catalog_incomplete"] = False
-    entries, by_barcode, by_handle = build_index(fetch_samawa_catalog(brands))
-    safe_mode = state["catalog_incomplete"]
-    summary["catalog_incomplete"] = safe_mode
-    if safe_mode:
-        log("[SAFE-MODE] Samawa download was incomplete -> will NOT clear links or untick stock this run")
+    log("[SAMAWA] Downloading full catalog from products.json ...")
+    base_entries, base_barcode, base_handle = build_index(fetch_paged("/products.json", "catalog", "products"))
+    collections = fetch_paged("/collections.json", "collections", "collections")
+    base_incomplete = state["catalog_incomplete"]
 
-    # existing Competitor rows, keyed by French Inventories record id
     comp_rows = at_list(COMP_TABLE, {"fields[]": [C_LINK_FI, C_URL]})
     comp_by_fi = {}
     for row in comp_rows:
@@ -466,72 +483,94 @@ def run_match(brands, rematch=False):
             comp_by_fi[fid] = row
     log(f"[COMP] {len(comp_rows)} existing Competitor rows")
 
-    creates, updates = [], []
+    # 2) brands 10 by 10
+    for bi, batch in enumerate(batches, 1):
+        log(f"\n########## BATCH {bi}/{len(batches)}: {batch} ##########")
+        state["catalog_incomplete"] = base_incomplete
+        c_entries, c_barcode, c_handle = build_index(fetch_brand_collections(batch, collections))
+        entries = base_entries + c_entries
+        by_barcode = {**base_barcode, **c_barcode}
+        by_handle = {**base_handle, **c_handle}
+        safe_mode = state["catalog_incomplete"]
+        if safe_mode:
+            log("[SAFE-MODE] Samawa download incomplete -> will NOT clear links or untick stock in this batch")
 
-    for brand in brands:
-        bkey, bnorm = key(brand), norm_text(brand)
-        # vendor "Dior" also counts for brand "Christian Dior" (vendor name inside brand name)
-        brand_entries = [e for e in entries if e["vendor_key"].startswith(bkey) or bnorm in e["title_norm"]
-                         or (len(e["vendor_key"]) >= 4 and e["vendor_key"] in bkey)]
-        log(f"\n[BRAND] ===== {brand}: {len(brand_entries)} Samawa variants =====")
+        creates, updates = [], []
+        for brand in batch:
+            bkey, bnorm = key(brand), norm_text(brand)
+            # vendor "Dior" also counts for brand "Christian Dior" (vendor name inside brand name)
+            brand_entries = [e for e in entries if e["vendor_key"].startswith(bkey) or bnorm in e["title_norm"]
+                             or (len(e["vendor_key"]) >= 4 and e["vendor_key"] in bkey)]
+            recs = fi_groups[brand] if fi_groups is not None else fetch_fi_for_brand(brand)
+            log(f"\n[BRAND] ===== {brand}: {len(recs)} products | {len(brand_entries)} Samawa variants =====")
 
-        for rec in fetch_fi_for_brand(brand):
-            fid, f = rec["id"], rec.get("fields", {})
-            pname = as_text(f.get(F_PRODUCT)) or as_text(f.get(F_PERFUME))
-            row = comp_by_fi.get(fid)
-            existing_url = None if rematch else (row or {}).get("fields", {}).get(C_URL)
+            for rec in recs:
+                fid, f = rec["id"], rec.get("fields", {})
+                pname = as_text(f.get(F_PRODUCT)) or as_text(f.get(F_PERFUME))
+                row = comp_by_fi.get(fid)
+                existing_url = None if rematch else (row or {}).get("fields", {}).get(C_URL)
 
-            # A) row already has a Samawa link (manual or earlier run) -> keep link, refresh price/stock
-            if existing_url:
-                handle = urlparse(existing_url).path.rstrip("/").split("/products/")[-1]
-                found = by_handle.get(handle)
-                if found:
-                    e = pick_by_size(found, parse_size(f.get(F_SIZE)) or parse_size(pname))
-                    updates.append({"id": row["id"], "fields": samawa_fields(e)})
-                    summary["existing_link_refreshed"] += 1
-                    log(f"[REFRESH] {pname} -> AED {e['price']} | stock={e['available']}")
-                elif safe_mode:
-                    log(f"[SAFE-MODE] {pname} -> handle '{handle}' not downloaded, left unchanged")
+                # A) row already has a Samawa link (manual or earlier run) -> keep link, refresh price/stock
+                if existing_url:
+                    handle = urlparse(existing_url).path.rstrip("/").split("/products/")[-1]
+                    found = by_handle.get(handle)
+                    if found:
+                        e = pick_by_size(found, parse_size(f.get(F_SIZE)) or parse_size(pname))
+                        updates.append({"id": row["id"], "fields": samawa_fields(e)})
+                        summary["existing_link_refreshed"] += 1
+                        log(f"[REFRESH] {pname} -> AED {e['price']} | stock={e['available']}")
+                    elif safe_mode:
+                        log(f"[SAFE-MODE] {pname} -> handle '{handle}' not downloaded, left unchanged")
+                    else:
+                        updates.append({"id": row["id"], "fields": {C_STOCK: False}})
+                        summary["link_gone"] += 1
+                        log(f"[GONE] {pname} -> handle '{handle}' not in Samawa catalog, stock unticked")
+                    continue
+
+                # B) find a match
+                e, method, score, guess = match_one(f, brand, brand_entries, by_barcode)
+                note = {}
+                if e:
+                    summary["matched_barcode" if method.startswith("barcode") else "matched_fuzzy"] += 1
+                    log(f"[MATCH:{method} {score}] {pname} -> {e['title']} | AED {e['price']} | stock={e['available']}")
+                    sf = samawa_fields(e)
+                    if SUGGESTIONS:
+                        sf[C_SUGGEST] = None                             # matched -> clear old suggestion
                 else:
-                    updates.append({"id": row["id"], "fields": {C_STOCK: False}})
-                    summary["link_gone"] += 1
-                    log(f"[GONE] {pname} -> handle '{handle}' not in Samawa catalog, stock unticked")
-                continue
+                    summary["unmatched"] += 1
+                    if len(summary["unmatched_list"]) < 300:
+                        summary["unmatched_list"].append(f"{pname} | {method} | {score}")
+                    log(f"[NO MATCH] {pname} | {method} | score={score}")
+                    sf = {}
+                    if SUGGESTIONS:
+                        # best guess (score >= 0.5) so the team only needs to verify, not search
+                        good = guess is not None and score >= 0.5
+                        note = {C_SUGGEST: f"{SAMAWA_BASE}/products/{guess['handle']}" if good else None}
 
-            # B) find a match
-            e, method, score, guess = match_one(f, brand, brand_entries, by_barcode)
-            note = {}
-            if e:
-                summary["matched_barcode" if method.startswith("barcode") else "matched_fuzzy"] += 1
-                log(f"[MATCH:{method} {score}] {pname} -> {e['title']} | AED {e['price']} | stock={e['available']}")
-                sf = samawa_fields(e)
-                if SUGGESTIONS:
-                    sf[C_SUGGEST] = None                             # matched -> clear old suggestion
-            else:
-                summary["unmatched"] += 1
-                summary["unmatched_list"].append(f"{pname} | {method} | {score}")
-                log(f"[NO MATCH] {pname} | {method} | score={score}")
-                sf = {}
-                if SUGGESTIONS:
-                    # best guess (score >= 0.5) so the team only needs to verify, not search
-                    good = guess is not None and score >= 0.5
-                    note = {C_SUGGEST: f"{SAMAWA_BASE}/products/{guess['handle']}" if good else None}
+                if row:
+                    if sf:
+                        updates.append({"id": row["id"], "fields": sf})
+                    elif rematch and not safe_mode:
+                        # rematch: clear the old (possibly wrong) link
+                        updates.append({"id": row["id"], "fields": {C_URL: None, C_PRICE: None, C_STOCK: False, **note}})
+                    elif note:
+                        updates.append({"id": row["id"], "fields": note})
+                else:
+                    creates.append({"fields": {C_NAME: pname, C_LINK_FI: [fid], **sf, **note}})
 
-            if row:
-                if sf:
-                    updates.append({"id": row["id"], "fields": sf})
-                elif rematch and not safe_mode:
-                    # rematch: clear the old (possibly wrong) link
-                    updates.append({"id": row["id"], "fields": {C_URL: None, C_PRICE: None, C_STOCK: False, **note}})
-                elif note:
-                    updates.append({"id": row["id"], "fields": note})
-            else:
-                creates.append({"fields": {C_NAME: pname, C_LINK_FI: [fid], **sf, **note}})
+        # write this batch now -> results appear in Airtable batch by batch
+        log(f"\n[WRITE] Batch {bi}/{len(batches)}: creating {len(creates)} rows, updating {len(updates)} rows")
+        at_batch(COMP_TABLE, "POST", creates)
+        at_batch(COMP_TABLE, "PATCH", updates)
+        summary["created"] += len(creates)
+        summary["updated"] += len(updates)
+        summary["batches_done"] = bi
+        summary["seconds"] = round(time.time() - started, 1)
+        log(f"[BATCH DONE] {bi}/{len(batches)} | matched {summary['matched_barcode'] + summary['matched_fuzzy']} "
+            f"| unmatched {summary['unmatched']} | {summary['seconds']}s")
+        time.sleep(5)   # small pause between batches (gentle on Samawa)
 
-    log(f"\n[WRITE] Creating {len(creates)} rows, updating {len(updates)} rows")
-    at_batch(COMP_TABLE, "POST", creates)
-    at_batch(COMP_TABLE, "PATCH", updates)
-    summary["created"], summary["updated"] = len(creates), len(updates)
+    summary["catalog_incomplete"] = base_incomplete
     summary["seconds"] = round(time.time() - started, 1)
     log(f"[DONE] {summary}")
     return summary
@@ -540,12 +579,15 @@ def run_match(brands, rematch=False):
 # ---------------------------------------------------------------- routes
 def _worker(brands, rematch=False):
     try:
-        brands = brands or fetch_tracked_brands()   # no brands in URL -> read from brands table
+        fi_groups = None
+        if not brands:                                  # no brands in URL -> all brands from brands table
+            fi_groups = fetch_all_brand_products()
+            brands = sorted(fi_groups)
         if not brands:
-            log(f"[RUN] No brands ticked in '{BRANDS_TABLE}' -> nothing to do")
-            state["last_summary"] = {"error": f"no brands ticked in {BRANDS_TABLE}.{BRANDS_TRACK_FIELD}"}
+            log(f"[RUN] No brands found in '{BRANDS_TABLE}' -> nothing to do")
+            state["last_summary"] = {"error": f"no brands found in {BRANDS_TABLE}"}
             return
-        state["last_summary"] = run_match(brands, rematch)
+        state["last_summary"] = run_match(brands, rematch, fi_groups)
     except Exception as ex:
         log(f"[ERROR] {ex}\n{traceback.format_exc()}")
         state["last_summary"] = {"error": str(ex)}
