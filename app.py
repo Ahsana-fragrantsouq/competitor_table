@@ -19,6 +19,7 @@ import threading
 import traceback
 import unicodedata
 from urllib.parse import urlparse
+from datetime import datetime, timezone, timedelta
 
 import requests
 from flask import Flask, request, jsonify
@@ -34,6 +35,9 @@ COMP_TABLE = "tblN9zlKmfvOXZ9Ov"    # Competitor table
 SAMAWA_BASE = "https://samawa.ae"
 MATCH_THRESHOLD = float(os.environ.get("MATCH_THRESHOLD", "0.85"))
 DEFAULT_BRANDS = [b.strip() for b in os.environ.get("DEFAULT_BRANDS", "").split(",") if b.strip()]
+# Automatic runs, UAE time, comma separated "HH:MM" e.g. "06:00" or "06:00,18:00". Empty = off
+AUTO_RUN_TIMES = [t.strip() for t in os.environ.get("AUTO_RUN_TIMES", "").split(",") if t.strip()]
+UAE_TZ = timezone(timedelta(hours=4))  # UAE has no daylight saving
 
 # French Inventories field names
 F_BRAND = "Brand"
@@ -50,6 +54,8 @@ C_LINK_FI = "French Inventories"
 C_URL = "Samawa link"
 C_PRICE = "Samawa Price"
 C_STOCK = "Samawa Stock?"
+C_SUGGEST = "Samawa Suggestion"     # URL field: best guess for unmatched rows (review by hand)
+SUGGESTIONS = os.environ.get("SUGGESTIONS", "") == "1"   # turn on only after creating the field above
 
 AT_URL = f"https://api.airtable.com/v0/{BASE_ID}"
 AT_HEADERS = {"Authorization": f"Bearer {AIRTABLE_TOKEN}", "Content-Type": "application/json"}
@@ -409,17 +415,17 @@ def match_one(fields, brand, brand_entries, by_barcode):
         e = by_barcode[bc]
         s = score(e)
         if s is not None and ((not fi_tokens) or (s >= 0.6 and s >= top - 0.001)):
-            return e, method("barcode", e), s
+            return e, method("barcode", e), s, None
         log(f"[BARCODE-REJECT] {product_name} -> barcode points to '{e['title']}' (score={s}), using name match")
 
     # 2) fuzzy
     if not fi_tokens:
-        return None, "no name tokens", 0.0
+        return None, "no name tokens", 0.0, None
     if not scored:
-        return None, "no candidate with same size/type/gender", 0.0
+        return None, "no candidate with same size/type/gender", 0.0, None
     best_score, best = scored[0]
     if best_score < MATCH_THRESHOLD:
-        return None, f"low score (best: {best['title']})", best_score
+        return None, f"low score (best: {best['title']})", best_score, best
     tied = [e for s, e in scored if s >= best_score - 0.02]
     if len({e["handle"] for e in tied}) > 1:
         if all(name_score(fi_tokens, e["tokens"] - brand_tokens) >= 0.95 for e in tied):
@@ -427,8 +433,8 @@ def match_one(fields, brand, brand_entries, by_barcode):
             best = sorted(tied, key=lambda e: (not e["available"], e["price"]))[0]
             log(f"[DUPLICATE] {product_name}: {len(tied)} Samawa listings, picked '{best['title']}'")
         else:
-            return None, f"ambiguous ({tied[0]['title']} | {tied[1]['title']})", best_score
-    return best, method("fuzzy", best), best_score
+            return None, f"ambiguous ({tied[0]['title']} | {tied[1]['title']})", best_score, tied[0]
+    return best, method("fuzzy", best), best_score, None
 
 
 def run_match(brands, rematch=False):
@@ -485,25 +491,34 @@ def run_match(brands, rematch=False):
                 continue
 
             # B) find a match
-            e, method, score = match_one(f, brand, brand_entries, by_barcode)
+            e, method, score, guess = match_one(f, brand, brand_entries, by_barcode)
+            note = {}
             if e:
                 summary["matched_barcode" if method.startswith("barcode") else "matched_fuzzy"] += 1
                 log(f"[MATCH:{method} {score}] {pname} -> {e['title']} | AED {e['price']} | stock={e['available']}")
                 sf = samawa_fields(e)
+                if SUGGESTIONS:
+                    sf[C_SUGGEST] = None                             # matched -> clear old suggestion
             else:
                 summary["unmatched"] += 1
                 summary["unmatched_list"].append(f"{pname} | {method} | {score}")
                 log(f"[NO MATCH] {pname} | {method} | score={score}")
                 sf = {}
+                if SUGGESTIONS:
+                    # best guess (score >= 0.5) so the team only needs to verify, not search
+                    good = guess is not None and score >= 0.5
+                    note = {C_SUGGEST: f"{SAMAWA_BASE}/products/{guess['handle']}" if good else None}
 
             if row:
                 if sf:
                     updates.append({"id": row["id"], "fields": sf})
                 elif rematch and not safe_mode:
                     # rematch: clear the old (possibly wrong) link
-                    updates.append({"id": row["id"], "fields": {C_URL: None, C_PRICE: None, C_STOCK: False}})
+                    updates.append({"id": row["id"], "fields": {C_URL: None, C_PRICE: None, C_STOCK: False, **note}})
+                elif note:
+                    updates.append({"id": row["id"], "fields": note})
             else:
-                creates.append({"fields": {C_NAME: pname, C_LINK_FI: [fid], **sf}})
+                creates.append({"fields": {C_NAME: pname, C_LINK_FI: [fid], **sf, **note}})
 
     log(f"\n[WRITE] Creating {len(creates)} rows, updating {len(updates)} rows")
     at_batch(COMP_TABLE, "POST", creates)
@@ -566,7 +581,35 @@ def trigger_from_url():
 
 @app.get("/samawa/status")
 def status():
-    return jsonify({"running": run_lock.locked(), "last_summary": state["last_summary"]})
+    return jsonify({"running": run_lock.locked(), "auto_run_times_uae": AUTO_RUN_TIMES,
+                    "last_auto_run": state.get("last_auto_run"), "last_summary": state["last_summary"]})
+
+
+# ---------------------------------------------------------------- automatic daily runs
+def scheduler():
+    log(f"[SCHEDULER] Started. Auto runs at {AUTO_RUN_TIMES} (UAE time) for {len(DEFAULT_BRANDS)} brands")
+    done_key = None
+    while True:
+        now = datetime.now(UAE_TZ)
+        hhmm = now.strftime("%H:%M")
+        run_key = now.strftime("%Y-%m-%d ") + hhmm          # makes sure each time runs only once per day
+        if hhmm in AUTO_RUN_TIMES and run_key != done_key:
+            done_key = run_key
+            if not DEFAULT_BRANDS:
+                log("[SCHEDULER] DEFAULT_BRANDS is empty, skipping")
+            elif run_lock.acquire(blocking=False):
+                state["last_auto_run"] = run_key
+                log(f"[SCHEDULER] Auto run started at {run_key} UAE")
+                threading.Thread(target=_worker, args=(DEFAULT_BRANDS, False), daemon=True).start()
+            else:
+                log("[SCHEDULER] A run is already in progress, skipping this slot")
+        time.sleep(30)
+
+
+if AUTO_RUN_TIMES:
+    threading.Thread(target=scheduler, daemon=True).start()
+else:
+    log("[SCHEDULER] AUTO_RUN_TIMES not set -> automatic runs are OFF")
 
 
 if __name__ == "__main__":
