@@ -95,6 +95,7 @@ STOP = {
     "eau", "de", "ml", "oz", "spray", "the", "by", "new", "with",
     "edition", "limited", "collection", "special", "signature",
     "woody", "floral", "oriental", "fruity", "spicy", "aromatic", "aquatic", "chypre", "fougere", "gourmand", "citrus",
+    "oil", "attar", "concentrated", "cpo",   # perfume-oil wording (Ajmal, Al Haramain ...)
 }
 
 
