@@ -632,6 +632,43 @@ def trigger_from_url():
                     "check_status": "/samawa/status"}), 202
 
 
+@app.get("/ff/test")
+def ff_test():
+    """One-time check: can this server open frenchfragrance.com directly (no Browse AI)?"""
+    urls = [
+        "https://frenchfragrance.com/perfumes/christian-dior-eau-noire-eau-de-parfum-125ml/",   # product page
+        "https://frenchfragrance.com/billie-eilish-eilish-no-3-unisex-eau-de-parfum-100ml.html",  # .html product
+        "https://frenchfragrance.com/sitemap.xml",                                                # full URL list?
+        "https://frenchfragrance.com/robots.txt",
+    ]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    results = []
+    for u in urls:
+        try:
+            r = requests.get(u, headers=headers, timeout=30)
+            body = r.text
+            title = re.search(r"<title[^>]*>(.*?)</title>", body, re.S | re.I)
+            res = {
+                "url": u,
+                "status": r.status_code,
+                "size": len(body),
+                "title": title.group(1).strip()[:120] if title else None,
+                "blocked_page": any(w in body.lower() for w in ("cf-challenge", "just a moment", "captcha", "access denied")),
+                "has_gtin": "gtin" in body.lower(),
+                "has_price_aed": "aed" in body.lower(),
+                "server": r.headers.get("server"),
+            }
+        except Exception as ex:
+            res = {"url": u, "error": str(ex)}
+        log(f"[FF-TEST] {res}")
+        results.append(res)
+    return jsonify(results)
+
+
 @app.get("/samawa/status")
 def status():
     return jsonify({"running": run_lock.locked(), "last_summary": state["last_summary"]})
