@@ -407,7 +407,7 @@ def pick_by_size(entries, size):
     return entries[0]
 
 
-def match_one(fields, brand, brand_entries, by_barcode):
+def match_one(fields, brand, brand_entries, by_barcode, trust_barcode=False):
     product_name = as_text(fields.get(F_PRODUCT))
     fi_size = parse_size(fields.get(F_SIZE)) or parse_size(product_name)
     fi_type = detect_type(norm_text(fields.get(F_TYPE))) or detect_type(norm_text(product_name))
@@ -438,7 +438,7 @@ def match_one(fields, brand, brand_entries, by_barcode):
     if bc and bc in by_barcode:
         e = by_barcode[bc]
         s = score(e)
-        if s is not None and ((not fi_tokens) or (s >= 0.6 and s >= top - 0.001)):
+        if s is not None and (trust_barcode or (not fi_tokens) or (s >= 0.6 and s >= top - 0.001)):
             return e, method("barcode", e), s, None
         log(f"[BARCODE-REJECT] {product_name} -> barcode points to '{e['title']}' (score={s}), using name match")
 
@@ -577,6 +577,186 @@ def run_match(brands, rematch=False, fi_groups=None):
     return summary
 
 
+
+# ================================================================ FRENCH FRAGRANCE (via Browse AI -> Airtable)
+# Browse AI scrapes frenchfragrance.com (Cloudflare blocks servers) into the Airtable table below.
+FF_TABLE = os.environ.get("FF_TABLE", "FF Catalog")
+FF_URL_F = "Product URL"        # product page link
+FF_NAME_F = "Name"              # product title
+FF_GTIN_F = "GTIN"              # barcode from product page
+FF_PRICE_TAX_F = "Price Inc Tax"  # e.g. "AED915.60" (preferred)
+FF_PRICE_F = "Price"            # fallback, e.g. "AED872.00"
+FF_STOCK_F = "Stock"            # e.g. "In stock" / "Out of stock"
+FF_VOLUME_F = "Volume"          # e.g. "125 ML" (optional)
+
+# Competitor table fields for French Fragrance
+C_FF_URL = "FF link"
+C_FF_PRICE = "FF Price"
+C_FF_STOCK = "FF Stock?"
+C_FF_SUGGEST = "FF Suggestion"
+
+
+def parse_money(v):
+    m = re.search(r"(\d[\d,]*(?:\.\d+)?)", as_text(v))
+    return float(m.group(1).replace(",", "")) if m else None
+
+
+def ff_in_stock(v):
+    t = as_text(v).lower()
+    if not t:
+        return False
+    return not any(w in t for w in ("out of stock", "sold out", "not available", "unavailable"))
+
+
+def build_ff_index():
+    """Read FF Catalog from Airtable -> same entry format the matcher uses."""
+    recs = at_list(FF_TABLE, {})
+    entries, by_barcode, by_url = [], {}, {}
+    skipped = 0
+    for r in recs:
+        f = r.get("fields", {})
+        url = as_text(f.get(FF_URL_F)).strip()
+        name = as_text(f.get(FF_NAME_F)).strip()
+        if not url or not name:
+            skipped += 1
+            continue
+        full_n = norm_text(name)
+        price = parse_money(f.get(FF_PRICE_TAX_F)) or parse_money(f.get(FF_PRICE_F)) or 0.0
+        e = {
+            "handle": url.rstrip("/"),                 # key used for refresh
+            "url": url,
+            "title": name,
+            "vendor_key": "",
+            "title_key": key(name),
+            "title_norm": full_n,
+            "size": parse_size(f.get(FF_VOLUME_F)) or parse_size(name),
+            "type": detect_type(full_n),
+            "gender": detect_gender(full_n),
+            "tokens": tokens(norm_text(re.split(r"\s-\s|,", name)[0])),
+            "price": price,
+            "available": ff_in_stock(f.get(FF_STOCK_F)),
+        }
+        entries.append(e)
+        by_url[e["handle"]] = e
+        bc = norm_barcode(f.get(FF_GTIN_F))
+        if bc:
+            by_barcode[bc] = e
+    log(f"[FF] {len(entries)} products from '{FF_TABLE}' | {len(by_barcode)} with GTIN | {skipped} skipped (no URL/name)")
+    return entries, by_barcode, by_url
+
+
+def ff_fields(e):
+    return {C_FF_URL: e["url"], C_FF_PRICE: e["price"], C_FF_STOCK: e["available"]}
+
+
+def run_ff(rematch=False):
+    started = time.time()
+    summary = {"competitor": "French Fragrance", "rematch": rematch, "matched_barcode": 0, "matched_fuzzy": 0,
+               "existing_link_refreshed": 0, "link_gone": 0, "unmatched": 0, "created": 0, "updated": 0,
+               "unmatched_list": []}
+    state["last_summary"] = summary
+
+    entries, by_barcode, by_url = build_ff_index()
+    if not entries:
+        log("[FF] FF Catalog is empty -> nothing to do")
+        summary["error"] = f"'{FF_TABLE}' table is empty"
+        return summary
+
+    fi_groups = fetch_all_brand_products()
+    brands = sorted(fi_groups)
+
+    comp_rows = at_list(COMP_TABLE, {"fields[]": [C_LINK_FI, C_FF_URL]})
+    comp_by_fi = {}
+    for row in comp_rows:
+        for fid in row.get("fields", {}).get(C_LINK_FI, []):
+            comp_by_fi[fid] = row
+    log(f"[COMP] {len(comp_rows)} existing Competitor rows")
+
+    batches = [brands[i:i + BATCH_SIZE] for i in range(0, len(brands), BATCH_SIZE)]
+    for bi, batch in enumerate(batches, 1):
+        log(f"\n########## FF BATCH {bi}/{len(batches)}: {batch} ##########")
+        creates, updates = [], []
+        for brand in batch:
+            bnorm = norm_text(brand)
+            brand_entries = [e for e in entries if bnorm in e["title_norm"]]
+            recs = fi_groups[brand]
+            log(f"\n[FF-BRAND] ===== {brand}: {len(recs)} products | {len(brand_entries)} FF products =====")
+
+            for rec in recs:
+                fid, f = rec["id"], rec.get("fields", {})
+                pname = as_text(f.get(F_PRODUCT)) or as_text(f.get(F_PERFUME))
+                row = comp_by_fi.get(fid)
+                existing_url = None if rematch else (row or {}).get("fields", {}).get(C_FF_URL)
+
+                # A) already linked -> refresh price/stock from latest scrape
+                if existing_url:
+                    e = by_url.get(existing_url.rstrip("/"))
+                    if e:
+                        updates.append({"id": row["id"], "fields": ff_fields(e)})
+                        summary["existing_link_refreshed"] += 1
+                        log(f"[FF-REFRESH] {pname} -> AED {e['price']} | stock={e['available']}")
+                    else:
+                        updates.append({"id": row["id"], "fields": {C_FF_STOCK: False}})
+                        summary["link_gone"] += 1
+                        log(f"[FF-GONE] {pname} -> not in latest FF Catalog, stock unticked")
+                    continue
+
+                # B) match: GTIN first (trusted, size/gender must agree), then name
+                e, method, score, guess = match_one(f, brand, brand_entries, by_barcode, trust_barcode=True)
+                note = {}
+                if e:
+                    summary["matched_barcode" if method.startswith("barcode") else "matched_fuzzy"] += 1
+                    log(f"[FF-MATCH:{method} {score}] {pname} -> {e['title']} | AED {e['price']} | stock={e['available']}")
+                    if method.startswith("barcode") and score < 0.5:
+                        summary.setdefault("barcode_check_list", []).append(f"{pname} -> {e['title']}")
+                        log(f"[FF-CHECK] Barcode match but names differ: {pname} <-> {e['title']} (check barcode in French Inventories)")
+                    sf = ff_fields(e)
+                    if SUGGESTIONS:
+                        sf[C_FF_SUGGEST] = None
+                else:
+                    summary["unmatched"] += 1
+                    if len(summary["unmatched_list"]) < 300:
+                        summary["unmatched_list"].append(f"{pname} | {method} | {score}")
+                    log(f"[FF-NO MATCH] {pname} | {method} | score={score}")
+                    sf = {}
+                    if SUGGESTIONS:
+                        good = guess is not None and score >= 0.5
+                        note = {C_FF_SUGGEST: guess["url"] if good else None}
+
+                if row:
+                    if sf:
+                        updates.append({"id": row["id"], "fields": sf})
+                    elif rematch:
+                        updates.append({"id": row["id"], "fields": {C_FF_URL: None, C_FF_PRICE: None, C_FF_STOCK: False, **note}})
+                    elif note:
+                        updates.append({"id": row["id"], "fields": note})
+                else:
+                    creates.append({"fields": {C_NAME: pname, C_LINK_FI: [fid], **sf, **note}})
+
+        log(f"\n[FF-WRITE] Batch {bi}/{len(batches)}: creating {len(creates)} rows, updating {len(updates)} rows")
+        at_batch(COMP_TABLE, "POST", creates)
+        at_batch(COMP_TABLE, "PATCH", updates)
+        summary["created"] += len(creates)
+        summary["updated"] += len(updates)
+        summary["seconds"] = round(time.time() - started, 1)
+        log(f"[FF-BATCH DONE] {bi}/{len(batches)} | matched {summary['matched_barcode'] + summary['matched_fuzzy']} "
+            f"| unmatched {summary['unmatched']} | {summary['seconds']}s")
+
+    summary["seconds"] = round(time.time() - started, 1)
+    log(f"[FF-DONE] {summary}")
+    return summary
+
+
+def _ff_worker(rematch):
+    try:
+        state["last_summary"] = run_ff(rematch)
+    except Exception as ex:
+        log(f"[FF-ERROR] {ex}\n{traceback.format_exc()}")
+        state["last_summary"] = {"error": str(ex)}
+    finally:
+        run_lock.release()
+
+
 # ---------------------------------------------------------------- routes
 def _worker(brands, rematch=False):
     try:
@@ -629,6 +809,21 @@ def trigger_from_url():
     log(f"[RUN-URL] Started from browser for brands: {brands or 'from brands table'}")
     threading.Thread(target=_worker, args=(brands, rematch), daemon=True).start()
     return jsonify({"started": True, "brands": brands or "from brands table", "rematch": rematch,
+                    "check_status": "/samawa/status"}), 202
+
+
+@app.get("/ff/run")
+def ff_run():
+    # /ff/run?secret=XXX            -> match FF Catalog to French Inventories
+    # /ff/run?secret=XXX&rematch=1  -> re-match everything (clears FF links)
+    if RUN_SECRET and request.args.get("secret") != RUN_SECRET:
+        return jsonify({"error": "unauthorized"}), 401
+    rematch = request.args.get("rematch") == "1"
+    if not run_lock.acquire(blocking=False):
+        return jsonify({"error": "a run is already in progress"}), 409
+    log(f"[FF-RUN] Started (rematch={rematch})")
+    threading.Thread(target=_ff_worker, args=(rematch,), daemon=True).start()
+    return jsonify({"started": True, "competitor": "French Fragrance", "rematch": rematch,
                     "check_status": "/samawa/status"}), 202
 
 
