@@ -7,7 +7,9 @@ Flow:
   3. Match each product to Samawa: existing link -> barcode -> fuzzy (brand + name + size + type + gender)
   4. Create / update rows in the Competitor table with Samawa link, price and stock
 
-Trigger:  POST /samawa/run   header X-Run-Secret: <RUN_SECRET>   body {"brands": ["Afnan", "Armaf"]}
+Brands :  read from Airtable "brands" table (checkbox "Samawa Track" ticked)
+Trigger:  GET  /samawa/run?secret=XXX            (one-time run, manual)
+          GET  /samawa/run?secret=XXX&brands=Afnan (test one brand)
 Status :  GET  /samawa/status
 """
 
@@ -19,7 +21,6 @@ import threading
 import traceback
 import unicodedata
 from urllib.parse import urlparse
-from datetime import datetime, timezone, timedelta
 
 import requests
 from flask import Flask, request, jsonify
@@ -34,10 +35,10 @@ FI_TABLE = "tblL03CEHdYy1kUdQ"      # French Inventories
 COMP_TABLE = "tblN9zlKmfvOXZ9Ov"    # Competitor table
 SAMAWA_BASE = "https://samawa.ae"
 MATCH_THRESHOLD = float(os.environ.get("MATCH_THRESHOLD", "0.85"))
-DEFAULT_BRANDS = [b.strip() for b in os.environ.get("DEFAULT_BRANDS", "").split(",") if b.strip()]
-# Automatic runs, UAE time, comma separated "HH:MM" e.g. "06:00" or "06:00,18:00". Empty = off
-AUTO_RUN_TIMES = [t.strip() for t in os.environ.get("AUTO_RUN_TIMES", "").split(",") if t.strip()]
-UAE_TZ = timezone(timedelta(hours=4))  # UAE has no daylight saving
+# Brands come from the Airtable "brands" table: every record with the checkbox ticked is processed
+BRANDS_TABLE = os.environ.get("BRANDS_TABLE", "brands")
+BRANDS_NAME_FIELD = os.environ.get("BRANDS_NAME_FIELD", "Name")          # brand name field in brands table
+BRANDS_TRACK_FIELD = os.environ.get("BRANDS_TRACK_FIELD", "Samawa Track")  # checkbox: tick = compare with Samawa
 
 # French Inventories field names
 F_BRAND = "Brand"
@@ -374,6 +375,13 @@ def fetch_fi_for_brand(brand):
     return recs
 
 
+def fetch_tracked_brands():
+    recs = at_list(BRANDS_TABLE, {"filterByFormula": f"{{{BRANDS_TRACK_FIELD}}}", "fields[]": [BRANDS_NAME_FIELD]})
+    names = sorted({as_text(r.get("fields", {}).get(BRANDS_NAME_FIELD)).strip() for r in recs} - {""})
+    log(f"[BRANDS] {len(names)} brands ticked in '{BRANDS_TABLE}' ({BRANDS_TRACK_FIELD}): {names}")
+    return names
+
+
 # ---------------------------------------------------------------- matching
 def pick_by_size(entries, size):
     if size:
@@ -532,6 +540,11 @@ def run_match(brands, rematch=False):
 # ---------------------------------------------------------------- routes
 def _worker(brands, rematch=False):
     try:
+        brands = brands or fetch_tracked_brands()   # no brands in URL -> read from brands table
+        if not brands:
+            log(f"[RUN] No brands ticked in '{BRANDS_TABLE}' -> nothing to do")
+            state["last_summary"] = {"error": f"no brands ticked in {BRANDS_TABLE}.{BRANDS_TRACK_FIELD}"}
+            return
         state["last_summary"] = run_match(brands, rematch)
     except Exception as ex:
         log(f"[ERROR] {ex}\n{traceback.format_exc()}")
@@ -550,15 +563,13 @@ def trigger():
     if RUN_SECRET and request.headers.get("X-Run-Secret") != RUN_SECRET:
         return jsonify({"error": "unauthorized"}), 401
     body = request.get_json(silent=True) or {}
-    brands = body.get("brands") or DEFAULT_BRANDS
+    brands = body.get("brands") or []          # empty -> brands table
     rematch = bool(body.get("rematch"))
-    if not brands:
-        return jsonify({"error": "no brands given"}), 400
     if not run_lock.acquire(blocking=False):
         return jsonify({"error": "a run is already in progress"}), 409
-    log(f"[RUN] Started for brands: {brands}")
+    log(f"[RUN] Started for brands: {brands or 'from brands table'}")
     threading.Thread(target=_worker, args=(brands, rematch), daemon=True).start()
-    return jsonify({"started": True, "brands": brands, "rematch": rematch}), 202
+    return jsonify({"started": True, "brands": brands or "from brands table", "rematch": rematch}), 202
 
 
 @app.get("/samawa/run")
@@ -567,49 +578,20 @@ def trigger_from_url():
     if RUN_SECRET and request.args.get("secret") != RUN_SECRET:
         log("[RUN-URL] Unauthorized attempt")
         return jsonify({"error": "unauthorized"}), 401
-    brands = [b.strip() for b in request.args.get("brands", "").split(",") if b.strip()] or DEFAULT_BRANDS
+    brands = [b.strip() for b in request.args.get("brands", "").split(",") if b.strip()]  # empty -> brands table
     rematch = request.args.get("rematch") == "1"
-    if not brands:
-        return jsonify({"error": "no brands given"}), 400
     if not run_lock.acquire(blocking=False):
         log("[RUN-URL] Rejected: a run is already in progress")
         return jsonify({"error": "a run is already in progress"}), 409
-    log(f"[RUN-URL] Started from browser for brands: {brands}")
+    log(f"[RUN-URL] Started from browser for brands: {brands or 'from brands table'}")
     threading.Thread(target=_worker, args=(brands, rematch), daemon=True).start()
-    return jsonify({"started": True, "brands": brands, "rematch": rematch, "check_status": "/samawa/status"}), 202
+    return jsonify({"started": True, "brands": brands or "from brands table", "rematch": rematch,
+                    "check_status": "/samawa/status"}), 202
 
 
 @app.get("/samawa/status")
 def status():
-    return jsonify({"running": run_lock.locked(), "auto_run_times_uae": AUTO_RUN_TIMES,
-                    "last_auto_run": state.get("last_auto_run"), "last_summary": state["last_summary"]})
-
-
-# ---------------------------------------------------------------- automatic daily runs
-def scheduler():
-    log(f"[SCHEDULER] Started. Auto runs at {AUTO_RUN_TIMES} (UAE time) for {len(DEFAULT_BRANDS)} brands")
-    done_key = None
-    while True:
-        now = datetime.now(UAE_TZ)
-        hhmm = now.strftime("%H:%M")
-        run_key = now.strftime("%Y-%m-%d ") + hhmm          # makes sure each time runs only once per day
-        if hhmm in AUTO_RUN_TIMES and run_key != done_key:
-            done_key = run_key
-            if not DEFAULT_BRANDS:
-                log("[SCHEDULER] DEFAULT_BRANDS is empty, skipping")
-            elif run_lock.acquire(blocking=False):
-                state["last_auto_run"] = run_key
-                log(f"[SCHEDULER] Auto run started at {run_key} UAE")
-                threading.Thread(target=_worker, args=(DEFAULT_BRANDS, False), daemon=True).start()
-            else:
-                log("[SCHEDULER] A run is already in progress, skipping this slot")
-        time.sleep(30)
-
-
-if AUTO_RUN_TIMES:
-    threading.Thread(target=scheduler, daemon=True).start()
-else:
-    log("[SCHEDULER] AUTO_RUN_TIMES not set -> automatic runs are OFF")
+    return jsonify({"running": run_lock.locked(), "last_summary": state["last_summary"]})
 
 
 if __name__ == "__main__":
