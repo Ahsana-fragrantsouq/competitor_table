@@ -35,7 +35,7 @@ FF_HTML = """
  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
  .bar input,.bar select{padding:9px;font-size:15px;border:1px solid #ccc;border-radius:4px}
  .bar input[type=text]{width:320px}
- .btn{background:#000;color:#fff;border:0;padding:10px 18px;border-radius:4px;cursor:pointer;font-size:15px;text-decoration:none}
+  .btn{background:#f2d675;color:#1c1b19;border:0;padding:10px 18px;border-radius:4px;cursor:pointer;font-size:15px;text-decoration:none;font-weight:600}
  .wrap{overflow-x:auto}
  table{border-collapse:collapse;width:100%;font-size:15px}
  th,td{border:1px solid #ddd;padding:8px;text-align:left;vertical-align:middle}

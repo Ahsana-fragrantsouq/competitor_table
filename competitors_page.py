@@ -81,7 +81,7 @@ HTML = """
  .bar input,.bar select{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;
        padding:13px 14px;font-size:16px}
  .bar input{flex:1;min-width:0}
- .bar button{background:var(--goldbtn);color:#1c1b19;border:0;border-radius:12px;padding:0 18px;font-size:16px;font-weight:600}
+ .bar button{background:var(--goldbtn);color:#f2d675;border:0;border-radius:12px;padding:0 18px;font-size:16px;font-weight:600}
  .hint{color:var(--muted);font-size:14px;margin:6px 2px 16px}
  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-bottom:12px}
  .title{font-size:18px;font-weight:600;margin-bottom:6px;line-height:1.35}
