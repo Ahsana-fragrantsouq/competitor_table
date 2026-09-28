@@ -26,9 +26,14 @@ import requests
 from flask import Flask, request, jsonify
 # db
 from ff_catalog_page import ff_catalog_bp
+from samawa_catalog import samawa_catalog_bp     
+from competitors_page import competitors_bp
 
 app = Flask(__name__)
 app.register_blueprint(ff_catalog_bp)
+app.register_blueprint(samawa_catalog_bp) 
+app.register_blueprint(competitors_bp)   
+
 
 # ---------------------------------------------------------------- config
 AIRTABLE_TOKEN = os.environ["AIRTABLE_TOKEN"]
@@ -562,10 +567,9 @@ def run_match(brands, rematch=False, fi_groups=None):
                 else:
                     creates.append({"fields": {C_NAME: pname, C_LINK_FI: [fid], **sf, **note}})
 
-        # write this batch now -> results appear in Airtable batch by batch
-        log(f"\n[WRITE] Batch {bi}/{len(batches)}: creating {len(creates)} rows, updating {len(updates)} rows")
-        at_batch(COMP_TABLE, "POST", creates)
-        at_batch(COMP_TABLE, "PATCH", updates)
+        
+               # Airtable upload removed - results only in logs and /samawa/status
+        log(f"\n[NO-UPLOAD] Batch {bi}/{len(batches)}: {len(creates)} new + {len(updates)} updated rows NOT sent to Airtable")
         summary["created"] += len(creates)
         summary["updated"] += len(updates)
         summary["batches_done"] = bi
@@ -736,9 +740,9 @@ def run_ff(rematch=False):
                 else:
                     creates.append({"fields": {C_NAME: pname, C_LINK_FI: [fid], **sf, **note}})
 
-        log(f"\n[FF-WRITE] Batch {bi}/{len(batches)}: creating {len(creates)} rows, updating {len(updates)} rows")
-        at_batch(COMP_TABLE, "POST", creates)
-        at_batch(COMP_TABLE, "PATCH", updates)
+                # Airtable upload removed - results only in logs and /samawa/status
+        log(f"\n[FF-NO-UPLOAD] Batch {bi}/{len(batches)}: {len(creates)} new + {len(updates)} updated rows NOT sent to Airtable")
+
         summary["created"] += len(creates)
         summary["updated"] += len(updates)
         summary["seconds"] = round(time.time() - started, 1)
