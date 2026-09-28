@@ -24,8 +24,11 @@ from urllib.parse import urlparse
 
 import requests
 from flask import Flask, request, jsonify
+# db
+from ff_catalog_page import ff_catalog_bp
 
 app = Flask(__name__)
+app.register_blueprint(ff_catalog_bp)
 
 # ---------------------------------------------------------------- config
 AIRTABLE_TOKEN = os.environ["AIRTABLE_TOKEN"]
