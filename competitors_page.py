@@ -40,6 +40,11 @@ SOURCES = [
      "cols": {"name": "name", "brand": None, "gtin": "gtin", "url": "product_url",
               "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
               "updated": "updated_at"}},
+    # Branded Perfume = same products as French Fragrance, prices/stock read from brandedperfume.com
+    {"key": "bp", "label": "Branded Perfume", "table": "branded_perfume_catalog",
+     "cols": {"name": "name", "brand": None, "gtin": "gtin", "url": "bp_url",
+              "price": "COALESCE(bp_price_inc_tax, bp_price)", "stock": "bp_stock", "volume": "volume",
+              "updated": "checked_at"}},
     # {"key": "shop3", "label": "Shop 3", "table": "shop3_catalog", "cols": {...}},   # add more here
 ]
 SOURCE_BY_KEY = {s["key"]: s for s in SOURCES}
@@ -135,6 +140,7 @@ HTML = """
       <option value="" {% if not stock %}selected{% endif %}>All</option>
       <option value="In stock" {% if stock=='In stock' %}selected{% endif %}>In stock</option>
       <option value="Out of stock" {% if stock=='Out of stock' %}selected{% endif %}>Out of stock</option>
+      <option value="Not on site" {% if stock=='Not on site' %}selected{% endif %}>Not on site</option>
     </select>{% endif %}
     <button type="submit">Go</button>
   </form>
@@ -184,7 +190,7 @@ HTML = """
       {% if r.url %}<a class="link" href="{{ r.url }}" target="_blank">View product</a>{% else %}<span></span>{% endif %}
       <span class="gtin">{% if r.gtin %}GTIN {{ r.gtin }}{% endif %}</span>
     </div>
-    <div class="date">Updated {{ r.updated.strftime('%d %b, %H:%M') if r.updated else '' }}</div>
+    <div class="date">{% if r.updated %}Updated {{ r.updated.strftime('%d %b, %H:%M') }}{% else %}Not checked yet{% endif %}</div>
   </div>
   {% endif %}
   {% else %}

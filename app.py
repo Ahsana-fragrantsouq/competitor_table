@@ -9,7 +9,8 @@ Files in this project
   app.py              -> this file: matching logic + all "run" URLs
   samawa_catalog.py   -> downloads the whole Samawa website (products.json) into Postgres table samawa_catalog
   ff_catalog_page.py  -> simple table page for French Fragrance products (Postgres french_fragrance_catalog)
-  competitors_page.py -> the dark tabbed page /competitors (Competitor table | Samawa | French Fragrance)
+  competitors_page.py -> the dark tabbed page /competitors (Competitor table | Samawa | French Fragrance | Branded Perfume)
+  branded_perfume.py  -> copies French Fragrance products and reads the same pages on brandedperfume.com
 
 Normal order to run things (open these URLs in the browser)
   1. /samawa-catalog/run?secret=XXX        download Samawa website into Postgres (samawa_catalog)
@@ -45,11 +46,13 @@ from flask import Flask, request, jsonify
 from ff_catalog_page import ff_catalog_bp          # /ff-catalog
 from samawa_catalog import samawa_catalog_bp       # /samawa-catalog, /samawa-catalog/run, /samawa-catalog/status
 from competitors_page import competitors_bp        # /competitors
+from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 
 app = Flask(__name__)
 app.register_blueprint(ff_catalog_bp)
 app.register_blueprint(samawa_catalog_bp)
 app.register_blueprint(competitors_bp)
+app.register_blueprint(branded_perfume_bp)
 
 
 # ---------------------------------------------------------------- config
