@@ -1,16 +1,31 @@
 """
-Samawa Competitor Matcher - Render service
-------------------------------------------
-Flow:
-  1. Download the full Samawa catalog from https://samawa.ae/products.json (Shopify public endpoint)
-  2. Read French Inventories records for the requested brands (Airtable)
-  3. Match each product to Samawa: existing link -> barcode -> fuzzy (brand + name + size + type + gender)
-  4. Create / update rows in the Competitor table with Samawa link, price and stock
+Competitor Table service (Render: https://competitor-table.onrender.com)
+=======================================================================
+What this app does
+  Compares Fragrant Souq products (Airtable "French Inventories") with competitor websites
+  (Samawa now, French Fragrance / V Perfumes later) and saves the result in Postgres.
 
-Brands :  ALL brands from the Airtable "brands" table (optional checkbox filter via BRANDS_TRACK_FIELD)
-Trigger:  GET  /samawa/run?secret=XXX            (one-time run, manual)
-          GET  /samawa/run?secret=XXX&brands=Afnan (test one brand)
-Status :  GET  /samawa/status
+Files in this project
+  app.py              -> this file: matching logic + all "run" URLs
+  samawa_catalog.py   -> downloads the whole Samawa website (products.json) into Postgres table samawa_catalog
+  ff_catalog_page.py  -> simple table page for French Fragrance products (Postgres french_fragrance_catalog)
+  competitors_page.py -> the dark tabbed page /competitors (Competitor table | Samawa | French Fragrance)
+
+Normal order to run things (open these URLs in the browser)
+  1. /samawa-catalog/run?secret=XXX        download Samawa website into Postgres (samawa_catalog)
+  2. /competitor/load-fi?secret=XXX        copy ALL French Inventories products into Postgres (competitor_table)
+  3. /competitor/match-samawa?secret=XXX   find each product on Samawa -> link, price, stock, suggestion
+  Progress: step 1 -> /samawa-catalog/status | steps 2, 3 -> /samawa/status | Result -> /competitors
+
+Old URL still here (reads Airtable, matches, but saves NOTHING - only writes logs)
+  /samawa/run?secret=XXX
+
+Environment variables (Render -> Environment)
+  AIRTABLE_TOKEN     Airtable token (only READS Airtable now)
+  FF_DATABASE_URL    Postgres URL ending in /french_fragrance_db
+  RUN_SECRET         password for all /run URLs (?secret=...)
+  BRANDS_NAME_FIELD  brand name field in the Airtable brands table ("Brand Name")
+  MATCH_THRESHOLD    minimum name score to count as a match (default 0.85)
 """
 
 import os
@@ -24,18 +39,20 @@ from urllib.parse import urlparse
 
 import requests
 from flask import Flask, request, jsonify
-# db
-from ff_catalog_page import ff_catalog_bp
-from samawa_catalog import samawa_catalog_bp     
-from competitors_page import competitors_bp
+
+# Pages / jobs that live in their own files ("blueprints") and are plugged into this app
+from ff_catalog_page import ff_catalog_bp          # /ff-catalog
+from samawa_catalog import samawa_catalog_bp       # /samawa-catalog, /samawa-catalog/run, /samawa-catalog/status
+from competitors_page import competitors_bp        # /competitors
 
 app = Flask(__name__)
 app.register_blueprint(ff_catalog_bp)
-app.register_blueprint(samawa_catalog_bp) 
-app.register_blueprint(competitors_bp)   
+app.register_blueprint(samawa_catalog_bp)
+app.register_blueprint(competitors_bp)
 
 
 # ---------------------------------------------------------------- config
+# Settings. Values in os.environ come from Render -> Environment; the rest are fixed IDs / names.
 AIRTABLE_TOKEN = os.environ["AIRTABLE_TOKEN"]
 RUN_SECRET = os.environ.get("RUN_SECRET", "")
 BASE_ID = "app5gOqDt9aZrW5bV"
@@ -66,10 +83,13 @@ C_STOCK = "Samawa Stock?"
 C_SUGGEST = "Samawa Suggestion"     # URL field: best guess for unmatched rows (review by hand)
 SUGGESTIONS = os.environ.get("SUGGESTIONS", "") == "1"   # turn on only after creating the field above
 
+# Airtable API address + login header, and a normal browser "User-Agent" so Samawa answers like to a browser
 AT_URL = f"https://api.airtable.com/v0/{BASE_ID}"
 AT_HEADERS = {"Authorization": f"Bearer {AIRTABLE_TOKEN}", "Content-Type": "application/json"}
 SAMAWA_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
 
+# run_lock: only ONE long job (samawa run / load-fi / match-samawa) can run at a time
+# state:    progress of the current / last job, shown at /samawa/status
 run_lock = threading.Lock()
 state = {"last_summary": None, "catalog_incomplete": False}
 
@@ -80,6 +100,10 @@ def log(*args):
 
 
 # ---------------------------------------------------------------- text helpers
+# Product names are written differently on every site ("Eau de Parfum" vs "EDP", "Pour Homme" vs "Men").
+# These helpers turn names into the same simple form so they can be compared.
+
+# Long wording -> short code (applied after lower-casing)
 PHRASES = [
     (" eau de toilette ", " edt "),
     (" eau de parfum ", " edp "),
@@ -97,6 +121,8 @@ PHRASES = [
     (" aoud ", " oud "),
 ]
 
+# Words ignored when comparing names: they appear in almost every product, so they say nothing
+# about WHICH perfume it is (type, gender and size are checked separately)
 STOP = {
     "perfume", "perfumes", "fragrance", "fragrances", "for", "and", "men", "women", "man", "woman",
     "unisex", "him", "her", "homme", "femme", "pour", "edt", "edp", "edc", "extrait", "parfum",
@@ -108,6 +134,7 @@ STOP = {
 
 
 def as_text(v):
+    """Any Airtable value (text / number / list) -> plain text."""
     # Airtable lookups can come back as lists
     if v is None:
         return ""
@@ -117,6 +144,8 @@ def as_text(v):
 
 
 def norm_text(s):
+    """Clean a name for comparing: lowercase, no accents/symbols, no sizes, EDP/EDT codes. Example:
+    'Dior Sauvage Eau de Parfum 100ml' -> ' dior sauvage edp '"""
     s = re.sub(r"[\u2018\u2019\u201a\u201b`\u00b4]", " ", as_text(s))  # curly apostrophes -> space (L’Interdit = L'Interdit)
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()  # remove accents
     s = s.lower().replace("&", " and ")
@@ -130,11 +159,13 @@ def norm_text(s):
 
 
 def key(s):
+    """Letters + digits only, lowercase: 'Christian Dior' -> 'christiandior'. Used to compare brand names."""
     s = unicodedata.normalize("NFKD", as_text(s)).encode("ascii", "ignore").decode()
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
 def tokens(normed):
+    """Cleaned name -> set of important words (STOP words and sizes removed): {'dior', 'sauvage'}."""
     out = set()
     for t in normed.split():
         if t in STOP or re.fullmatch(r"\d+(ml|oz)", t):
@@ -144,6 +175,7 @@ def tokens(normed):
 
 
 def detect_type(normed):
+    """Find the concentration in a cleaned name: extrait / edp / edt / edc / parfum, or None."""
     for code in ("extrait", "edp", "edt", "edc"):
         if f" {code} " in normed:
             return code
@@ -155,6 +187,7 @@ def detect_type(normed):
 
 
 def detect_gender(normed):
+    """Find the gender in a cleaned name: men / women / unisex, or None if not mentioned."""
     if " unisex " in normed:
         return "unisex"
     men = any(w in normed for w in (" men ", " man ", " homme ", " him "))
@@ -169,16 +202,19 @@ def detect_gender(normed):
 
 
 def parse_size(text):
+    """'100 ml' / 'Sauvage 100ml' -> 100.0 (None if no ml size in the text)."""
     m = re.search(r"(\d+(?:\.\d+)?)\s*ml\b", as_text(text).lower())
     return float(m.group(1)) if m else None
 
 
 def norm_barcode(v):
+    """Keep digits only, drop leading zeros. Less than 8 digits is not a real barcode -> None."""
     digits = re.sub(r"\D", "", as_text(v)).lstrip("0")
     return digits if len(digits) >= 8 else None
 
 
 def token_hit(t, pool):
+    """Is word t in the other name? Allows small spelling differences ('musc' ~ 'musk', 'magestic' ~ 'majestic')."""
     if t in pool:
         return True
     for p in pool:
@@ -191,6 +227,10 @@ def token_hit(t, pool):
 
 
 def name_score(fi_tokens, sm_tokens):
+    """How similar two names are, 0.0 - 1.0.
+    coverage  = how many of OUR words are in their name (60%)
+    precision = how many of THEIR words are in our name (40%)
+    1.0 = same words. A match needs MATCH_THRESHOLD (0.85)."""
     if not fi_tokens or not sm_tokens:
         return 0.0
     coverage = sum(token_hit(t, sm_tokens) for t in fi_tokens) / len(fi_tokens)
@@ -198,7 +238,8 @@ def name_score(fi_tokens, sm_tokens):
     return round(0.6 * coverage + 0.4 * precision, 3)
 
 
-# ---------------------------------------------------------------- Samawa
+# ---------------------------------------------------------------- Samawa (used by the OLD /samawa/run only)
+# The new flow reads Samawa from Postgres (samawa_catalog.py fills it), not from these functions.
 MAX_PAGES = 100  # Shopify storefront hard limit: page 101+ returns 400 (max 25,000 items per list)
 
 
@@ -239,6 +280,7 @@ def samawa_get(path, page, label):
 
 
 def fetch_paged(path, label, list_key, max_pages=MAX_PAGES):
+    """Download all pages of a Samawa list (products or collections), 250 per page. Used by the OLD /samawa/run."""
     items, page = [], 1
     while page <= max_pages:
         r = samawa_get(path, page, label)
@@ -269,6 +311,7 @@ BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "10"))   # brands per batch
 
 
 def collection_matches(c, bkeys):
+    """Is this Samawa collection a brand page for one of these brands? (used by the OLD /samawa/run)"""
     ckey, hkey = key(c.get("title")), key(c.get("handle"))
     # exact name, or brand inside collection name (brand >= 5 letters), or "Dior" inside "Christian Dior"
     return any(bk and (bk in (ckey, hkey) or (len(bk) >= 5 and (bk in ckey or bk in hkey))
@@ -325,11 +368,15 @@ def build_index(catalog):
 
 
 def samawa_fields(e):
+    """Samawa entry -> Airtable Competitor fields (OLD /samawa/run only)."""
     return {C_URL: f"{SAMAWA_BASE}/products/{e['handle']}", C_PRICE: e["price"], C_STOCK: e["available"]}
 
 
 # ---------------------------------------------------------------- Airtable
+# Airtable is only READ now (French Inventories + brands). Nothing is written back.
 def at_list(table, params):
+    """READ all records of an Airtable table (100 per page, follows 'offset' until the end).
+    Waits 30s and retries when Airtable says too many requests (429)."""
     records, offset = [], None
     while True:
         p = dict(params)
@@ -353,6 +400,7 @@ def at_list(table, params):
 
 
 def at_batch(table, method, records):
+    """WRITE to Airtable, 10 records per request. NOT USED anymore (Airtable is read-only now), kept for reference."""
     for i in range(0, len(records), 10):
         chunk = records[i:i + 10]
         while True:
@@ -371,6 +419,7 @@ def at_batch(table, method, records):
 
 
 def fetch_fi_for_brand(brand):
+    """French Inventories products of ONE brand (OLD /samawa/run with ?brands=...)."""
     b = brand.strip().lower().replace('"', '\\"')
     formula = f'TRIM(LOWER(ARRAYJOIN({{{F_BRAND}}})))="{b}"'
     recs = at_list(FI_TABLE, {
@@ -407,7 +456,9 @@ def fetch_all_brand_products():
 
 
 # ---------------------------------------------------------------- matching
+# match_one() is shared: the old /samawa/run and the new /competitor/match-samawa both use it.
 def pick_by_size(entries, size):
+    """From several variants of one Samawa product, pick the one with the same ml size (else the first)."""
     if size:
         for e in entries:
             if e["size"] and abs(e["size"] - size) <= 0.5:
@@ -416,6 +467,25 @@ def pick_by_size(entries, size):
 
 
 def match_one(fields, brand, brand_entries, by_barcode, trust_barcode=False):
+    """THE MATCHING RULES - find ONE French Inventories product on the competitor site.
+
+    fields        : our product (Product Name, Perfume Name, Size, Type, Category, Barcode)
+    brand         : our brand name
+    brand_entries : competitor products of the same brand (from build_index / sm_entries_from_db)
+    by_barcode    : competitor products by barcode
+
+    Steps:
+      1. Remove impossible candidates: different ml size, or men vs women.
+      2. Barcode: same barcode AND name looks right -> match.
+      3. Name: best name_score >= MATCH_THRESHOLD (0.85) -> match.
+         EDP vs EDT costs -0.12, so it only matches if the name is almost perfect.
+         Two different products with the same score -> "ambiguous" (no match, sent as suggestion).
+
+    Returns (match, method, score, guess)
+      match  = competitor product or None
+      method = "barcode" / "fuzzy" / reason for no match (e.g. "low score (...)")
+      guess  = best candidate when there is no match (becomes the SUGGESTION link)
+    """
     product_name = as_text(fields.get(F_PRODUCT))
     fi_size = parse_size(fields.get(F_SIZE)) or parse_size(product_name)
     fi_type = detect_type(norm_text(fields.get(F_TYPE))) or detect_type(norm_text(product_name))
@@ -470,6 +540,8 @@ def match_one(fields, brand, brand_entries, by_barcode, trust_barcode=False):
 
 
 def run_match(brands, rematch=False, fi_groups=None):
+    """OLD /samawa/run: downloads Samawa + reads Airtable, matches, but only LOGS the result (saves nothing).
+    Replaced by /competitor/load-fi + /competitor/match-samawa. Kept for reference."""
     started = time.time()
     batches = [brands[i:i + BATCH_SIZE] for i in range(0, len(brands), BATCH_SIZE)]
     log(f"[RUN] rematch={rematch} | {len(brands)} brands in {len(batches)} batches of {BATCH_SIZE}")
@@ -567,8 +639,7 @@ def run_match(brands, rematch=False, fi_groups=None):
                 else:
                     creates.append({"fields": {C_NAME: pname, C_LINK_FI: [fid], **sf, **note}})
 
-        
-               # Airtable upload removed - results only in logs and /samawa/status
+        # Airtable upload removed - results only in logs and /samawa/status
         log(f"\n[NO-UPLOAD] Batch {bi}/{len(batches)}: {len(creates)} new + {len(updates)} updated rows NOT sent to Airtable")
         summary["created"] += len(creates)
         summary["updated"] += len(updates)
@@ -585,180 +656,289 @@ def run_match(brands, rematch=False, fi_groups=None):
 
 
 
-# ================================================================ FRENCH FRAGRANCE (PC scraper -> Airtable)
-# ff_scraper.py (runs on your PC with real Chrome, Cloudflare blocks servers) fills the Airtable table below.
-FF_TABLE = os.environ.get("FF_TABLE", "FF Catalog")
-FF_URL_F = "Product URL"        # product page link
-FF_NAME_F = "Name"              # product title
-FF_GTIN_F = "GTIN"              # barcode from product page
-FF_PRICE_TAX_F = "Price Inc Tax"  # e.g. "AED915.60" (preferred)
-FF_PRICE_F = "Price"            # fallback, e.g. "AED872.00"
-FF_STOCK_F = "Stock"            # e.g. "In stock" / "Out of stock"
-FF_VOLUME_F = "Volume"          # e.g. "125 ML" (optional)
+# ================================================================ COMPETITOR TABLE (Postgres)  <- NEW FLOW
+# Step 1: /competitor/load-fi       -> all French Inventories products -> competitor_table
+# Step 2: /competitor/match-samawa  -> match every product to samawa_catalog -> link, price, stock, suggestion
+#
+# competitor_table = ONE row per French Inventories product:
+#   fi_record_id           Airtable record id of the product (never changes -> used to update the right row)
+#   french_inventory_code  Item ID, e.g. "ADP1018/ Acqua Di Parma Ambra 180 ml EDP Perfume"
+#   sku, product_name, uae_price
+#   brand, barcode, perfume_name   (not shown on the page, only used for matching)
+#   samawa_link / samawa_price / samawa_stock   filled when a match is found
+#   samawa_suggestion      best guess link when NO match (team checks it by hand)
+#   samawa_method / samawa_score   why it matched or not (e.g. "fuzzy" 0.92, "low score" 0.61)
+import psycopg2
+import psycopg2.extras
+from psycopg2.extras import execute_values
 
-# Competitor table fields for French Fragrance
-C_FF_URL = "Frenchfragrance link"
-C_FF_PRICE = "Frenchfragrance price"
-C_FF_STOCK = "Frenchfragrance Stock?"
-C_FF_SUGGEST = "Frenchfragrance Suggestion"
+F_ITEM_ID = "Item ID"          # French Inventories fields (in addition to F_BRAND, F_BARCODE ... above)
+F_SKU = "SKU"
+F_UAE_PRICE = "UAE Price"
+
+# Creates the table the first time; "ADD COLUMN IF NOT EXISTS" adds new columns later without losing data
+CT_CREATE = """
+CREATE TABLE IF NOT EXISTS competitor_table (
+    id SERIAL PRIMARY KEY,
+    fi_record_id TEXT UNIQUE NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS french_inventory_code TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS sku TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS product_name TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS uae_price NUMERIC(10,2);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS brand TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS barcode TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS perfume_name TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_link TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_price NUMERIC(10,2);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_stock BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_suggestion TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_method TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_score NUMERIC(5,3);
+CREATE INDEX IF NOT EXISTS idx_ct_sku ON competitor_table (sku);
+CREATE INDEX IF NOT EXISTS idx_ct_brand ON competitor_table (brand);
+"""
+
+# Step 1 save: new product -> insert, existing product (same fi_record_id) -> update its details.
+# Samawa columns are NOT touched here, so re-running step 1 keeps the match results.
+CT_UPSERT_FI = """
+INSERT INTO competitor_table
+    (fi_record_id, french_inventory_code, sku, product_name, uae_price,
+     brand, barcode, perfume_name)
+VALUES %s
+ON CONFLICT (fi_record_id) DO UPDATE SET
+    french_inventory_code = EXCLUDED.french_inventory_code,
+    sku          = EXCLUDED.sku,
+    product_name = EXCLUDED.product_name,
+    uae_price    = EXCLUDED.uae_price,
+    brand        = EXCLUDED.brand,
+    barcode      = EXCLUDED.barcode,
+    perfume_name = EXCLUDED.perfume_name,
+    updated_at   = NOW();
+"""
+
+# Step 2 save: updates only the Samawa columns of many rows in one query
+CT_UPDATE_SAMAWA = """
+UPDATE competitor_table AS c SET
+    samawa_link       = v.link,
+    samawa_price      = v.price::numeric,
+    samawa_stock      = v.stock::boolean,
+    samawa_suggestion = v.suggestion,
+    samawa_method     = v.method,
+    samawa_score      = v.score::numeric,
+    updated_at        = NOW()
+FROM (VALUES %s) AS v(fi_record_id, link, price, stock, suggestion, method, score)
+WHERE c.fi_record_id = v.fi_record_id;
+"""
 
 
-def parse_money(v):
-    m = re.search(r"(\d[\d,]*(?:\.\d+)?)", as_text(v))
-    return float(m.group(1).replace(",", "")) if m else None
+def pg_conn():
+    """Open a connection to the Postgres database french_fragrance_db."""
+    url = os.environ.get("FF_DATABASE_URL")
+    if not url:
+        raise RuntimeError("FF_DATABASE_URL is not set")
+    log("[PG] Opening connection to french_fragrance_db")
+    return psycopg2.connect(url, sslmode="require")
 
 
-def ff_in_stock(v):
-    t = as_text(v).lower()
-    if not t:
-        return False
-    return not any(w in t for w in ("out of stock", "sold out", "not available", "unavailable"))
+def first_text(v):
+    """Airtable lookups / multi-selects come back as lists -> first value as text."""
+    if isinstance(v, list):
+        v = v[0] if v else None
+    if v is None:
+        return None
+    v = str(v).strip()
+    return v or None
 
 
-def build_ff_index():
-    """Read FF Catalog from Airtable -> same entry format the matcher uses."""
-    recs = at_list(FF_TABLE, {})
-    entries, by_barcode, by_url = [], {}, {}
-    skipped = 0
-    for r in recs:
-        f = r.get("fields", {})
-        url = as_text(f.get(FF_URL_F)).strip()
-        name = as_text(f.get(FF_NAME_F)).strip()
-        if not url or not name:
-            skipped += 1
-            continue
-        full_n = norm_text(name)
-        price = parse_money(f.get(FF_PRICE_TAX_F)) or parse_money(f.get(FF_PRICE_F)) or 0.0
-        e = {
-            "handle": url.rstrip("/"),                 # key used for refresh
-            "url": url,
-            "title": name,
-            "vendor_key": "",
-            "title_key": key(name),
-            "title_norm": full_n,
-            "size": parse_size(f.get(FF_VOLUME_F)) or parse_size(name),
-            "type": detect_type(full_n),
-            "gender": detect_gender(full_n),
-            "tokens": tokens(norm_text(re.split(r"\s-\s|,", name)[0])),
-            "price": price,
-            "available": ff_in_stock(f.get(FF_STOCK_F)),
-        }
-        entries.append(e)
-        by_url[e["handle"]] = e
-        bc = norm_barcode(f.get(FF_GTIN_F))
-        if bc:
-            by_barcode[bc] = e
-    log(f"[FF] {len(entries)} products from '{FF_TABLE}' | {len(by_barcode)} with GTIN | {skipped} skipped (no URL/name)")
-    return entries, by_barcode, by_url
+def first_number(v):
+    """Airtable number / currency / lookup -> number with 2 decimals (None if empty)."""
+    if isinstance(v, list):
+        v = v[0] if v else None
+    try:
+        return round(float(v), 2) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
 
 
-def ff_fields(e):
-    return {C_FF_URL: e["url"], C_FF_PRICE: e["price"], C_FF_STOCK: e["available"]}
+# ---------------------------------------------------------------- step 1: French Inventories -> Postgres
+def ct_load_fi():
+    """STEP 1 - copy ALL French Inventories products from Airtable into competitor_table.
 
-
-def run_ff(rematch=False):
+    1. Read the brands table (Brand in French Inventories is a link, so we need id -> brand name).
+    2. Read every French Inventories product (Item ID, SKU, Product Name, UAE Price, Brand, Barcode, Perfume Name).
+    3. Save them in Postgres, 500 at a time (insert new / update existing).
+    """
     started = time.time()
-    summary = {"competitor": "French Fragrance", "rematch": rematch, "matched_barcode": 0, "matched_fuzzy": 0,
-               "existing_link_refreshed": 0, "link_gone": 0, "unmatched": 0, "created": 0, "updated": 0,
-               "unmatched_list": []}
+    summary = {"step": "load-fi", "products": 0, "without_brand": 0}
     state["last_summary"] = summary
 
-    entries, by_barcode, by_url = build_ff_index()
-    if not entries:
-        log("[FF] FF Catalog is empty -> nothing to do")
-        summary["error"] = f"'{FF_TABLE}' table is empty"
-        return summary
+    # brand record id -> brand name (Brand in French Inventories is a linked field)
+    brand_names = {}
+    for r in at_list(BRANDS_TABLE, {"fields[]": [BRANDS_NAME_FIELD]}):
+        name = as_text(r.get("fields", {}).get(BRANDS_NAME_FIELD)).strip()
+        if name:
+            brand_names[r["id"]] = name
+    log(f"[CT-LOAD] {len(brand_names)} brands read from '{BRANDS_TABLE}'")
 
-    fi_groups = fetch_all_brand_products()
-    brands = sorted(fi_groups)
+    log("[CT-LOAD] Reading all French Inventories products from Airtable ...")
+    recs = at_list(FI_TABLE, {"fields[]": [F_ITEM_ID, F_SKU, F_PRODUCT, F_UAE_PRICE, F_BRAND, F_BARCODE,
+                                           F_PERFUME]})
+    log(f"[CT-LOAD] {len(recs)} French Inventories records downloaded")
 
-    comp_rows = at_list(COMP_TABLE, {"fields[]": [C_LINK_FI, C_FF_URL]})
-    comp_by_fi = {}
-    for row in comp_rows:
-        for fid in row.get("fields", {}).get(C_LINK_FI, []):
-            comp_by_fi[fid] = row
-    log(f"[COMP] {len(comp_rows)} existing Competitor rows")
+    rows = []
+    for rec in recs:
+        f = rec.get("fields", {})
+        brand = next((brand_names[b] for b in (f.get(F_BRAND) or []) if b in brand_names), None)
+        if not brand:
+            summary["without_brand"] += 1
+        rows.append((
+            rec["id"], first_text(f.get(F_ITEM_ID)), first_text(f.get(F_SKU)), first_text(f.get(F_PRODUCT)),
+            first_number(f.get(F_UAE_PRICE)), brand, first_text(f.get(F_BARCODE)), first_text(f.get(F_PERFUME)),
+        ))
 
-    batches = [brands[i:i + BATCH_SIZE] for i in range(0, len(brands), BATCH_SIZE)]
-    for bi, batch in enumerate(batches, 1):
-        log(f"\n########## FF BATCH {bi}/{len(batches)}: {batch} ##########")
-        creates, updates = [], []
-        for brand in batch:
-            bnorm = norm_text(brand)
-            brand_entries = [e for e in entries if bnorm in e["title_norm"]]
-            recs = fi_groups[brand]
-            log(f"\n[FF-BRAND] ===== {brand}: {len(recs)} products | {len(brand_entries)} FF products =====")
-
-            for rec in recs:
-                fid, f = rec["id"], rec.get("fields", {})
-                pname = as_text(f.get(F_PRODUCT)) or as_text(f.get(F_PERFUME))
-                row = comp_by_fi.get(fid)
-                existing_url = None if rematch else (row or {}).get("fields", {}).get(C_FF_URL)
-
-                # A) already linked -> refresh price/stock from latest scrape
-                if existing_url:
-                    e = by_url.get(existing_url.rstrip("/"))
-                    if e:
-                        updates.append({"id": row["id"], "fields": ff_fields(e)})
-                        summary["existing_link_refreshed"] += 1
-                        log(f"[FF-REFRESH] {pname} -> AED {e['price']} | stock={e['available']}")
-                    else:
-                        updates.append({"id": row["id"], "fields": {C_FF_STOCK: False}})
-                        summary["link_gone"] += 1
-                        log(f"[FF-GONE] {pname} -> not in latest FF Catalog, stock unticked")
-                    continue
-
-                # B) match: GTIN first (trusted, size/gender must agree), then name
-                e, method, score, guess = match_one(f, brand, brand_entries, by_barcode, trust_barcode=True)
-                note = {}
-                if e:
-                    summary["matched_barcode" if method.startswith("barcode") else "matched_fuzzy"] += 1
-                    log(f"[FF-MATCH:{method} {score}] {pname} -> {e['title']} | AED {e['price']} | stock={e['available']}")
-                    if method.startswith("barcode") and score < 0.5:
-                        summary.setdefault("barcode_check_list", []).append(f"{pname} -> {e['title']}")
-                        log(f"[FF-CHECK] Barcode match but names differ: {pname} <-> {e['title']} (check barcode in French Inventories)")
-                    sf = ff_fields(e)
-                    if SUGGESTIONS:
-                        sf[C_FF_SUGGEST] = None
-                else:
-                    summary["unmatched"] += 1
-                    if len(summary["unmatched_list"]) < 300:
-                        summary["unmatched_list"].append(f"{pname} | {method} | {score}")
-                    log(f"[FF-NO MATCH] {pname} | {method} | score={score}")
-                    sf = {}
-                    if SUGGESTIONS:
-                        good = guess is not None and score >= 0.5
-                        note = {C_FF_SUGGEST: guess["url"] if good else None}
-
-                if row:
-                    if sf:
-                        updates.append({"id": row["id"], "fields": sf})
-                    elif rematch:
-                        updates.append({"id": row["id"], "fields": {C_FF_URL: None, C_FF_PRICE: None, C_FF_STOCK: False, **note}})
-                    elif note:
-                        updates.append({"id": row["id"], "fields": note})
-                else:
-                    creates.append({"fields": {C_NAME: pname, C_LINK_FI: [fid], **sf, **note}})
-
-                # Airtable upload removed - results only in logs and /samawa/status
-        log(f"\n[FF-NO-UPLOAD] Batch {bi}/{len(batches)}: {len(creates)} new + {len(updates)} updated rows NOT sent to Airtable")
-
-        summary["created"] += len(creates)
-        summary["updated"] += len(updates)
-        summary["seconds"] = round(time.time() - started, 1)
-        log(f"[FF-BATCH DONE] {bi}/{len(batches)} | matched {summary['matched_barcode'] + summary['matched_fuzzy']} "
-            f"| unmatched {summary['unmatched']} | {summary['seconds']}s")
+    conn = pg_conn()
+    cur = conn.cursor()
+    try:
+        log("[CT-LOAD] Creating / updating competitor_table columns")
+        cur.execute(CT_CREATE)
+        conn.commit()
+        for i in range(0, len(rows), 500):
+            execute_values(cur, CT_UPSERT_FI, rows[i:i + 500])
+            conn.commit()
+            summary["products"] = min(i + 500, len(rows))
+            log(f"[CT-LOAD] Saved {summary['products']}/{len(rows)} products")
+    finally:
+        cur.close()
+        conn.close()
 
     summary["seconds"] = round(time.time() - started, 1)
-    log(f"[FF-DONE] {summary}")
+    log(f"[CT-LOAD DONE] {summary}")
     return summary
 
 
-def _ff_worker(rematch):
+# ---------------------------------------------------------------- step 2: match to samawa_catalog
+def sm_entries_from_db(cur):
+    """samawa_catalog rows -> same entry format build_index() makes, so match_one() works unchanged."""
+    cur.execute("SELECT product_url, gtin, brand, name, price, stock, volume FROM samawa_catalog "
+                "WHERE stock <> 'Not on site'")
+    entries, by_barcode = [], {}
+    for url, gtin, brand, name, price, stock, volume in cur.fetchall():
+        name = name or ""
+        full_n = norm_text(name)
+        e = {
+            "handle": urlparse(url or "").path.rstrip("/").split("/products/")[-1],
+            "url": url,
+            "title": name,
+            "vendor_key": key(brand),
+            "title_key": key(name),
+            "title_norm": full_n,
+            "size": parse_size(volume) or parse_size(name),
+            "type": detect_type(full_n),
+            "gender": detect_gender(full_n),
+            "tokens": tokens(norm_text(re.split(r"\s-\s|,", name)[0])),   # drop " - 100ml" variant part
+            "price": float(price or 0),
+            "available": stock == "In stock",
+        }
+        entries.append(e)
+        bc = norm_barcode(gtin)
+        if bc:
+            by_barcode[bc] = e
+    log(f"[CT-MATCH] {len(entries)} Samawa variants loaded from samawa_catalog | {len(by_barcode)} with barcode")
+    return entries, by_barcode
+
+
+def ct_match_samawa():
+    """STEP 2 - find every competitor_table product on Samawa and save link / price / stock / suggestion.
+
+    1. Load all Samawa products from samawa_catalog (downloaded by /samawa-catalog/run).
+    2. Load all our products from competitor_table and group them by brand.
+    3. For each brand: take only Samawa products of that brand, run match_one() for each of our products.
+         matched      -> samawa_link, samawa_price, samawa_stock, suggestion cleared
+         not matched  -> link/price cleared, suggestion = best guess if its score >= 0.5
+    4. Save every ~500 products, so results appear on /competitors while it runs.
+    Size, EDP/EDT and gender are read from the product name.
+    """
+    started = time.time()
+    summary = {"step": "match-samawa", "products": 0, "matched_barcode": 0, "matched_fuzzy": 0,
+               "unmatched": 0, "with_suggestion": 0, "skipped_no_brand": 0, "brands_done": 0}
+    state["last_summary"] = summary
+
+    conn = pg_conn()
+    cur = conn.cursor()
     try:
-        state["last_summary"] = run_ff(rematch)
+        cur.execute(CT_CREATE)
+        conn.commit()
+        entries, by_barcode = sm_entries_from_db(cur)
+        if not entries:
+            summary["error"] = "samawa_catalog is empty - run /samawa-catalog/run first"
+            log(f"[CT-MATCH] {summary['error']}")
+            return summary
+
+        cur.execute("SELECT fi_record_id, brand, product_name, perfume_name, barcode FROM competitor_table")
+        groups = {}
+        for fid, brand, pname, perfume, barcode in cur.fetchall():
+            summary["products"] += 1
+            if not brand:
+                summary["skipped_no_brand"] += 1
+                continue
+            # size, type (EDP/EDT) and gender are read from the product name, e.g. "... 100 ml EDP Men Perfume"
+            fields = {F_PRODUCT: pname, F_PERFUME: perfume, F_SIZE: None, F_TYPE: None,
+                      F_CATEGORY: pname, F_BARCODE: barcode}
+            groups.setdefault(brand, []).append((fid, fields))
+        brands = sorted(groups)
+        summary["brands_total"] = len(brands)
+        log(f"[CT-MATCH] {summary['products']} products in {len(brands)} brands "
+            f"({summary['skipped_no_brand']} without brand skipped)")
+
+        updates = []
+        for bi, brand in enumerate(brands, 1):
+            bkey, bnorm = key(brand), norm_text(brand)
+            brand_entries = [e for e in entries if e["vendor_key"].startswith(bkey) or bnorm in e["title_norm"]
+                             or (len(e["vendor_key"]) >= 4 and e["vendor_key"] in bkey)]
+            log(f"\n[CT-BRAND] {bi}/{len(brands)} {brand}: {len(groups[brand])} products | "
+                f"{len(brand_entries)} Samawa variants")
+
+            for fid, fields in groups[brand]:
+                pname = fields[F_PRODUCT] or fields[F_PERFUME] or fid
+                e, method, score, guess = match_one(fields, brand, brand_entries, by_barcode)
+                if e:
+                    summary["matched_barcode" if method.startswith("barcode") else "matched_fuzzy"] += 1
+                    log(f"[CT-MATCH:{method} {score}] {pname} -> {e['title']} | AED {e['price']} | stock={e['available']}")
+                    updates.append((fid, e["url"], e["price"], e["available"], None, method, score))
+                else:
+                    summary["unmatched"] += 1
+                    suggestion = guess["url"] if guess is not None and score >= 0.5 else None
+                    if suggestion:
+                        summary["with_suggestion"] += 1
+                    log(f"[CT-NO MATCH] {pname} | {method} | score={score}"
+                        + (f" | suggestion {suggestion}" if suggestion else ""))
+                    updates.append((fid, None, None, False, suggestion, method[:200], score))
+
+            # save every 500 products so results appear while it runs
+            if len(updates) >= 500 or bi == len(brands):
+                execute_values(cur, CT_UPDATE_SAMAWA, updates)
+                conn.commit()
+                log(f"[CT-SAVE] {len(updates)} rows written to competitor_table")
+                updates = []
+            summary["brands_done"] = bi
+            summary["seconds"] = round(time.time() - started, 1)
+    finally:
+        cur.close()
+        conn.close()
+
+    summary["seconds"] = round(time.time() - started, 1)
+    log(f"[CT-MATCH DONE] {summary}")
+    return summary
+
+
+def _ct_worker(fn):
+    """Background thread for step 1 / step 2. Always releases run_lock at the end, even after an error."""
+    try:
+        state["last_summary"] = fn()
     except Exception as ex:
-        log(f"[FF-ERROR] {ex}\n{traceback.format_exc()}")
+        log(f"[CT-ERROR] {ex}\n{traceback.format_exc()}")
         state["last_summary"] = {"error": str(ex)}
     finally:
         run_lock.release()
@@ -766,6 +946,7 @@ def _ff_worker(rematch):
 
 # ---------------------------------------------------------------- routes
 def _worker(brands, rematch=False):
+    """Background thread for the OLD /samawa/run (the browser gets an answer immediately, work continues here)."""
     try:
         fi_groups = None
         if not brands:                                  # no brands in URL -> all brands from brands table
@@ -783,13 +964,19 @@ def _worker(brands, rematch=False):
         run_lock.release()
 
 
+# ================================================================ URLs (routes)
+# Every long job starts in a background thread and answers the browser immediately with {"started": true}.
+# Watch progress at /samawa/status or in Render -> Logs.
+
 @app.get("/")
 def health():
+    """Health check - Render / you can open / to see the service is alive."""
     return jsonify({"ok": True, "service": "samawa-matcher"})
 
 
 @app.post("/samawa/run")
 def trigger():
+    """OLD run started by a script (POST, secret in header X-Run-Secret). Logs only."""
     if RUN_SECRET and request.headers.get("X-Run-Secret") != RUN_SECRET:
         return jsonify({"error": "unauthorized"}), 401
     body = request.get_json(silent=True) or {}
@@ -819,62 +1006,36 @@ def trigger_from_url():
                     "check_status": "/samawa/status"}), 202
 
 
-@app.get("/ff/run")
-def ff_run():
-    # /ff/run?secret=XXX            -> match FF Catalog to French Inventories
-    # /ff/run?secret=XXX&rematch=1  -> re-match everything (clears FF links)
-    if RUN_SECRET and request.args.get("secret") != RUN_SECRET:
-        return jsonify({"error": "unauthorized"}), 401
-    rematch = request.args.get("rematch") == "1"
-    if not run_lock.acquire(blocking=False):
-        return jsonify({"error": "a run is already in progress"}), 409
-    log(f"[FF-RUN] Started (rematch={rematch})")
-    threading.Thread(target=_ff_worker, args=(rematch,), daemon=True).start()
-    return jsonify({"started": True, "competitor": "French Fragrance", "rematch": rematch,
-                    "check_status": "/samawa/status"}), 202
-
-
-@app.get("/ff/test")
-def ff_test():
-    """One-time check: can this server open frenchfragrance.com directly (no Browse AI)?"""
-    urls = [
-        "https://frenchfragrance.com/perfumes/christian-dior-eau-noire-eau-de-parfum-125ml/",   # product page
-        "https://frenchfragrance.com/billie-eilish-eilish-no-3-unisex-eau-de-parfum-100ml.html",  # .html product
-        "https://frenchfragrance.com/sitemap.xml",                                                # full URL list?
-        "https://frenchfragrance.com/robots.txt",
-    ]
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
-    results = []
-    for u in urls:
-        try:
-            r = requests.get(u, headers=headers, timeout=30)
-            body = r.text
-            title = re.search(r"<title[^>]*>(.*?)</title>", body, re.S | re.I)
-            res = {
-                "url": u,
-                "status": r.status_code,
-                "size": len(body),
-                "title": title.group(1).strip()[:120] if title else None,
-                "blocked_page": any(w in body.lower() for w in ("cf-challenge", "just a moment", "captcha", "access denied")),
-                "has_gtin": "gtin" in body.lower(),
-                "has_price_aed": "aed" in body.lower(),
-                "server": r.headers.get("server"),
-            }
-        except Exception as ex:
-            res = {"url": u, "error": str(ex)}
-        log(f"[FF-TEST] {res}")
-        results.append(res)
-    return jsonify(results)
-
-
 @app.get("/samawa/status")
 def status():
+    """Progress / result of the current or last job: /samawa/run, /competitor/load-fi, /competitor/match-samawa."""
     return jsonify({"running": run_lock.locked(), "last_summary": state["last_summary"]})
 
 
+def _ct_start(fn, label):
+    """Shared start logic for step 1 / 2: check ?secret=, make sure nothing else is running, start in background."""
+    if RUN_SECRET and request.args.get("secret") != RUN_SECRET:
+        log(f"[{label}] Unauthorized attempt")
+        return jsonify({"error": "unauthorized"}), 401
+    if not run_lock.acquire(blocking=False):
+        return jsonify({"error": "a run is already in progress"}), 409
+    log(f"[{label}] Started")
+    threading.Thread(target=_ct_worker, args=(fn,), daemon=True).start()
+    return jsonify({"started": True, "step": label, "check_status": "/samawa/status"}), 202
+
+
+@app.get("/competitor/load-fi")
+def ct_load_fi_route():
+    # Step 1: /competitor/load-fi?secret=XXX -> all French Inventories products into competitor_table
+    return _ct_start(ct_load_fi, "CT-LOAD")
+
+
+@app.get("/competitor/match-samawa")
+def ct_match_samawa_route():
+    # Step 2: /competitor/match-samawa?secret=XXX -> Samawa link / price / stock / suggestion for every product
+    return _ct_start(ct_match_samawa, "CT-MATCH")
+
+
+# Local testing only (python app.py). On Render the app is started by gunicorn.
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))

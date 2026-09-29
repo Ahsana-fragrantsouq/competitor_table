@@ -23,7 +23,13 @@ PER_PAGE = 50
 # ---------------------------------------------------------------- tabs
 # Each "cols" entry is the SQL used for that field (None = column not available for this source)
 SOURCES = [
-    {"key": "competitor", "label": "Competitor table", "table": None},   # coming later
+    # Competitor table: one row per French Inventories product + Samawa match (filled by migrate_competitor_table.py)
+    {"key": "competitor", "label": "Competitor table", "table": "competitor_table", "kind": "competitor",
+     "search": ["product_name", "french_inventory_code", "sku"],
+     "cols": {"code": "french_inventory_code", "sku": "sku", "name": "product_name", "uae_price": "uae_price",
+              "url": "samawa_link", "price": "samawa_price",
+              "stock": "CASE WHEN samawa_stock THEN 'In stock' ELSE 'Out of stock' END",
+              "suggestion": "samawa_suggestion", "updated": "updated_at"}},
     {"key": "samawa", "label": "Samawa", "table": "samawa_catalog",
      "cols": {"name": "name", "brand": "brand", "gtin": "gtin", "url": "product_url",
               "price": "price", "stock": "stock", "volume": "volume", "updated": "updated_at"}},
@@ -81,7 +87,11 @@ HTML = """
  .bar input,.bar select{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;
        padding:13px 14px;font-size:16px}
  .bar input{flex:1;min-width:0}
- .bar button{background:var(--goldbtn);color:#f2d675;border:0;border-radius:12px;padding:0 18px;font-size:16px;font-weight:600}
+ .bar button{background:#f2d675;color:#1c1b19;border:0;border-radius:12px;padding:0 18px;font-size:16px;font-weight:600;cursor:pointer}
+ .prices{display:flex;gap:22px;flex-wrap:wrap;margin-top:8px}
+ .plabel{color:var(--muted);font-size:13px}
+ .diff{font-size:14px;margin-top:8px}
+ .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .hint{color:var(--muted);font-size:14px;margin:6px 2px 16px}
  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-bottom:12px}
  .title{font-size:18px;font-weight:600;margin-bottom:6px;line-height:1.35}
@@ -112,11 +122,11 @@ HTML = """
   <div class="empty">The competitor table isn't set up yet. It will show matched prices from every shop side by side.</div>
 {% elif not exists %}
   <p class="hint"></p>
-  <div class="empty">No {{ src.label }} products yet. Run the download for this shop first.</div>
+  <div class="empty">{% if src.kind == 'competitor' %}The competitor table is empty. Run migrate_competitor_table.py to copy it from Airtable.{% else %}No {{ src.label }} products yet. Run the download for this shop first.{% endif %}</div>
 {% else %}
   <form class="bar" method="get">
     <input type="hidden" name="tab" value="{{ src.key }}">
-    <input type="text" name="q" value="{{ q }}" placeholder="Filter by {% if src.cols.brand %}brand, {% endif %}name, GTIN">
+    <input type="text" name="q" value="{{ q }}" placeholder="{% if src.kind == 'competitor' %}Filter by code, SKU, name{% else %}Filter by {% if src.cols.brand %}brand, {% endif %}name, GTIN{% endif %}">
     <select name="stock">
       <option value="" {% if not stock %}selected{% endif %}>All</option>
       <option value="In stock" {% if stock=='In stock' %}selected{% endif %}>In stock</option>
@@ -127,6 +137,26 @@ HTML = """
   <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock %} match this filter{% endif %}.</p>
 
   {% for r in rows %}
+  {% if src.kind == 'competitor' %}
+  <div class="card">
+    <div class="title">{{ r.name or r.code or '' }}</div>
+    <div class="code">{{ r.code or '' }}{% if r.sku %} · SKU {{ r.sku }}{% endif %}</div>
+    <div class="prices">
+      <div><div class="plabel">UAE price</div><span class="price">{% if r.uae_price is not none %}AED {{ '%.2f' % r.uae_price }}{% else %}-{% endif %}</span></div>
+      <div><div class="plabel">Samawa price</div><span class="price">{% if r.price is not none %}AED {{ '%.2f' % r.price }}{% else %}-{% endif %}</span></div>
+    </div>
+    {% if r.uae_price is not none and r.price is not none %}
+      {% set d = r.price - r.uae_price %}
+      <div class="diff {{ 'out' if d < 0 else 'in' }}">{% if d < 0 %}Samawa is cheaper by AED {{ '%.2f' % (-d) }}{% elif d > 0 %}We are cheaper by AED {{ '%.2f' % d }}{% else %}Same price{% endif %}</div>
+    {% endif %}
+    <div class="row">
+      {% if r.url %}<a class="link" href="{{ r.url }}" target="_blank">View on Samawa</a>{% else %}<span class="gtin">No Samawa match</span>{% endif %}
+      {% if r.url %}<span class="{{ 'in' if r.stock=='In stock' else 'out' }}">{{ r.stock }}</span>{% endif %}
+    </div>
+    {% if r.suggestion %}<div class="row"><a class="link" href="{{ r.suggestion }}" target="_blank">Samawa suggestion (check)</a></div>{% endif %}
+    <div class="date">Updated {{ r.updated.strftime('%d %b, %H:%M') if r.updated else '' }}</div>
+  </div>
+  {% else %}
   <div class="card">
     <div class="title">{% if r.brand %}{{ r.brand }} · {% endif %}{{ r.name or '' }}</div>
     <div class="sub">{{ src.label }}{% if r.volume %} · {{ r.volume }}{% endif %}</div>
@@ -140,6 +170,7 @@ HTML = """
     </div>
     <div class="date">Updated {{ r.updated.strftime('%d %b, %H:%M') if r.updated else '' }}</div>
   </div>
+  {% endif %}
   {% else %}
   <div class="empty">No products match this filter. Clear the filter to see everything.</div>
   {% endfor %}
@@ -157,7 +188,7 @@ HTML = """
 
 @competitors_bp.route("/competitors")
 def competitors():
-    tab = request.args.get("tab", "samawa")
+    tab = request.args.get("tab", "competitor")
     src = SOURCE_BY_KEY.get(tab, SOURCES[1])
     q = request.args.get("q", "").strip()
     stock = request.args.get("stock", "").strip()
@@ -178,7 +209,7 @@ def competitors():
             c = src["cols"]
             where, params = [], []
             if q:
-                search_cols = [col for col in (c["name"], c["brand"], c["gtin"]) if col]
+                search_cols = src.get("search") or [col for col in (c["name"], c["brand"], c["gtin"]) if col]
                 where.append("(" + " OR ".join(f"{col} ILIKE %s" for col in search_cols) + ")")
                 params += [f"%{q}%"] * len(search_cols)
             if stock:
