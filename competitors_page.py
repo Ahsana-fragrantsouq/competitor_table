@@ -46,6 +46,11 @@ SOURCES = [
               "price": "COALESCE(bp_price_inc_tax, bp_price)", "stock": "bp_stock",
               "volume": "COALESCE(bp_size, volume)",
               "updated": "checked_at"}},
+    # Essenzi = same products as French Fragrance, prices/stock read from essenzi.com (bp_scraper.py --shop es)
+    {"key": "es", "label": "Essenzi", "table": "essenzi_catalog",
+     "cols": {"name": "name", "brand": None, "gtin": "gtin", "url": "es_url",
+              "price": "COALESCE(es_price_inc_tax, es_price)", "stock": "es_stock",
+              "volume": "COALESCE(es_size, volume)", "updated": "checked_at"}},
     # {"key": "shop3", "label": "Shop 3", "table": "shop3_catalog", "cols": {...}},   # add more here
 ]
 SOURCE_BY_KEY = {s["key"]: s for s in SOURCES}
