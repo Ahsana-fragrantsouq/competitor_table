@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS branded_perfume_catalog (
     updated_at        TIMESTAMP DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_bp_gtin ON branded_perfume_catalog (gtin);
+ALTER TABLE branded_perfume_catalog ADD COLUMN IF NOT EXISTS bp_title TEXT;   -- product name on Branded Perfume
+ALTER TABLE branded_perfume_catalog ADD COLUMN IF NOT EXISTS bp_size TEXT;    -- e.g. "100 ml" read from that name
 """
 
 # STEP 1: copy French Fragrance products (new -> insert, existing -> update details, keep BP results)
@@ -98,9 +100,11 @@ UPDATE branded_perfume_catalog AS b SET
     bp_price_inc_tax = v.price_inc::numeric,
     bp_stock         = v.stock,
     bp_status        = v.status,
+    bp_title         = v.title,
+    bp_size          = v.size,
     checked_at       = NOW(),
     updated_at       = NOW()
-FROM (VALUES %s) AS v(id, price, price_inc, stock, status)
+FROM (VALUES %s) AS v(id, price, price_inc, stock, status, title, size)
 WHERE b.id = v.id;
 """
 
@@ -174,7 +178,12 @@ def bp_parse(html):
 
     h1 = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.S | re.I)
     title = re.sub(r"<[^>]+>|\s+", " ", h1.group(1)).strip() if h1 else ld_name
-    return {"title": title, "price": price, "price_inc_tax": price_inc,
+    title = htmllib.unescape(title) if title else None
+
+    # size from the product name: "... Eau de Parfum 100ml" -> "100 ml"
+    m = re.search(r"(\d+(?:\.\d+)?)\s*ml\b", title or "", re.I)
+    size = f"{m.group(1)} ml" if m else None
+    return {"title": title, "size": size, "price": price, "price_inc_tax": price_inc,
             "stock": "In stock" if in_stock else "Out of stock"}
 
 
@@ -264,10 +273,10 @@ def bp_run(resume):
                 stop.set()
                 return None
             if status == "ok" or status == "no_price":
-                return (rid, data["price"], data["price_inc_tax"], data["stock"], status)
+                return (rid, data["price"], data["price_inc_tax"], data["stock"], status, data["title"], data["size"])
             if status == "not_found":
-                return (rid, None, None, "Not on site", status)
-            return (rid, None, None, None, status)   # error -> checked again next run
+                return (rid, None, None, "Not on site", status, None, None)
+            return (rid, None, None, None, status, None, None)   # error -> checked again next run
 
         pending = []
         with ThreadPoolExecutor(max_workers=BP_WORKERS) as pool:

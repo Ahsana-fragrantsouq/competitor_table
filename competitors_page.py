@@ -43,7 +43,8 @@ SOURCES = [
     # Branded Perfume = same products as French Fragrance, prices/stock read from brandedperfume.com
     {"key": "bp", "label": "Branded Perfume", "table": "branded_perfume_catalog",
      "cols": {"name": "name", "brand": None, "gtin": "gtin", "url": "bp_url",
-              "price": "COALESCE(bp_price_inc_tax, bp_price)", "stock": "bp_stock", "volume": "volume",
+              "price": "COALESCE(bp_price_inc_tax, bp_price)", "stock": "bp_stock",
+              "volume": "COALESCE(bp_size, volume)",
               "updated": "checked_at"}},
     # {"key": "shop3", "label": "Shop 3", "table": "shop3_catalog", "cols": {...}},   # add more here
 ]
