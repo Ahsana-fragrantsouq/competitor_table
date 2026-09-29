@@ -15,7 +15,8 @@ Normal order to run things (open these URLs in the browser)
   1. /samawa-catalog/run?secret=XXX        download Samawa website into Postgres (samawa_catalog)
   2. /competitor/load-fi?secret=XXX        copy ALL French Inventories products into Postgres (competitor_table)
   3. /competitor/match-samawa?secret=XXX   find each product on Samawa -> link, price, stock, suggestion
-  Progress: step 1 -> /samawa-catalog/status | steps 2, 3 -> /samawa/status | Result -> /competitors
+  4. /competitor/match-ff?secret=XXX       same for French Fragrance (uses french_fragrance_catalog)
+  Progress: step 1 -> /samawa-catalog/status | steps 2, 3, 4 -> /samawa/status | Result -> /competitors
 
 Old URL still here (reads Airtable, matches, but saves NOTHING - only writes logs)
   /samawa/run?secret=XXX
@@ -659,6 +660,7 @@ def run_match(brands, rematch=False, fi_groups=None):
 # ================================================================ COMPETITOR TABLE (Postgres)  <- NEW FLOW
 # Step 1: /competitor/load-fi       -> all French Inventories products -> competitor_table
 # Step 2: /competitor/match-samawa  -> match every product to samawa_catalog -> link, price, stock, suggestion
+# Step 3: /competitor/match-ff      -> same for French Fragrance (french_fragrance_catalog) -> ff_* columns
 #
 # competitor_table = ONE row per French Inventories product:
 #   fi_record_id           Airtable record id of the product (never changes -> used to update the right row)
@@ -668,6 +670,7 @@ def run_match(brands, rematch=False, fi_groups=None):
 #   samawa_link / samawa_price / samawa_stock   filled when a match is found
 #   samawa_suggestion      best guess link when NO match (team checks it by hand)
 #   samawa_method / samawa_score   why it matched or not (e.g. "fuzzy" 0.92, "low score" 0.61)
+#   ff_link / ff_price / ff_stock / ff_suggestion / ff_method / ff_score   same, for French Fragrance
 import psycopg2
 import psycopg2.extras
 from psycopg2.extras import execute_values
@@ -696,6 +699,12 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_stock BOOLEAN DEFAU
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_suggestion TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_method TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_score NUMERIC(5,3);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_link TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_price NUMERIC(10,2);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_stock BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_suggestion TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_method TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_score NUMERIC(5,3);
 CREATE INDEX IF NOT EXISTS idx_ct_sku ON competitor_table (sku);
 CREATE INDEX IF NOT EXISTS idx_ct_brand ON competitor_table (brand);
 """
@@ -718,16 +727,17 @@ ON CONFLICT (fi_record_id) DO UPDATE SET
     updated_at   = NOW();
 """
 
-# Step 2 save: updates only the Samawa columns of many rows in one query
-CT_UPDATE_SAMAWA = """
+def ct_update_sql(prefix):
+    """Save query for one shop: updates only that shop's columns (samawa_* or ff_*) of many rows at once."""
+    return f"""
 UPDATE competitor_table AS c SET
-    samawa_link       = v.link,
-    samawa_price      = v.price::numeric,
-    samawa_stock      = v.stock::boolean,
-    samawa_suggestion = v.suggestion,
-    samawa_method     = v.method,
-    samawa_score      = v.score::numeric,
-    updated_at        = NOW()
+    {prefix}_link       = v.link,
+    {prefix}_price      = v.price::numeric,
+    {prefix}_stock      = v.stock::boolean,
+    {prefix}_suggestion = v.suggestion,
+    {prefix}_method     = v.method,
+    {prefix}_score      = v.score::numeric,
+    updated_at          = NOW()
 FROM (VALUES %s) AS v(fi_record_id, link, price, stock, suggestion, method, score)
 WHERE c.fi_record_id = v.fi_record_id;
 """
@@ -828,7 +838,7 @@ def ct_load_fi():
     return summary
 
 
-# ---------------------------------------------------------------- step 2: match to samawa_catalog
+# ---------------------------------------------------------------- step 2 / 3: match to a competitor shop
 def sm_entries_from_db(cur):
     """samawa_catalog rows -> same entry format build_index() makes, so match_one() works unchanged."""
     cur.execute("SELECT product_url, gtin, brand, name, price, stock, volume FROM samawa_catalog "
@@ -859,31 +869,78 @@ def sm_entries_from_db(cur):
     return entries, by_barcode
 
 
-def ct_match_samawa():
-    """STEP 2 - find every competitor_table product on Samawa and save link / price / stock / suggestion.
+def ff_entries_from_db(cur):
+    """french_fragrance_catalog rows -> same entry format as Samawa, so match_one() works unchanged.
+    French Fragrance has no brand column: the brand is found inside the product name instead."""
+    cur.execute("SELECT product_url, gtin, name, COALESCE(price_inc_tax, price), stock, volume "
+                "FROM french_fragrance_catalog")
+    entries, by_barcode = [], {}
+    for url, gtin, name, price, stock, volume in cur.fetchall():
+        name = name or ""
+        full_n = norm_text(name)
+        e = {
+            "handle": (url or "").rstrip("/"),
+            "url": url,
+            "title": name,
+            "vendor_key": "",                     # no brand column -> brand is matched in title_norm
+            "title_key": key(name),
+            "title_norm": full_n,
+            "size": parse_size(volume) or parse_size(name),
+            "type": detect_type(full_n),
+            "gender": detect_gender(full_n),
+            "tokens": tokens(norm_text(re.split(r"\s-\s|,", name)[0])),
+            "price": float(price or 0),           # price including 5% VAT when available
+            "available": stock == "In stock",
+        }
+        entries.append(e)
+        bc = norm_barcode(gtin)
+        if bc:
+            by_barcode[bc] = e
+    log(f"[CT-MATCH] {len(entries)} French Fragrance products loaded from french_fragrance_catalog "
+        f"| {len(by_barcode)} with GTIN")
+    return entries, by_barcode
 
-    1. Load all Samawa products from samawa_catalog (downloaded by /samawa-catalog/run).
+
+# One entry per competitor shop. To add a new shop later (e.g. V Perfumes):
+#   1. load its products into a Postgres table, 2. write a loader like ff_entries_from_db,
+#   3. add its columns to CT_CREATE, 4. add one entry here + one route below.
+SHOPS = {
+    "samawa": {"label": "Samawa", "prefix": "samawa", "loader": sm_entries_from_db,
+               "empty_hint": "samawa_catalog is empty - run /samawa-catalog/run first",
+               "trust_barcode": False},   # Samawa SKUs are sometimes wrong -> barcode must also look right by name
+    "ff": {"label": "French Fragrance", "prefix": "ff", "loader": ff_entries_from_db,
+           "empty_hint": "french_fragrance_catalog is empty - load it first",
+           "trust_barcode": True},       # French Fragrance GTINs are reliable -> barcode match is trusted
+}
+
+
+def ct_match_shop(shop_key):
+    """STEP 2 / 3 - find every competitor_table product on ONE shop and save link / price / stock / suggestion.
+
+    1. Load all products of the shop from Postgres (samawa_catalog or french_fragrance_catalog).
     2. Load all our products from competitor_table and group them by brand.
-    3. For each brand: take only Samawa products of that brand, run match_one() for each of our products.
-         matched      -> samawa_link, samawa_price, samawa_stock, suggestion cleared
+    3. For each brand: take only that shop's products of the same brand, run match_one() for each of ours.
+         matched      -> <shop>_link, <shop>_price, <shop>_stock, suggestion cleared
          not matched  -> link/price cleared, suggestion = best guess if its score >= 0.5
     4. Save every ~500 products, so results appear on /competitors while it runs.
     Size, EDP/EDT and gender are read from the product name.
     """
+    shop = SHOPS[shop_key]
+    tag = f"CT-{shop_key.upper()}"                # log prefix: [CT-SAMAWA ...] / [CT-FF ...]
     started = time.time()
-    summary = {"step": "match-samawa", "products": 0, "matched_barcode": 0, "matched_fuzzy": 0,
+    summary = {"step": f"match-{shop_key}", "products": 0, "matched_barcode": 0, "matched_fuzzy": 0,
                "unmatched": 0, "with_suggestion": 0, "skipped_no_brand": 0, "brands_done": 0}
     state["last_summary"] = summary
 
     conn = pg_conn()
     cur = conn.cursor()
     try:
-        cur.execute(CT_CREATE)
+        cur.execute(CT_CREATE)                    # adds the shop's columns if they don't exist yet
         conn.commit()
-        entries, by_barcode = sm_entries_from_db(cur)
+        entries, by_barcode = shop["loader"](cur)
         if not entries:
-            summary["error"] = "samawa_catalog is empty - run /samawa-catalog/run first"
-            log(f"[CT-MATCH] {summary['error']}")
+            summary["error"] = shop["empty_hint"]
+            log(f"[{tag}] {summary['error']}")
             return summary
 
         cur.execute("SELECT fi_record_id, brand, product_name, perfume_name, barcode FROM competitor_table")
@@ -899,38 +956,54 @@ def ct_match_samawa():
             groups.setdefault(brand, []).append((fid, fields))
         brands = sorted(groups)
         summary["brands_total"] = len(brands)
-        log(f"[CT-MATCH] {summary['products']} products in {len(brands)} brands "
+        log(f"[{tag}] {summary['products']} products in {len(brands)} brands "
             f"({summary['skipped_no_brand']} without brand skipped)")
 
+        save_sql = ct_update_sql(shop["prefix"])
         updates = []
         for bi, brand in enumerate(brands, 1):
             bkey, bnorm = key(brand), norm_text(brand)
-            brand_entries = [e for e in entries if e["vendor_key"].startswith(bkey) or bnorm in e["title_norm"]
+            # same brand = shop's brand starts with ours, or our brand name is inside the product title,
+            # or shop brand "Dior" inside our "Christian Dior"
+            brand_entries = [e for e in entries if (e["vendor_key"] and e["vendor_key"].startswith(bkey))
+                             or bnorm in e["title_norm"]
                              or (len(e["vendor_key"]) >= 4 and e["vendor_key"] in bkey)]
-            log(f"\n[CT-BRAND] {bi}/{len(brands)} {brand}: {len(groups[brand])} products | "
-                f"{len(brand_entries)} Samawa variants")
+            if shop_key == "ff":
+                # French Fragrance titles start with the FULL brand ("Christian Dior Sauvage ...").
+                # Our brand is "Dior" -> the word "christian" would lower the name score.
+                # So for FF, ignore the words written BEFORE our brand name in the title.
+                trimmed = []
+                for e in brand_entries:
+                    pos = e["title_norm"].find(bnorm)
+                    if pos > 0:
+                        e = {**e, "tokens": e["tokens"] - tokens(e["title_norm"][:pos])}
+                    trimmed.append(e)
+                brand_entries = trimmed
+            log(f"\n[{tag}-BRAND] {bi}/{len(brands)} {brand}: {len(groups[brand])} products | "
+                f"{len(brand_entries)} {shop['label']} products")
 
             for fid, fields in groups[brand]:
                 pname = fields[F_PRODUCT] or fields[F_PERFUME] or fid
-                e, method, score, guess = match_one(fields, brand, brand_entries, by_barcode)
+                e, method, score, guess = match_one(fields, brand, brand_entries, by_barcode,
+                                                    trust_barcode=shop["trust_barcode"])
                 if e:
                     summary["matched_barcode" if method.startswith("barcode") else "matched_fuzzy"] += 1
-                    log(f"[CT-MATCH:{method} {score}] {pname} -> {e['title']} | AED {e['price']} | stock={e['available']}")
+                    log(f"[{tag}-MATCH:{method} {score}] {pname} -> {e['title']} | AED {e['price']} | stock={e['available']}")
                     updates.append((fid, e["url"], e["price"], e["available"], None, method, score))
                 else:
                     summary["unmatched"] += 1
                     suggestion = guess["url"] if guess is not None and score >= 0.5 else None
                     if suggestion:
                         summary["with_suggestion"] += 1
-                    log(f"[CT-NO MATCH] {pname} | {method} | score={score}"
+                    log(f"[{tag}-NO MATCH] {pname} | {method} | score={score}"
                         + (f" | suggestion {suggestion}" if suggestion else ""))
                     updates.append((fid, None, None, False, suggestion, method[:200], score))
 
             # save every 500 products so results appear while it runs
             if len(updates) >= 500 or bi == len(brands):
-                execute_values(cur, CT_UPDATE_SAMAWA, updates)
+                execute_values(cur, save_sql, updates)
                 conn.commit()
-                log(f"[CT-SAVE] {len(updates)} rows written to competitor_table")
+                log(f"[{tag}-SAVE] {len(updates)} rows written to competitor_table")
                 updates = []
             summary["brands_done"] = bi
             summary["seconds"] = round(time.time() - started, 1)
@@ -939,8 +1012,18 @@ def ct_match_samawa():
         conn.close()
 
     summary["seconds"] = round(time.time() - started, 1)
-    log(f"[CT-MATCH DONE] {summary}")
+    log(f"[{tag} DONE] {summary}")
     return summary
+
+
+def ct_match_samawa():
+    """STEP 2 - match all products to Samawa."""
+    return ct_match_shop("samawa")
+
+
+def ct_match_ff():
+    """STEP 3 - match all products to French Fragrance."""
+    return ct_match_shop("ff")
 
 
 def _ct_worker(fn):
@@ -1044,6 +1127,12 @@ def ct_load_fi_route():
 def ct_match_samawa_route():
     # Step 2: /competitor/match-samawa?secret=XXX -> Samawa link / price / stock / suggestion for every product
     return _ct_start(ct_match_samawa, "CT-MATCH")
+
+
+@app.get("/competitor/match-ff")
+def ct_match_ff_route():
+    # Step 3: /competitor/match-ff?secret=XXX -> French Fragrance link / price / stock / suggestion for every product
+    return _ct_start(ct_match_ff, "CT-FF")
 
 
 # Local testing only (python app.py). On Render the app is started by gunicorn.
