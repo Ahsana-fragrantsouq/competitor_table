@@ -771,7 +771,7 @@ def ct_load_fi():
     3. Save them in Postgres, 500 at a time (insert new / update existing).
     """
     started = time.time()
-    summary = {"step": "load-fi", "products": 0, "without_brand": 0}
+    summary = {"step": "load-fi", "products": 0, "without_brand": 0, "bad_price": []}
     state["last_summary"] = summary
 
     # brand record id -> brand name (Brand in French Inventories is a linked field)
@@ -793,9 +793,19 @@ def ct_load_fi():
         brand = next((brand_names[b] for b in (f.get(F_BRAND) or []) if b in brand_names), None)
         if not brand:
             summary["without_brand"] += 1
+
+        # A price of 1,000,000+ is a typing mistake in Airtable (usually a barcode in the price field).
+        # Save it as empty instead of crashing, and list it so it can be fixed in French Inventories.
+        uae_price = first_number(f.get(F_UAE_PRICE))
+        if uae_price is not None and abs(uae_price) >= 1_000_000:
+            item_id = first_text(f.get(F_ITEM_ID))
+            log(f"[CT-LOAD] WRONG UAE PRICE {uae_price} for '{item_id}' -> saved as empty, please fix in Airtable")
+            summary["bad_price"].append(f"{item_id} | {uae_price}")
+            uae_price = None
+
         rows.append((
             rec["id"], first_text(f.get(F_ITEM_ID)), first_text(f.get(F_SKU)), first_text(f.get(F_PRODUCT)),
-            first_number(f.get(F_UAE_PRICE)), brand, first_text(f.get(F_BARCODE)), first_text(f.get(F_PERFUME)),
+            uae_price, brand, first_text(f.get(F_BARCODE)), first_text(f.get(F_PERFUME)),
         ))
 
     conn = pg_conn()
