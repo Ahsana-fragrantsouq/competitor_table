@@ -125,7 +125,7 @@ HTML = """
  .date{color:var(--grey);font-size:13px;margin-top:8px}
  .empty{background:var(--card);border:1px dashed var(--line);border-radius:16px;padding:28px 20px;text-align:center;color:var(--muted)}
  .pager{display:flex;justify-content:space-between;align-items:center;margin-top:16px}
- .pbtn{background:var(--goldbtn);color:#1c1b19;text-decoration:none;border-radius:12px;padding:12px 18px;font-weight:600}
+  .pbtn{background:#f2d675;color:#1c1b19;text-decoration:none;border-radius:12px;padding:12px 18px;font-weight:600}
  .pbtn.off{visibility:hidden}
  :focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 </style></head><body><div class="page">
