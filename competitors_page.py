@@ -89,6 +89,12 @@ HTML = """
  .tabs{display:flex;gap:4px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:5px;
        overflow-x:auto;scrollbar-width:none}
  .tabs::-webkit-scrollbar{display:none}
+ .tabwrap{display:flex;align-items:center;gap:6px}
+ .tabwrap .tabs{flex:1;min-width:0;scroll-behavior:smooth}
+ .arrow{flex:0 0 auto;width:40px;height:40px;border-radius:50%;border:1px solid var(--line);background:var(--card);
+        color:var(--text);font-size:26px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
+ .arrow:hover{background:#f2d675;color:#1c1b19}
+ .arrow.hide{visibility:hidden}
  .tab{flex:0 0 auto;padding:11px 16px;border-radius:12px;color:var(--muted);text-decoration:none;white-space:nowrap;font-size:16px}
  .tab.on{background:var(--bg);color:var(--text);font-weight:600}
  .bar{display:flex;gap:8px;margin:14px 0 6px}
@@ -120,11 +126,33 @@ HTML = """
 
 <h1>Saved data</h1>
 
-<nav class="tabs">
-  {% for s in sources %}
-  <a class="tab {% if s.key == src.key %}on{% endif %}" href="?tab={{ s.key }}">{{ s.label }} {{ counts[s.key] }}</a>
-  {% endfor %}
-</nav>
+<div class="tabwrap">
+  <button type="button" class="arrow left" id="tabLeft" aria-label="Scroll tabs left">&#8249;</button>
+  <nav class="tabs" id="tabs">
+    {% for s in sources %}
+    <a class="tab {% if s.key == src.key %}on{% endif %}" href="?tab={{ s.key }}">{{ s.label }} {{ counts[s.key] }}</a>
+    {% endfor %}
+  </nav>
+  <button type="button" class="arrow right" id="tabRight" aria-label="Scroll tabs right">&#8250;</button>
+</div>
+<script>
+  // Tab bar arrows: scroll the tabs left/right, hide an arrow when there is nothing more on that side
+  (function () {
+    var tabs = document.getElementById("tabs");
+    var left = document.getElementById("tabLeft"), right = document.getElementById("tabRight");
+    function update() {
+      left.classList.toggle("hide", tabs.scrollLeft <= 2);
+      right.classList.toggle("hide", tabs.scrollLeft + tabs.clientWidth >= tabs.scrollWidth - 2);
+    }
+    left.onclick = function () { tabs.scrollBy({left: -220, behavior: "smooth"}); };
+    right.onclick = function () { tabs.scrollBy({left: 220, behavior: "smooth"}); };
+    tabs.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    var on = tabs.querySelector(".tab.on");            // open page with the selected tab fully visible
+    if (on) tabs.scrollLeft = on.offsetLeft - (tabs.clientWidth - on.offsetWidth) / 2;
+    update();
+  })();
+</script>
 
 {% if not src.table %}
   <p class="hint"></p>
