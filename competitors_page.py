@@ -117,7 +117,9 @@ HTML = """
  .diff{font-size:14px;margin-top:8px}
  .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
- .least{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;margin:10px 0 2px;padding:10px 12px;
+ .sitelink{color:inherit;text-decoration:underline;text-underline-offset:3px}
+ .sitelink:hover{color:#f2d675}
+ .least{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 28px;margin:10px 0 2px;padding:10px 12px;
         border:1px solid #f2d675;border-radius:12px}
  .hint{color:var(--muted);font-size:14px;margin:6px 2px 16px}
  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-bottom:12px}
@@ -192,10 +194,23 @@ HTML = """
     <div class="title">{{ r.name or r.code or '' }}</div>
     <div class="code">{{ r.code or '' }}{% if r.sku %} · SKU {{ r.sku }}{% endif %}</div>
     <div class="least">
-      <span class="plabel">Least price</span>
       {% if r.least_price is not none %}
-        <span class="price">AED {{ '%.2f' % r.least_price }}</span>
-        <span class="{{ 'in' if 'Fragrant Souq' in (r.least_site or '') else 'out' }}">{{ r.least_site }}</span>
+        <div><div class="plabel">Least price (in stock)</div>
+             <span class="price">AED {{ '%.2f' % r.least_price }}</span></div>
+        <div><div class="plabel">Least priced website</div>
+             {# each website name opens that product on that website #}
+             {% set site_links = {
+                  'Fragrant Souq': 'https://fragrantsouq.com/search?q=' ~ ((r.sku or r.name or '')|urlencode),
+                  'Samawa': r.samawa_url, 'French Fragrance': r.ff_url,
+                  'Branded Perfume': r.bp_url, 'Essenzi': r.es_url} %}
+             <span class="{{ 'in' if 'Fragrant Souq' in (r.least_site or '') else 'out' }}">
+               {%- for site in (r.least_site or '').split(', ') -%}
+                 {%- if site_links.get(site) -%}
+                   <a class="sitelink" href="{{ site_links[site] }}" target="_blank">{{ site }}</a>
+                 {%- else -%}{{ site }}{%- endif -%}
+                 {%- if not loop.last %}, {% endif -%}
+               {%- endfor -%}
+             </span></div>
       {% else %}<span class="gtin">No price to compare</span>{% endif %}
     </div>
     <div class="prices">
@@ -291,7 +306,15 @@ def competitors():
             pages = max(math.ceil(total / PER_PAGE), 1)
             page = min(page, pages)
 
-            select = ", ".join(f"{expr or 'NULL'} AS {alias}" for alias, expr in c.items())
+            # a column that does not exist yet (e.g. before /competitor/update-least ran) -> shown as empty
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s", (src["table"],))
+            existing = {r["column_name"] for r in cur.fetchall()}
+            missing = [e for e in c.values() if e and e.isidentifier() and e not in existing]
+            if missing:
+                print(f"[competitors] Columns not created yet (shown empty): {missing}", flush=True)
+            select = ", ".join(
+                f"{'NULL' if (not expr or (expr.isidentifier() and expr not in existing)) else expr} AS {alias}"
+                for alias, expr in c.items())
             cur.execute(
                 f"SELECT {select} FROM {src['table']} {where_sql} ORDER BY id LIMIT %s OFFSET %s",
                 params + [PER_PAGE, (page - 1) * PER_PAGE],
