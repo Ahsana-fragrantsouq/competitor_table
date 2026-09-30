@@ -41,6 +41,7 @@ SHOP = {"label": "Essenzi", "site": "https://essenzi.com", "table": "essenzi_cat
 DELAY = 1.5                          # seconds between product pages (be gentle, avoid blocks)
 SAVE_EVERY = 50                      # save to Postgres every 50 products
 CDP_URL = "http://localhost:9222"    # Chrome started by you with --remote-debugging-port=9222
+NEW_TAB_EVERY = 200                  # open a fresh tab every 200 products (one tab for hours = out of memory)
 DEBUG = False
 
 
@@ -272,7 +273,7 @@ def main():
             log("[TEST] Done - nothing was saved.")
             return
 
-        batch, started, errors_in_row = [], time.time(), 0
+        batch, started, errors_in_row, driver_lost = [], time.time(), 0, False
         counts = {"In stock": 0, "Out of stock": 0, "Not on site": 0, "errors": 0}
         for i, (rid, u) in enumerate(todo, 1):
             row = None
@@ -284,8 +285,15 @@ def main():
                     log(f"[{i}/{len(todo)}] OFFLINE ({ex}) - waiting 60s, retry {attempt}/30")
                     time.sleep(60)
                 except Exception as ex:
-                    log(f"[{i}/{len(todo)}] ERROR {u}: {ex}")
+                    msg = str(ex)
+                    if "Connection closed" in msg or "has been closed" in msg:
+                        driver_lost = True           # Chrome / Playwright connection is gone
+                    log(f"[{i}/{len(todo)}] ERROR {u}: {msg.splitlines()[0][:150]}")
                     break
+            if driver_lost:
+                log("[STOP] Lost the connection to Chrome (memory / Chrome closed). Saving and stopping.")
+                log("[STOP] Just run the same command again - it continues with the products not saved yet.")
+                break
             if row is None:
                 counts["errors"] += 1
                 errors_in_row += 1
@@ -304,11 +312,22 @@ def main():
                 batch = []
                 mins = (time.time() - started) / 60
                 log(f"[PROGRESS] {i}/{len(todo)} done in {mins:.0f} min | {counts}")
+            if i % NEW_TAB_EVERY == 0:
+                # a tab that opened thousands of pages keeps growing in memory -> replace it with a fresh one
+                try:
+                    page.close()
+                except Exception:
+                    pass
+                page = browser.contexts[0].new_page()
+                log(f"[TAB] Opened a fresh tab after {i} products (keeps memory low)")
             time.sleep(DELAY)
         if batch:
             save(batch)
         log(f"[DONE] {counts} | {(time.time() - started) / 60:.0f} min")
-        page.close()
+        try:
+            page.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

@@ -216,8 +216,11 @@ HTML = """
     <div class="prices">
       <div><div class="plabel">Our UAE price</div><span class="price">{% if r.uae_price is not none %}AED {{ '%.2f' % r.uae_price }}{% else %}-{% endif %}</span></div>
     </div>
+    {# only shops that have this product (a match) or a suggestion to check; "No match" shops are hidden #}
+    {% set shown = namespace(n=0) %}
     {% for label, k in src.shops %}
       {% set price = r[k ~ '_price'] %}{% set url = r[k ~ '_url'] %}{% set sug = r[k ~ '_suggestion'] %}
+      {% if url or sug %}{% set shown.n = shown.n + 1 %}
       <div class="shop">
         <div class="row">
           <span class="plabel">{{ label }}</span>
@@ -237,7 +240,9 @@ HTML = """
           {% if sug %}<a class="link" href="{{ sug }}" target="_blank">Suggestion (check)</a>{% endif %}</div>
         {% endif %}
       </div>
+      {% endif %}
     {% endfor %}
+    {% if shown.n == 0 %}<div class="shop"><span class="gtin">No competitor has this product</span></div>{% endif %}
     <div class="date">Updated {{ r.updated.strftime('%d %b, %H:%M') if r.updated else '' }}</div>
   </div>
   {% else %}

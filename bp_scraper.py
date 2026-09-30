@@ -18,11 +18,13 @@ BEFORE running: start Chrome yourself (normal, NOT automated -> Cloudflare accep
 And set the database (EXTERNAL url, ending in /french_fragrance_db):
   set "FF_DATABASE_URL=postgresql://...oregon-postgres.render.com/french_fragrance_db"
 
-Usage (Windows, in the folder of this file):
-  python bp_scraper.py --test 5      -> scrape 5 products, only PRINT (nothing saved)
-  python bp_scraper.py --url URL     -> test one Branded Perfume product page
-  python bp_scraper.py               -> full run, only products not checked yet (so it also RESUMES)
-  python bp_scraper.py --refresh     -> full run, re-checks everything (fresh prices / stock)
+Usage (Windows, in the folder of this file). --shop bp = Branded Perfume (default), --shop es = Essenzi:
+  python bp_scraper.py --shop es --test 5      -> scrape 5 products, only PRINT (nothing saved)
+  python bp_scraper.py --shop es --url URL     -> test one product page
+  python bp_scraper.py --shop es               -> full run, only products not checked yet (so it also RESUMES)
+  python bp_scraper.py --shop es --refresh     -> full run, re-checks everything (fresh prices / stock)
+For Essenzi: open essenzi.com in the Chrome window first, and fill the table once on Render:
+  https://competitor-table.onrender.com/essenzi/load?secret=...
 """
 
 import os
@@ -36,30 +38,43 @@ from psycopg2.extras import execute_values
 from playwright.sync_api import sync_playwright
 
 # ---------------------------------------------------------------- config
-SITE = "https://brandedperfume.com"
+# Sister shops of French Fragrance (same company + same links, other domain). Same list as branded_perfume.py.
+SHOPS = {
+    "bp": {"label": "Branded Perfume", "site": "https://brandedperfume.com", "table": "branded_perfume_catalog", "prefix": "bp"},
+    "es": {"label": "Essenzi", "site": "https://essenzi.com", "table": "essenzi_catalog", "prefix": "es"},
+}
+SHOP = SHOPS["bp"]                   # set from --shop in main()
 DELAY = 1.5                          # seconds between product pages (be gentle, avoid blocks)
 SAVE_EVERY = 50                      # save to Postgres every 50 products
 CDP_URL = "http://localhost:9222"    # Chrome started by you with --remote-debugging-port=9222
+NEW_TAB_EVERY = 200                  # open a fresh tab every 200 products (one tab for hours = out of memory)
 DEBUG = False
 
-# Save query: same columns as branded_perfume.py on Render
-SAVE_SQL = """
-UPDATE branded_perfume_catalog AS b SET
-    bp_price         = v.price::numeric,
-    bp_price_inc_tax = v.price_inc::numeric,
-    bp_stock         = v.stock,
-    bp_status        = v.status,
-    bp_title         = v.title,
-    bp_size          = v.size,
-    checked_at       = NOW(),
-    updated_at       = NOW()
+
+def save_sql():
+    """Save query for the chosen shop (columns start with its prefix: bp_price / es_price ...)."""
+    t, p = SHOP["table"], SHOP["prefix"]
+    return f"""
+UPDATE {t} AS b SET
+    {p}_price         = v.price::numeric,
+    {p}_price_inc_tax = v.price_inc::numeric,
+    {p}_stock         = v.stock,
+    {p}_status        = v.status,
+    {p}_title         = v.title,
+    {p}_size          = v.size,
+    checked_at        = NOW(),
+    updated_at        = NOW()
 FROM (VALUES %s) AS v(id, price, price_inc, stock, status, title, size)
 WHERE b.id = v.id;
 """
-# makes sure the size / title columns exist even if Render was not updated yet
-ADD_COLUMNS_SQL = """
-ALTER TABLE branded_perfume_catalog ADD COLUMN IF NOT EXISTS bp_title TEXT;
-ALTER TABLE branded_perfume_catalog ADD COLUMN IF NOT EXISTS bp_size TEXT;
+
+
+def add_columns_sql():
+    """Makes sure the size / title columns exist even if Render was not updated yet."""
+    t, p = SHOP["table"], SHOP["prefix"]
+    return f"""
+ALTER TABLE {t} ADD COLUMN IF NOT EXISTS {p}_title TEXT;
+ALTER TABLE {t} ADD COLUMN IF NOT EXISTS {p}_size TEXT;
 """
 
 
@@ -79,18 +94,21 @@ def load_todo(refresh):
     """Branded Perfume links to open. Normal run = only not-checked-yet (so a stopped run continues)."""
     conn = db()
     cur = conn.cursor()
-    cur.execute(ADD_COLUMNS_SQL)
+    t, p = SHOP["table"], SHOP["prefix"]
+    cur.execute("SELECT to_regclass(%s)", (t,))
+    if cur.fetchone()[0] is None:
+        load_url = "/essenzi/load" if p == "es" else "/branded-perfume/load"
+        raise SystemExit(f"[DB] Table {t} does not exist yet - open {load_url}?secret=... on Render first")
+    cur.execute(add_columns_sql())
     conn.commit()
     where = "" if refresh else "WHERE checked_at IS NULL"
-    cur.execute(f"SELECT id, bp_url FROM branded_perfume_catalog {where} ORDER BY id")
+    cur.execute(f"SELECT id, {p}_url FROM {t} {where} ORDER BY id")
     rows = cur.fetchall()
-    cur.execute("SELECT COUNT(*) FROM branded_perfume_catalog")
+    cur.execute(f"SELECT COUNT(*) FROM {t}")
     total = cur.fetchone()[0]
     cur.close()
     conn.close()
-    log(f"[DB] {total} products in branded_perfume_catalog | {len(rows)} to scrape now")
-    if total == 0:
-        log("[DB] Table is empty - open /branded-perfume/load?secret=... on Render first")
+    log(f"[DB] {SHOP['label']}: {total} products in {t} | {len(rows)} to scrape now")
     return rows
 
 
@@ -100,7 +118,7 @@ def save(batch):
         try:
             conn = db()
             cur = conn.cursor()
-            execute_values(cur, SAVE_SQL, batch)
+            execute_values(cur, save_sql(), batch)
             conn.commit()
             cur.close()
             conn.close()
@@ -216,8 +234,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--test", type=int, default=0, help="scrape N products and only print")
     ap.add_argument("--refresh", action="store_true", help="re-check products already checked")
-    ap.add_argument("--url", default="", help="test one Branded Perfume product URL")
+    ap.add_argument("--url", default="", help="test one product URL")
+    ap.add_argument("--shop", default="bp", choices=sorted(SHOPS), help="bp = Branded Perfume, es = Essenzi")
     args = ap.parse_args()
+    global SHOP
+    SHOP = SHOPS[args.shop]
+    log(f"[SHOP] {SHOP['label']} ({SHOP['site']}) -> table {SHOP['table']}")
 
     with sync_playwright() as p:
         # Connect to the Chrome YOU started with --remote-debugging-port=9222 (not flagged as automated)
@@ -230,8 +252,8 @@ def main():
         page = browser.contexts[0].new_page()
         log("[CHROME] Connected to your Chrome - a new tab is used for scraping")
 
-        log("[START] Opening Branded Perfume ...")
-        page.goto(SITE, wait_until="domcontentloaded", timeout=90000)
+        log(f"[START] Opening {SHOP['label']} ...")
+        page.goto(SHOP["site"], wait_until="domcontentloaded", timeout=90000)
         if not wait_cloudflare(page):
             return
 
@@ -251,7 +273,7 @@ def main():
             log("[TEST] Done - nothing was saved.")
             return
 
-        batch, started, errors_in_row = [], time.time(), 0
+        batch, started, errors_in_row, driver_lost = [], time.time(), 0, False
         counts = {"In stock": 0, "Out of stock": 0, "Not on site": 0, "errors": 0}
         for i, (rid, u) in enumerate(todo, 1):
             row = None
@@ -263,8 +285,15 @@ def main():
                     log(f"[{i}/{len(todo)}] OFFLINE ({ex}) - waiting 60s, retry {attempt}/30")
                     time.sleep(60)
                 except Exception as ex:
-                    log(f"[{i}/{len(todo)}] ERROR {u}: {ex}")
+                    msg = str(ex)
+                    if "Connection closed" in msg or "has been closed" in msg:
+                        driver_lost = True           # Chrome / Playwright connection is gone
+                    log(f"[{i}/{len(todo)}] ERROR {u}: {msg.splitlines()[0][:150]}")
                     break
+            if driver_lost:
+                log("[STOP] Lost the connection to Chrome (memory / Chrome closed). Saving and stopping.")
+                log("[STOP] Just run the same command again - it continues with the products not saved yet.")
+                break
             if row is None:
                 counts["errors"] += 1
                 errors_in_row += 1
@@ -283,11 +312,22 @@ def main():
                 batch = []
                 mins = (time.time() - started) / 60
                 log(f"[PROGRESS] {i}/{len(todo)} done in {mins:.0f} min | {counts}")
+            if i % NEW_TAB_EVERY == 0:
+                # a tab that opened thousands of pages keeps growing in memory -> replace it with a fresh one
+                try:
+                    page.close()
+                except Exception:
+                    pass
+                page = browser.contexts[0].new_page()
+                log(f"[TAB] Opened a fresh tab after {i} products (keeps memory low)")
             time.sleep(DELAY)
         if batch:
             save(batch)
         log(f"[DONE] {counts} | {(time.time() - started) / 60:.0f} min")
-        page.close()
+        try:
+            page.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
