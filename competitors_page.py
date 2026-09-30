@@ -27,11 +27,15 @@ SOURCES = [
     {"key": "competitor", "label": "Competitor table", "table": "competitor_table", "kind": "competitor",
      "search": ["product_name", "french_inventory_code", "sku"],
      # shops shown on each card: (label, column prefix in competitor_table). Add V Perfumes here later.
-     "shops": [("Samawa", "samawa"), ("French Fragrance", "ff")],
+     "shops": [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"), ("Essenzi", "es")],
      "cols": {"code": "french_inventory_code", "sku": "sku", "name": "product_name", "uae_price": "uae_price",
               "samawa_url": "samawa_link", "samawa_price": "samawa_price", "samawa_stock": "samawa_stock",
               "samawa_suggestion": "samawa_suggestion",
               "ff_url": "ff_link", "ff_price": "ff_price", "ff_stock": "ff_stock", "ff_suggestion": "ff_suggestion",
+              # Branded Perfume / Essenzi come through the French Fragrance match -> no suggestion column
+              "bp_url": "bp_link", "bp_price": "bp_price", "bp_stock": "bp_stock", "bp_suggestion": None,
+              "es_url": "es_link", "es_price": "es_price", "es_stock": "es_stock", "es_suggestion": None,
+              "least_price": "least_price", "least_site": "least_priced_website",
               "stock": None, "updated": "updated_at"}},
     {"key": "samawa", "label": "Samawa", "table": "samawa_catalog",
      "cols": {"name": "name", "brand": "brand", "gtin": "gtin", "url": "product_url",
@@ -46,7 +50,7 @@ SOURCES = [
               "price": "COALESCE(bp_price_inc_tax, bp_price)", "stock": "bp_stock",
               "volume": "COALESCE(bp_size, volume)",
               "updated": "checked_at"}},
-    # Essenzi = same products as French Fragrance, prices/stock read from essenzi.com (bp_scraper.py --shop es)
+    # Essenzi = same products as French Fragrance, prices/stock read from essenzi.com (es_scraper.py on the PC)
     {"key": "es", "label": "Essenzi", "table": "essenzi_catalog",
      "cols": {"name": "name", "brand": None, "gtin": "gtin", "url": "es_url",
               "price": "COALESCE(es_price_inc_tax, es_price)", "stock": "es_stock",
@@ -113,6 +117,8 @@ HTML = """
  .diff{font-size:14px;margin-top:8px}
  .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
+ .least{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;margin:10px 0 2px;padding:10px 12px;
+        border:1px solid #f2d675;border-radius:12px}
  .hint{color:var(--muted);font-size:14px;margin:6px 2px 16px}
  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-bottom:12px}
  .title{font-size:18px;font-weight:600;margin-bottom:6px;line-height:1.35}
@@ -125,7 +131,7 @@ HTML = """
  .date{color:var(--grey);font-size:13px;margin-top:8px}
  .empty{background:var(--card);border:1px dashed var(--line);border-radius:16px;padding:28px 20px;text-align:center;color:var(--muted)}
  .pager{display:flex;justify-content:space-between;align-items:center;margin-top:16px}
-  .pbtn{background:#f2d675;color:#1c1b19;text-decoration:none;border-radius:12px;padding:12px 18px;font-weight:600}
+ .pbtn{background:#f2d675;color:#1c1b19;text-decoration:none;border-radius:12px;padding:12px 18px;font-weight:600}
  .pbtn.off{visibility:hidden}
  :focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 </style></head><body><div class="page">
@@ -185,6 +191,13 @@ HTML = """
   <div class="card">
     <div class="title">{{ r.name or r.code or '' }}</div>
     <div class="code">{{ r.code or '' }}{% if r.sku %} · SKU {{ r.sku }}{% endif %}</div>
+    <div class="least">
+      <span class="plabel">Least price</span>
+      {% if r.least_price is not none %}
+        <span class="price">AED {{ '%.2f' % r.least_price }}</span>
+        <span class="{{ 'in' if 'Fragrant Souq' in (r.least_site or '') else 'out' }}">{{ r.least_site }}</span>
+      {% else %}<span class="gtin">No price to compare</span>{% endif %}
+    </div>
     <div class="prices">
       <div><div class="plabel">Our UAE price</div><span class="price">{% if r.uae_price is not none %}AED {{ '%.2f' % r.uae_price }}{% else %}-{% endif %}</span></div>
     </div>

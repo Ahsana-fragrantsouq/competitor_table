@@ -18,6 +18,8 @@ Normal order to run things (open these URLs in the browser)
   2. /competitor/load-fi?secret=XXX        copy ALL French Inventories products into Postgres (competitor_table)
   3. /competitor/match-samawa?secret=XXX   find each product on Samawa -> link, price, stock, suggestion
   4. /competitor/match-ff?secret=XXX       same for French Fragrance (uses french_fragrance_catalog)
+  5. /competitor/update-least?secret=XXX   Branded Perfume + Essenzi prices (via FF match) + least price
+     (least price is also recalculated automatically at the end of steps 2, 3 and 4)
   Progress: step 1 -> /samawa-catalog/status | steps 2, 3, 4 -> /samawa/status | Result -> /competitors
 
 Old URL still here (reads Airtable, matches, but saves NOTHING - only writes logs)
@@ -677,6 +679,10 @@ def run_match(brands, rematch=False, fi_groups=None):
 #   samawa_suggestion      best guess link when NO match (team checks it by hand)
 #   samawa_method / samawa_score   why it matched or not (e.g. "fuzzy" 0.92, "low score" 0.61)
 #   ff_link / ff_price / ff_stock / ff_suggestion / ff_method / ff_score   same, for French Fragrance
+#   bp_link / bp_price / bp_stock   Branded Perfume  - taken from the French Fragrance match (same products)
+#   es_link / es_price / es_stock   Essenzi          - taken from the French Fragrance match (same products)
+#   least_price            lowest price: ours (always) + every shop that has it IN STOCK, VAT included
+#   least_priced_website   who has that price; ties are all listed, e.g. "Fragrant Souq, Samawa"
 import psycopg2
 import psycopg2.extras
 from psycopg2.extras import execute_values
@@ -711,6 +717,14 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_stock BOOLEAN DEFAULT F
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_suggestion TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_method TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_score NUMERIC(5,3);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS bp_link TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS bp_price NUMERIC(10,2);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS bp_stock BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS es_link TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS es_price NUMERIC(10,2);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS es_stock BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_price NUMERIC(10,2);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_priced_website TEXT;
 CREATE INDEX IF NOT EXISTS idx_ct_sku ON competitor_table (sku);
 CREATE INDEX IF NOT EXISTS idx_ct_brand ON competitor_table (brand);
 """
@@ -841,6 +855,7 @@ def ct_load_fi():
 
     summary["seconds"] = round(time.time() - started, 1)
     log(f"[CT-LOAD DONE] {summary}")
+    summary["least"] = ct_update_least()          # our UAE prices may have changed -> recalculate least price
     return summary
 
 
@@ -1019,6 +1034,7 @@ def ct_match_shop(shop_key):
 
     summary["seconds"] = round(time.time() - started, 1)
     log(f"[{tag} DONE] {summary}")
+    summary["least"] = ct_update_least()          # new shop prices -> recalculate least price
     return summary
 
 
@@ -1030,6 +1046,107 @@ def ct_match_samawa():
 def ct_match_ff():
     """STEP 3 - match all products to French Fragrance."""
     return ct_match_shop("ff")
+
+
+# ---------------------------------------------------------------- Branded Perfume / Essenzi + least price
+# Branded Perfume and Essenzi sell the SAME products as French Fragrance (same company, same links).
+# So a product matched to French Fragrance (ff_link) is also matched to them:
+#   competitor_table.ff_link = french_fragrance_catalog.product_url
+#   french_fragrance_catalog.id = branded_perfume_catalog.ff_id / essenzi_catalog.ff_id
+SISTER_LINKS = [
+    # (label, prefix in competitor_table, catalog table, catalog column prefix)
+    ("Branded Perfume", "bp", "branded_perfume_catalog", "bp"),
+    ("Essenzi", "es", "essenzi_catalog", "es"),
+]
+
+# All offers: our UAE price ALWAYS + every competitor only when IN STOCK with a real price (all include VAT).
+# Order number = order in which tied websites are listed.
+LEAST_SQL = """
+UPDATE competitor_table SET least_price = NULL, least_priced_website = NULL;
+
+WITH offers AS (
+    -- OUR price: always compared (our own stock is not checked)
+    SELECT fi_record_id, 'Fragrant Souq' AS site, uae_price AS price, 1 AS ord
+      FROM competitor_table WHERE uae_price > 0
+    UNION ALL
+    SELECT fi_record_id, 'Samawa', samawa_price, 2
+      FROM competitor_table WHERE samawa_stock AND samawa_link IS NOT NULL AND samawa_price > 0
+    UNION ALL
+    SELECT fi_record_id, 'French Fragrance', ff_price, 3
+      FROM competitor_table WHERE ff_stock AND ff_link IS NOT NULL AND ff_price > 0
+    UNION ALL
+    SELECT fi_record_id, 'Branded Perfume', bp_price, 4
+      FROM competitor_table WHERE bp_stock AND bp_link IS NOT NULL AND bp_price > 0
+    UNION ALL
+    SELECT fi_record_id, 'Essenzi', es_price, 5
+      FROM competitor_table WHERE es_stock AND es_link IS NOT NULL AND es_price > 0
+),
+best AS (
+    SELECT fi_record_id, MIN(price) AS min_price FROM offers GROUP BY fi_record_id
+),
+winners AS (   -- every website that has the lowest price (ties -> all of them)
+    SELECT o.fi_record_id, b.min_price, string_agg(o.site, ', ' ORDER BY o.ord) AS sites
+    FROM offers o JOIN best b ON b.fi_record_id = o.fi_record_id AND o.price = b.min_price
+    GROUP BY o.fi_record_id, b.min_price
+)
+UPDATE competitor_table c
+SET least_price = w.min_price, least_priced_website = w.sites
+FROM winners w
+WHERE c.fi_record_id = w.fi_record_id;
+"""
+
+
+def ct_update_least():
+    """1. Copy Branded Perfume + Essenzi price/stock into competitor_table (via the French Fragrance match).
+    2. Recalculate least_price + least_priced_website for every product.
+    Runs automatically after load-fi / match-samawa / match-ff, and by /competitor/update-least."""
+    started = time.time()
+    result = {}
+    conn = pg_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(CT_CREATE)
+        for label, p, table, cp in SISTER_LINKS:
+            cur.execute("SELECT to_regclass(%s)", (table,))
+            if cur.fetchone()[0] is None:
+                log(f"[CT-LEAST] {table} does not exist yet -> {label} skipped")
+                continue
+            # clear old values, then take them from the sister catalog through the French Fragrance match
+            cur.execute(f"UPDATE competitor_table SET {p}_link = NULL, {p}_price = NULL, {p}_stock = FALSE")
+            cur.execute(f"""
+                UPDATE competitor_table c SET
+                    {p}_link  = s.{cp}_url,
+                    {p}_price = COALESCE(s.{cp}_price_inc_tax, s.{cp}_price),
+                    {p}_stock = (s.{cp}_stock = 'In stock')
+                FROM french_fragrance_catalog f
+                JOIN {table} s ON s.ff_id = f.id
+                WHERE c.ff_link = f.product_url
+                  AND COALESCE(s.{cp}_stock, '') <> 'Not on site'
+            """)
+            result[p] = cur.rowcount
+            log(f"[CT-LEAST] {label}: {cur.rowcount} products linked through the French Fragrance match")
+
+        cur.execute(LEAST_SQL)
+        cur.execute("SELECT COUNT(*) FROM competitor_table WHERE least_price IS NOT NULL")
+        result["with_least_price"] = cur.fetchone()[0]
+        cur.execute("SELECT least_priced_website, COUNT(*) FROM competitor_table "
+                    "WHERE least_priced_website IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 10")
+        result["cheapest_counts"] = {site: n for site, n in cur.fetchall()}
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    result["seconds"] = round(time.time() - started, 1)
+    log(f"[CT-LEAST DONE] {result}")
+    return result
+
+
+def ct_update_least_job():
+    """For /competitor/update-least (e.g. after the Branded Perfume / Essenzi scrapers finished)."""
+    summary = {"step": "update-least"}
+    state["last_summary"] = summary
+    summary.update(ct_update_least())
+    return summary
 
 
 def _ct_worker(fn):
@@ -1139,6 +1256,12 @@ def ct_match_samawa_route():
 def ct_match_ff_route():
     # Step 3: /competitor/match-ff?secret=XXX -> French Fragrance link / price / stock / suggestion for every product
     return _ct_start(ct_match_ff, "CT-FF")
+
+
+@app.get("/competitor/update-least")
+def ct_update_least_route():
+    # /competitor/update-least?secret=XXX -> take latest Branded Perfume / Essenzi prices + recalculate least price
+    return _ct_start(ct_update_least_job, "CT-LEAST")
 
 
 # Local testing only (python app.py). On Render the app is started by gunicorn.

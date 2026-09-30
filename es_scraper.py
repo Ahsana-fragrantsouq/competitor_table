@@ -195,12 +195,22 @@ def scrape_product(page, url):
     name = jd.get("name") or (page.title() or "").split("|")[0].strip()
 
     # price without VAT (Google data), inc-tax price shown as "(AED 397 inc tax)", else +5% VAT
+    # price without VAT from the product's own data. Price 0 / missing = Essenzi shows no price -> None
+    # (do NOT search the page text for "AED ...": it can pick up unrelated numbers)
     price = to_number(offers.get("price") or offers.get("lowPrice") or inner.get("price"))
-    if price is None:
-        m = re.search(r"AED\W*([\d,]+(?:\.\d+)?)", text)
-        price = to_number(m.group(1)) if m else None
-    m = re.search(r"AED\W*([\d,]+(?:\.\d+)?)\W*inc\.?\s*tax", text, re.I)
-    price_inc = to_number(m.group(1)) if m else (round(price * 1.05, 2) if price else None)
+    price_inc = None
+    if price:
+        # inc-tax price shown as "(AED 397 inc tax)"; if not found use price + 5% VAT
+        m = re.search(r"AED\W*([\d,]+(?:\.\d+)?)\W*inc\.?\s*tax", text, re.I)
+        price_inc = to_number(m.group(1)) if m else round(price * 1.05, 2)
+    else:
+        price = None
+
+    # safety check: no perfume costs more than AED 100,000 -> a wrong number was read, save as empty
+    for label, value in (("price", price), ("price_inc_tax", price_inc)):
+        if value is not None and value >= 100000:
+            log(f"   [WRONG PRICE] {label}={value} on {url} -> saved as empty")
+            price, price_inc = None, None
 
     # stock: the product's own data first (page text can mention OTHER products' stock)
     avail = str(offers.get("availability") or inner.get("availability") or "").lower()
