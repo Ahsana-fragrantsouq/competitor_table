@@ -218,7 +218,7 @@ HTML = """
                  {%- if not loop.last %}, {% endif -%}
                {%- endfor -%}
              </span></div>
-        <div><div class="plabel">Suggested price (5% below cheapest competitor)</div>
+        <div><div class="plabel">Suggested price</div>
              {% if r.suggested_price is not none %}<span class="price sugg">AED {{ '%g' % r.suggested_price }}</span>
              {% else %}<span class="gtin">No competitor in stock</span>{% endif %}</div>
       {% else %}<span class="gtin">No price to compare</span>{% endif %}
