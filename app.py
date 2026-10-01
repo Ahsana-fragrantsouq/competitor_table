@@ -686,6 +686,7 @@ def run_match(brands, rematch=False, fi_groups=None):
 #   es_link / es_price / es_stock   Essenzi          - taken from the French Fragrance match (same products)
 #   least_price            lowest price: ours (always) + every shop that has it IN STOCK, VAT included
 #   least_priced_website   who has that price; ties are all listed, e.g. "Fragrant Souq, Samawa"
+#   suggested_price        lowest IN-STOCK COMPETITOR price (ours not included) minus 5%, e.g. 83 -> 78.85
 import psycopg2
 import psycopg2.extras
 from psycopg2.extras import execute_values
@@ -728,6 +729,7 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS es_price NUMERIC(10,2);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS es_stock BOOLEAN DEFAULT FALSE;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_price NUMERIC(10,2);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_priced_website TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS suggested_price NUMERIC(10,2);
 CREATE INDEX IF NOT EXISTS idx_ct_sku ON competitor_table (sku);
 CREATE INDEX IF NOT EXISTS idx_ct_brand ON competitor_table (brand);
 """
@@ -1099,9 +1101,34 @@ WHERE c.fi_record_id = w.fi_record_id;
 """
 
 
+# Suggested price settings - change here later (e.g. 0.03 = 3% below, 0 decimals = whole AED)
+SUGGEST_BELOW = 0.05        # 5% below the cheapest in-stock competitor
+SUGGEST_DECIMALS = 0        # 78.85 -> 79 (nearest whole AED; 2 = keep 78.85)
+
+# suggested_price = cheapest in-stock COMPETITOR (Samawa / FF / Branded Perfume / Essenzi) minus 5%
+SUGGEST_SQL = f"""
+UPDATE competitor_table SET suggested_price = NULL;
+
+WITH competitor_offers AS (
+    SELECT fi_record_id, samawa_price AS price FROM competitor_table
+      WHERE samawa_stock AND samawa_link IS NOT NULL AND samawa_price > 0
+    UNION ALL
+    SELECT fi_record_id, ff_price FROM competitor_table WHERE ff_stock AND ff_link IS NOT NULL AND ff_price > 0
+    UNION ALL
+    SELECT fi_record_id, bp_price FROM competitor_table WHERE bp_stock AND bp_link IS NOT NULL AND bp_price > 0
+    UNION ALL
+    SELECT fi_record_id, es_price FROM competitor_table WHERE es_stock AND es_link IS NOT NULL AND es_price > 0
+)
+UPDATE competitor_table c
+SET suggested_price = ROUND(m.min_price * (1 - {SUGGEST_BELOW}), {SUGGEST_DECIMALS})
+FROM (SELECT fi_record_id, MIN(price) AS min_price FROM competitor_offers GROUP BY fi_record_id) m
+WHERE c.fi_record_id = m.fi_record_id;
+"""
+
+
 def ct_update_least():
     """1. Copy Branded Perfume + Essenzi price/stock into competitor_table (via the French Fragrance match).
-    2. Recalculate least_price + least_priced_website for every product.
+    2. Recalculate least_price + least_priced_website + suggested_price for every product.
     Runs automatically after load-fi / match-samawa / match-ff, and by /competitor/update-least."""
     started = time.time()
     result = {}
@@ -1130,6 +1157,9 @@ def ct_update_least():
             log(f"[CT-LEAST] {label}: {cur.rowcount} products linked through the French Fragrance match")
 
         cur.execute(LEAST_SQL)
+        cur.execute(SUGGEST_SQL)
+        cur.execute("SELECT COUNT(*) FROM competitor_table WHERE suggested_price IS NOT NULL")
+        result["with_suggested_price"] = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM competitor_table WHERE least_price IS NOT NULL")
         result["with_least_price"] = cur.fetchone()[0]
         cur.execute("SELECT least_priced_website, COUNT(*) FROM competitor_table "

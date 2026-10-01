@@ -36,6 +36,7 @@ SOURCES = [
               "bp_url": "bp_link", "bp_price": "bp_price", "bp_stock": "bp_stock", "bp_suggestion": None,
               "es_url": "es_link", "es_price": "es_price", "es_stock": "es_stock", "es_suggestion": None,
               "least_price": "least_price", "least_site": "least_priced_website",
+              "suggested_price": "suggested_price",
               "stock": None, "updated": "updated_at"}},
     {"key": "samawa", "label": "Samawa", "table": "samawa_catalog",
      "cols": {"name": "name", "brand": "brand", "gtin": "gtin", "url": "product_url",
@@ -122,6 +123,7 @@ HTML = """
  .diff{font-size:14px;margin-top:8px}
  .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
+ .sugg{color:#f2d675}
  .sitelink{color:inherit;text-decoration:underline;text-underline-offset:3px}
  .sitelink:hover{color:#f2d675}
  .least{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 28px;margin:10px 0 2px;padding:10px 12px;
@@ -216,6 +218,9 @@ HTML = """
                  {%- if not loop.last %}, {% endif -%}
                {%- endfor -%}
              </span></div>
+        <div><div class="plabel">Suggested price (5% below cheapest competitor)</div>
+             {% if r.suggested_price is not none %}<span class="price sugg">AED {{ '%g' % r.suggested_price }}</span>
+             {% else %}<span class="gtin">No competitor in stock</span>{% endif %}</div>
       {% else %}<span class="gtin">No price to compare</span>{% endif %}
     </div>
     <div class="prices">
