@@ -12,6 +12,7 @@ Files in this project
   competitors_page.py -> the dark tabbed page /competitors (Competitor table | Samawa | French Fragrance | Branded Perfume)
   branded_perfume.py  -> copies French Fragrance products and reads the same pages on brandedperfume.com
   essenzi.py          -> same for essenzi.com (table essenzi_catalog); page reading = es_scraper.py on the PC
+  vperfumes.py        -> downloads the vperfumes.com UAE Perfumes category into vperfumes_catalog
 
 Normal order to run things (open these URLs in the browser)
   1. /samawa-catalog/run?secret=XXX        download Samawa website into Postgres (samawa_catalog)
@@ -51,6 +52,7 @@ from samawa_catalog import samawa_catalog_bp       # /samawa-catalog, /samawa-ca
 from competitors_page import competitors_bp        # /competitors
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
+from vperfumes import vperfumes_bp                 # /vperfumes/test, /vperfumes/run, /vperfumes/status
 
 app = Flask(__name__)
 app.register_blueprint(ff_catalog_bp)
@@ -58,6 +60,7 @@ app.register_blueprint(samawa_catalog_bp)
 app.register_blueprint(competitors_bp)
 app.register_blueprint(branded_perfume_bp)
 app.register_blueprint(essenzi_bp)
+app.register_blueprint(vperfumes_bp)
 
 
 # ---------------------------------------------------------------- config

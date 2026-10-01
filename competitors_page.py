@@ -55,6 +55,11 @@ SOURCES = [
      "cols": {"name": "name", "brand": None, "gtin": "gtin", "url": "es_url",
               "price": "COALESCE(es_price_inc_tax, es_price)", "stock": "es_stock",
               "volume": "COALESCE(es_size, volume)", "updated": "checked_at"}},
+    # V Perfumes = perfumes from the vperfumes.com UAE "Perfumes" category (no gift sets)
+    {"key": "vp", "label": "V Perfumes", "table": "vperfumes_catalog",
+     "cols": {"name": "name", "brand": None, "gtin": "gtin", "url": "product_url",
+              "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
+              "updated": "updated_at"}},
     # {"key": "shop3", "label": "Shop 3", "table": "shop3_catalog", "cols": {...}},   # add more here
 ]
 SOURCE_BY_KEY = {s["key"]: s for s in SOURCES}
