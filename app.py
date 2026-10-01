@@ -20,6 +20,7 @@ Normal order to run things (open these URLs in the browser)
   3. /competitor/match-samawa?secret=XXX   find each product on Samawa -> link, price, stock, suggestion
   4. /competitor/match-ff?secret=XXX       same for French Fragrance (uses french_fragrance_catalog)
   5. /competitor/update-least?secret=XXX   Branded Perfume + Essenzi prices (via FF match) + least price
+  6. /competitor/match-vp?secret=XXX       find each product on V Perfumes (vperfumes_catalog, barcode first)
      (least price is also recalculated automatically at the end of steps 2, 3 and 4)
   Progress: step 1 -> /samawa-catalog/status | steps 2, 3, 4 -> /samawa/status | Result -> /competitors
 
@@ -672,6 +673,7 @@ def run_match(brands, rematch=False, fi_groups=None):
 # Step 1: /competitor/load-fi       -> all French Inventories products -> competitor_table
 # Step 2: /competitor/match-samawa  -> match every product to samawa_catalog -> link, price, stock, suggestion
 # Step 3: /competitor/match-ff      -> same for French Fragrance (french_fragrance_catalog) -> ff_* columns
+# Step 4: /competitor/match-vp      -> same for V Perfumes (vperfumes_catalog) -> vp_* columns
 #
 # competitor_table = ONE row per French Inventories product:
 #   fi_record_id           Airtable record id of the product (never changes -> used to update the right row)
@@ -684,6 +686,7 @@ def run_match(brands, rematch=False, fi_groups=None):
 #   ff_link / ff_price / ff_stock / ff_suggestion / ff_method / ff_score   same, for French Fragrance
 #   bp_link / bp_price / bp_stock   Branded Perfume  - taken from the French Fragrance match (same products)
 #   es_link / es_price / es_stock   Essenzi          - taken from the French Fragrance match (same products)
+#   vp_link / vp_price / vp_stock / vp_suggestion / vp_method / vp_score   V Perfumes (own matching, barcode first)
 #   least_price            lowest price: ours (always) + every shop that has it IN STOCK, VAT included
 #   least_priced_website   who has that price; ties are all listed, e.g. "Fragrant Souq, Samawa"
 #   suggested_price        lowest IN-STOCK COMPETITOR price (ours not included) minus 5%, e.g. 83 -> 78.85
@@ -727,6 +730,12 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS bp_stock BOOLEAN DEFAULT F
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS es_link TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS es_price NUMERIC(10,2);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS es_stock BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_link TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_price NUMERIC(10,2);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_stock BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_suggestion TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_method TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_score NUMERIC(5,3);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_price NUMERIC(10,2);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_priced_website TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS suggested_price NUMERIC(10,2);
@@ -927,6 +936,41 @@ def ff_entries_from_db(cur):
     return entries, by_barcode
 
 
+def vp_entries_from_db(cur):
+    """vperfumes_catalog rows -> same entry format, so match_one() works unchanged.
+    V Perfumes has no brand column (brand is at the start of the name) and its sku = barcode (gtin)."""
+    cur.execute("SELECT to_regclass('vperfumes_catalog')")
+    if cur.fetchone()[0] is None:
+        log("[CT-MATCH] vperfumes_catalog does not exist yet")
+        return [], {}
+    cur.execute("SELECT product_url, gtin, name, COALESCE(price_inc_tax, price), stock, volume "
+                "FROM vperfumes_catalog WHERE COALESCE(stock, '') <> 'Not on site'")
+    entries, by_barcode = [], {}
+    for url, gtin, name, price, stock, volume in cur.fetchall():
+        name = name or ""
+        full_n = norm_text(name)
+        e = {
+            "handle": (url or "").rstrip("/"),
+            "url": url,
+            "title": name,
+            "vendor_key": "",                     # no brand column -> brand is matched in title_norm
+            "title_key": key(name),
+            "title_norm": full_n,
+            "size": parse_size(volume) or parse_size(name),
+            "type": detect_type(full_n),
+            "gender": detect_gender(full_n),
+            "tokens": tokens(norm_text(re.split(r"\s-\s|,", name)[0])),
+            "price": float(price or 0),           # price shown on V Perfumes (VAT included)
+            "available": stock == "In stock",
+        }
+        entries.append(e)
+        bc = norm_barcode(gtin)
+        if bc:
+            by_barcode[bc] = e
+    log(f"[CT-MATCH] {len(entries)} V Perfumes products loaded from vperfumes_catalog | {len(by_barcode)} with barcode")
+    return entries, by_barcode
+
+
 # One entry per competitor shop. To add a new shop later (e.g. V Perfumes):
 #   1. load its products into a Postgres table, 2. write a loader like ff_entries_from_db,
 #   3. add its columns to CT_CREATE, 4. add one entry here + one route below.
@@ -937,6 +981,9 @@ SHOPS = {
     "ff": {"label": "French Fragrance", "prefix": "ff", "loader": ff_entries_from_db,
            "empty_hint": "french_fragrance_catalog is empty - load it first",
            "trust_barcode": True},       # French Fragrance GTINs are reliable -> barcode match is trusted
+    "vp": {"label": "V Perfumes", "prefix": "vp", "loader": vp_entries_from_db,
+           "empty_hint": "vperfumes_catalog is empty - run /vperfumes/run first",
+           "trust_barcode": True},       # V Perfumes sku = real barcode -> barcode match is trusted
 }
 
 
@@ -994,8 +1041,8 @@ def ct_match_shop(shop_key):
             brand_entries = [e for e in entries if (e["vendor_key"] and e["vendor_key"].startswith(bkey))
                              or bnorm in e["title_norm"]
                              or (len(e["vendor_key"]) >= 4 and e["vendor_key"] in bkey)]
-            if shop_key == "ff":
-                # French Fragrance titles start with the FULL brand ("Christian Dior Sauvage ...").
+            if shop_key in ("ff", "vp"):
+                # French Fragrance / V Perfumes titles start with the FULL brand ("Christian Dior Sauvage ...").
                 # Our brand is "Dior" -> the word "christian" would lower the name score.
                 # So for FF, ignore the words written BEFORE our brand name in the title.
                 trimmed = []
@@ -1053,6 +1100,11 @@ def ct_match_ff():
     return ct_match_shop("ff")
 
 
+def ct_match_vp():
+    """STEP 4 - match all products to V Perfumes."""
+    return ct_match_shop("vp")
+
+
 # ---------------------------------------------------------------- Branded Perfume / Essenzi + least price
 # Branded Perfume and Essenzi sell the SAME products as French Fragrance (same company, same links).
 # So a product matched to French Fragrance (ff_link) is also matched to them:
@@ -1085,6 +1137,9 @@ WITH offers AS (
     UNION ALL
     SELECT fi_record_id, 'Essenzi', es_price, 5
       FROM competitor_table WHERE es_stock AND es_link IS NOT NULL AND es_price > 0
+    UNION ALL
+    SELECT fi_record_id, 'V Perfumes', vp_price, 6
+      FROM competitor_table WHERE vp_stock AND vp_link IS NOT NULL AND vp_price > 0
 ),
 best AS (
     SELECT fi_record_id, MIN(price) AS min_price FROM offers GROUP BY fi_record_id
@@ -1105,7 +1160,7 @@ WHERE c.fi_record_id = w.fi_record_id;
 SUGGEST_BELOW = 0.05        # 5% below the cheapest in-stock competitor
 SUGGEST_DECIMALS = 0        # 78.85 -> 79 (nearest whole AED; 2 = keep 78.85)
 
-# suggested_price = cheapest in-stock COMPETITOR (Samawa / FF / Branded Perfume / Essenzi) minus 5%
+# suggested_price = cheapest in-stock COMPETITOR (Samawa / FF / Branded Perfume / Essenzi / V Perfumes) minus 5%
 SUGGEST_SQL = f"""
 UPDATE competitor_table SET suggested_price = NULL;
 
@@ -1118,6 +1173,8 @@ WITH competitor_offers AS (
     SELECT fi_record_id, bp_price FROM competitor_table WHERE bp_stock AND bp_link IS NOT NULL AND bp_price > 0
     UNION ALL
     SELECT fi_record_id, es_price FROM competitor_table WHERE es_stock AND es_link IS NOT NULL AND es_price > 0
+    UNION ALL
+    SELECT fi_record_id, vp_price FROM competitor_table WHERE vp_stock AND vp_link IS NOT NULL AND vp_price > 0
 )
 UPDATE competitor_table c
 SET suggested_price = ROUND(m.min_price * (1 - {SUGGEST_BELOW}), {SUGGEST_DECIMALS})
@@ -1289,6 +1346,12 @@ def ct_match_samawa_route():
 def ct_match_ff_route():
     # Step 3: /competitor/match-ff?secret=XXX -> French Fragrance link / price / stock / suggestion for every product
     return _ct_start(ct_match_ff, "CT-FF")
+
+
+@app.get("/competitor/match-vp")
+def ct_match_vp_route():
+    # Step 4: /competitor/match-vp?secret=XXX -> V Perfumes link / price / stock / suggestion for every product
+    return _ct_start(ct_match_vp, "CT-VP")
 
 
 @app.post("/competitor/update-price")

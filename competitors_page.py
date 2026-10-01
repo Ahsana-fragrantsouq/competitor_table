@@ -27,7 +27,8 @@ SOURCES = [
     {"key": "competitor", "label": "Competitor table", "table": "competitor_table", "kind": "competitor",
      "search": ["product_name", "french_inventory_code", "sku"],
      # shops shown on each card: (label, column prefix in competitor_table). Add V Perfumes here later.
-     "shops": [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"), ("Essenzi", "es")],
+     "shops": [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"), ("Essenzi", "es"),
+               ("V Perfumes", "vp")],
      "cols": {"code": "french_inventory_code", "sku": "sku", "name": "product_name", "uae_price": "uae_price",
               "samawa_url": "samawa_link", "samawa_price": "samawa_price", "samawa_stock": "samawa_stock",
               "samawa_suggestion": "samawa_suggestion",
@@ -35,6 +36,7 @@ SOURCES = [
               # Branded Perfume / Essenzi come through the French Fragrance match -> no suggestion column
               "bp_url": "bp_link", "bp_price": "bp_price", "bp_stock": "bp_stock", "bp_suggestion": None,
               "es_url": "es_link", "es_price": "es_price", "es_stock": "es_stock", "es_suggestion": None,
+              "vp_url": "vp_link", "vp_price": "vp_price", "vp_stock": "vp_stock", "vp_suggestion": "vp_suggestion",
               "least_price": "least_price", "least_site": "least_priced_website",
               "suggested_price": "suggested_price", "fi": "fi_record_id",
               "stock": None, "updated": "updated_at"}},
@@ -215,7 +217,7 @@ HTML = """
              {% set site_links = {
                   'Fragrant Souq': 'https://fragrantsouq.com/search?q=' ~ ((r.sku or r.name or '')|urlencode),
                   'Samawa': r.samawa_url, 'French Fragrance': r.ff_url,
-                  'Branded Perfume': r.bp_url, 'Essenzi': r.es_url} %}
+                  'Branded Perfume': r.bp_url, 'Essenzi': r.es_url, 'V Perfumes': r.vp_url} %}
              <span class="{{ 'in' if 'Fragrant Souq' in (r.least_site or '') else 'out' }}">
                {%- for site in (r.least_site or '').split(', ') -%}
                  {%- if site_links.get(site) -%}
