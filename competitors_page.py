@@ -36,7 +36,7 @@ SOURCES = [
               "bp_url": "bp_link", "bp_price": "bp_price", "bp_stock": "bp_stock", "bp_suggestion": None,
               "es_url": "es_link", "es_price": "es_price", "es_stock": "es_stock", "es_suggestion": None,
               "least_price": "least_price", "least_site": "least_priced_website",
-              "suggested_price": "suggested_price",
+              "suggested_price": "suggested_price", "fi": "fi_record_id",
               "stock": None, "updated": "updated_at"}},
     {"key": "samawa", "label": "Samawa", "table": "samawa_catalog",
      "cols": {"name": "name", "brand": "brand", "gtin": "gtin", "url": "product_url",
@@ -124,6 +124,12 @@ HTML = """
  .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
  .sugg{color:#f2d675}
+ .upd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px}
+ .sugg-in{width:110px;background:var(--card);color:#f2d675;border:1px solid var(--line);border-radius:10px;
+          padding:8px 10px;font-size:20px;font-weight:600}
+ .upd-btn{background:#f2d675;color:#1c1b19;border:0;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
+ .upd-btn:disabled{opacity:.6;cursor:wait}
+ .upd-msg{font-size:13px;margin-top:6px;min-height:16px}
  .sitelink{color:inherit;text-decoration:underline;text-underline-offset:3px}
  .sitelink:hover{color:#f2d675}
  .least{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 28px;margin:10px 0 2px;padding:10px 12px;
@@ -219,12 +225,19 @@ HTML = """
                {%- endfor -%}
              </span></div>
         <div><div class="plabel">Suggested price</div>
-             {% if r.suggested_price is not none %}<span class="price sugg">AED {{ '%g' % r.suggested_price }}</span>
-             {% else %}<span class="gtin">No competitor in stock</span>{% endif %}</div>
+             {# editable: change the number if needed, then "Update price" writes it to Airtable UAE Price #}
+             <div class="upd">
+               <span class="sugg">AED</span>
+               <input class="sugg-in" type="number" step="0.01" min="0" id="sp-{{ r.fi }}"
+                      value="{{ '%g' % r.suggested_price if r.suggested_price is not none else '' }}"
+                      placeholder="{{ 'No competitor in stock' if r.suggested_price is none else '' }}">
+               <button type="button" class="upd-btn" onclick="updatePrice('{{ r.fi }}', this)">Update price</button>
+             </div>
+             <div class="upd-msg" id="msg-{{ r.fi }}"></div></div>
       {% else %}<span class="gtin">No price to compare</span>{% endif %}
     </div>
     <div class="prices">
-      <div><div class="plabel">Our UAE price</div><span class="price">{% if r.uae_price is not none %}AED {{ '%.2f' % r.uae_price }}{% else %}-{% endif %}</span></div>
+      <div><div class="plabel">Our UAE price</div><span class="price" id="our-{{ r.fi }}">{% if r.uae_price is not none %}AED {{ '%.2f' % r.uae_price }}{% else %}-{% endif %}</span></div>
     </div>
     {# only shops that have this product (a match) or a suggestion to check; "No match" shops are hidden #}
     {% set shown = namespace(n=0) %}
@@ -281,6 +294,28 @@ HTML = """
   </div>
 {% endif %}
 
+<script>
+  // "Update price": send the (edited) suggested price to the server -> Airtable UAE Price + competitor table
+  async function updatePrice(fi, btn) {
+    var input = document.getElementById("sp-" + fi), msg = document.getElementById("msg-" + fi);
+    var price = parseFloat(input.value);
+    if (!(price > 0)) { msg.className = "upd-msg out"; msg.textContent = "Enter a price first."; return; }
+    if (!confirm("Set UAE Price in Airtable to AED " + price + "?")) return;
+    btn.disabled = true; msg.className = "upd-msg gtin"; msg.textContent = "Updating Airtable...";
+    try {
+      var r = await fetch("/competitor/update-price", {method: "POST", headers: {"Content-Type": "application/json"},
+                                                      body: JSON.stringify({fi_record_id: fi, price: price})});
+      var d = await r.json();
+      if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
+      document.getElementById("our-" + fi).textContent = "AED " + d.price.toFixed(2);
+      msg.className = "upd-msg in";
+      msg.textContent = "Updated in Airtable: AED " + d.price.toFixed(2) +
+                        (d.least_site ? " | Least now: " + d.least_site : "");
+    } catch (e) {
+      msg.className = "upd-msg out"; msg.textContent = "Not updated: " + e.message;
+    } finally { btn.disabled = false; }
+  }
+</script>
 </div></body></html>
 """
 

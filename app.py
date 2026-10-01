@@ -1291,6 +1291,48 @@ def ct_match_ff_route():
     return _ct_start(ct_match_ff, "CT-FF")
 
 
+@app.post("/competitor/update-price")
+def ct_update_price_route():
+    """'Update price' button on /competitors: write a new UAE Price to Airtable (French Inventories)
+    for ONE product, then update competitor_table + least price so the page shows it immediately.
+    Body (JSON): {"fi_record_id": "recXXXX", "price": 79}"""
+    body = request.get_json(silent=True) or {}
+    fid = str(body.get("fi_record_id") or "").strip()
+    try:
+        price = round(float(body.get("price")), 2)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Price must be a number"}), 400
+    if not fid.startswith("rec") or not (0 < price < 100000):
+        return jsonify({"ok": False, "error": "Wrong product or price (must be between 0 and 100,000)"}), 400
+    log(f"[PRICE] Update requested: {fid} -> AED {price}")
+
+    # 1) Airtable: French Inventories -> UAE Price (needs data.records:write on the token)
+    r = requests.patch(f"{AT_URL}/{FI_TABLE}/{fid}", headers=AT_HEADERS,
+                       json={"fields": {F_UAE_PRICE: price}, "typecast": True}, timeout=30)
+    if not r.ok:
+        log(f"[PRICE] Airtable error {r.status_code}: {r.text[:300]}")
+        return jsonify({"ok": False, "error": f"Airtable {r.status_code}: {r.text[:200]}"}), 502
+    log(f"[PRICE] Airtable updated: {fid} UAE Price = {price}")
+
+    # 2) Postgres: our price + least price / least priced website for the page
+    conn = pg_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("UPDATE competitor_table SET uae_price = %s, updated_at = NOW() WHERE fi_record_id = %s",
+                    (price, fid))
+        cur.execute(LEAST_SQL)                       # recalculates least price with our new price
+        cur.execute("SELECT least_price, least_priced_website FROM competitor_table WHERE fi_record_id = %s", (fid,))
+        row = cur.fetchone()
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    least, site = (row or (None, None))
+    log(f"[PRICE] Done: {fid} -> AED {price} | least now {least} ({site})")
+    return jsonify({"ok": True, "price": price,
+                    "least_price": float(least) if least is not None else None, "least_site": site})
+
+
 @app.get("/competitor/update-least")
 def ct_update_least_route():
     # /competitor/update-least?secret=XXX -> take latest Branded Perfume / Essenzi prices + recalculate least price
