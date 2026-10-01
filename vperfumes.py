@@ -19,13 +19,16 @@ Routes (open in the browser):
 Env vars (already set on Render):
   FF_DATABASE_URL = Postgres URL ending in /french_fragrance_db
   RUN_SECRET      = same secret as the other /run URLs
-  VP_API_HEADERS  = (optional) extra request headers as JSON, e.g. {"country": "ae"} - only if the API asks for them
+  VP_API_HEADERS  = (optional, normally NOT needed) extra/override request headers as JSON
 """
 
 import os
 import re
 import json
 import time
+import uuid
+import base64
+import random
 import threading
 import traceback
 
@@ -43,13 +46,27 @@ VP_LIMIT = 24                                        # products per request (sam
 VP_MAX_PAGES = 1000                                  # safety stop (8,500 / 24 = ~355 pages)
 VP_DELAY = 1.0                                       # seconds between requests (be gentle)
 VP_SKIP = re.compile(r"\b(set|gift)\b", re.I)        # not perfumes-only -> skipped
+def vp_device_token():
+    """The website gives every visitor a 'device token' = base64(random id + time in ms), e.g.
+    'd0384d42-dcac-4aba-ae94-88d33d605e79' + '1790833281675' -> 'ZDAzODRk...NQ=='. We make one the same way."""
+    raw = f"{uuid.uuid4()}{int(time.time() * 1000)}"
+    return base64.b64encode(raw.encode()).decode()
+
+
+# Same headers the V Perfumes website sends (copied from Chrome -> Network -> Request headers)
 VP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
     "Content-Type": "application/json",
     "Origin": VP_SITE,
-    "Referer": VP_SITE + "/ae-en/category/perfumes",
+    "Referer": VP_SITE + "/",
+    "devicetoken": vp_device_token(),          # required - without it: 401 "Device token is required"
+    "devicetype": "web",
+    "lang": "en",
+    "store": "AE",                             # UAE store -> AED prices
+    "ostype": json.dumps({"type": "desktop", "os": "windows", "source": "browser"}),
+    "unbxd-user-id": f"uid-{int(time.time() * 1000)}-{random.randint(10000, 99999)}",   # their search tool's visitor id
 }
 try:   # extra headers from Render -> Environment, only if the API needs something special
     VP_HEADERS.update(json.loads(os.environ.get("VP_API_HEADERS") or "{}"))
