@@ -25,11 +25,12 @@ PER_PAGE = 50
 SOURCES = [
     # Competitor table: one row per French Inventories product + Samawa match (filled by migrate_competitor_table.py)
     {"key": "competitor", "label": "Competitor table", "table": "competitor_table", "kind": "competitor",
-     "search": ["product_name", "french_inventory_code", "sku"],
+     "search": ["product_name", "french_inventory_code", "sku", "brand", "barcode"],
      # shops shown on each card: (label, column prefix in competitor_table). Add V Perfumes here later.
      "shops": [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"), ("Essenzi", "es"),
                ("V Perfumes", "vp")],
-     "cols": {"code": "french_inventory_code", "sku": "sku", "name": "product_name", "uae_price": "uae_price",
+     "cols": {"code": "french_inventory_code", "sku": "sku", "brand": "brand", "barcode": "barcode", "name": "product_name",
+              "uae_price": "uae_price",
               "samawa_url": "samawa_link", "samawa_price": "samawa_price", "samawa_stock": "samawa_stock",
               "samawa_suggestion": "samawa_suggestion",
               "ff_url": "ff_link", "ff_price": "ff_price", "ff_stock": "ff_stock", "ff_suggestion": "ff_suggestion",
@@ -126,6 +127,8 @@ HTML = """
  .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
  .sugg{color:#f2d675}
+ .meta{color:var(--muted);font-size:14px;margin-top:4px}
+ .meta b{color:var(--text);font-weight:600}
  .upd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px}
  .sugg-in{width:110px;background:var(--card);color:#f2d675;border:1px solid var(--line);border-radius:10px;
           padding:8px 10px;font-size:20px;font-weight:600}
@@ -192,7 +195,7 @@ HTML = """
 {% else %}
   <form class="bar" method="get">
     <input type="hidden" name="tab" value="{{ src.key }}">
-    <input type="text" name="q" value="{{ q }}" placeholder="{% if src.kind == 'competitor' %}Filter by code, SKU, name{% else %}Filter by {% if src.cols.brand %}brand, {% endif %}name, GTIN{% endif %}">
+    <input type="text" name="q" value="{{ q }}" placeholder="{% if src.kind == 'competitor' %}Filter by code, SKU, name, brand, barcode{% else %}Filter by {% if src.cols.brand %}brand, {% endif %}name, GTIN{% endif %}">
     {% if src.kind != 'competitor' %}<select name="stock">
       <option value="" {% if not stock %}selected{% endif %}>All</option>
       <option value="In stock" {% if stock=='In stock' %}selected{% endif %}>In stock</option>
@@ -207,7 +210,8 @@ HTML = """
   {% if src.kind == 'competitor' %}
   <div class="card">
     <div class="title">{{ r.name or r.code or '' }}</div>
-    <div class="code">{{ r.code or '' }}{% if r.sku %} · SKU {{ r.sku }}{% endif %}</div>
+    <div class="code">{{ r.code or '' }}</div>
+    <div class="meta">{% if r.brand %}Brand <b>{{ r.brand }}</b>{% endif %}{% if r.brand and r.sku %} · {% endif %}{% if r.sku %}SKU <b>{{ r.sku }}</b>{% endif %}{% if r.barcode and (r.brand or r.sku) %} · {% endif %}{% if r.barcode %}Barcode <b>{{ r.barcode }}</b>{% endif %}</div>
     <div class="least">
       {% if r.least_price is not none %}
         <div><div class="plabel">Least price (in stock)</div>
