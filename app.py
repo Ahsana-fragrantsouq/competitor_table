@@ -31,6 +31,8 @@ Environment variables (Render -> Environment)
   AIRTABLE_TOKEN     Airtable token (only READS Airtable now)
   FF_DATABASE_URL    Postgres URL ending in /french_fragrance_db
   RUN_SECRET         password for all /run URLs (?secret=...)
+  USERS              logins for the pages: name:password;name2:password2   (see auth.py)
+  SECRET_KEY         any long random text, keeps users logged in after a deploy
   BRANDS_NAME_FIELD  brand name field in the Airtable brands table ("Brand Name")
   MATCH_THRESHOLD    minimum name score to count as a match (default 0.85)
 """
@@ -54,6 +56,7 @@ from competitors_page import competitors_bp        # /competitors
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
 from vperfumes import vperfumes_bp                 # /vperfumes/test, /vperfumes/run, /vperfumes/status
+from auth import auth_bp, init_auth                # /login, /logout + login check on every page
 
 app = Flask(__name__)
 app.register_blueprint(ff_catalog_bp)
@@ -62,6 +65,8 @@ app.register_blueprint(competitors_bp)
 app.register_blueprint(branded_perfume_bp)
 app.register_blueprint(essenzi_bp)
 app.register_blueprint(vperfumes_bp)
+app.register_blueprint(auth_bp)
+init_auth(app)                                     # users from Render env var USERS (see auth.py)
 
 
 # ---------------------------------------------------------------- config

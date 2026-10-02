@@ -253,6 +253,8 @@ HTML = """
  .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
  .sugg{color:#f2d675}
+ .topbar{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+ .who{color:var(--muted);font-size:14px} .who b{color:var(--text)} .who a{color:var(--gold)}
  .titlerow{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
  .pick{width:20px;height:20px;flex:0 0 auto;margin-top:3px;accent-color:#f2d675;cursor:pointer}
  .pickallrow{display:flex;justify-content:flex-end;padding-right:18px}
@@ -303,7 +305,8 @@ HTML = """
  :focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 </style></head><body><div class="page">
 
-<h1>Saved data</h1>
+<div class="topbar"><h1>Saved data</h1>
+  {% if g.user %}<span class="who">Logged in as <b>{{ g.user }}</b> · <a href="/logout">Log out</a></span>{% endif %}</div>
 
 <div class="tabwrap">
   <button type="button" class="arrow left" id="tabLeft" aria-label="Scroll tabs left">&#8249;</button>
