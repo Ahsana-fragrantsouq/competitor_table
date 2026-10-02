@@ -93,9 +93,7 @@ FILTER_FIELDS = {
                   "choices": {k: v[0] for k, v in PRICE_FILTERS.items()}},
     "brand":     {"label": "Brand", "col": "brand", "type": "multi"},      # pick several brands (chips)
     "name":      {"label": "Product name", "col": "product_name", "type": "text"},
-    "code":      {"label": "Item ID", "col": "french_inventory_code", "type": "text"},
     "sku":       {"label": "SKU", "col": "sku", "type": "text"},
-    "barcode":   {"label": "Barcode", "col": "barcode", "type": "text"},
     "uae_price": {"label": "Our UAE price", "col": "uae_price", "type": "number"},
     "least":     {"label": "Least price", "col": "least_price", "type": "number"},
     "suggested": {"label": "Suggested price", "col": "suggested_price", "type": "number"},
