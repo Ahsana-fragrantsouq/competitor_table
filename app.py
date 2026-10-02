@@ -1496,6 +1496,65 @@ def ct_suggestion_route():
         conn.close()
 
 
+@app.post("/competitor/update-prices")
+def ct_update_prices_route():
+    """'Update all' bar on /competitors: set UAE Price in Airtable for SEVERAL products at once.
+    Body (JSON): {"items": [{"fi_record_id": "recXXX", "price": 79}, ...]}  (max 50 = one page)"""
+    items = (request.get_json(silent=True) or {}).get("items") or []
+    good, skipped = {}, []
+    for it in items[:50]:
+        fid = str(it.get("fi_record_id") or "").strip()
+        try:
+            price = round(float(it.get("price")), 2)
+        except (TypeError, ValueError):
+            skipped.append(fid); continue
+        if fid.startswith("rec") and 0 < price < 100000:
+            good[fid] = price
+        else:
+            skipped.append(fid)
+    if not good:
+        return jsonify({"ok": False, "error": "No valid prices to update"}), 400
+    log(f"[PRICES] Bulk update requested for {len(good)} products ({len(skipped)} skipped)")
+
+    # 1) Airtable: 10 records per request (Airtable limit), wait a little between requests
+    fids = list(good)
+    failed = {}
+    for i in range(0, len(fids), 10):
+        chunk = fids[i:i + 10]
+        r = requests.patch(f"{AT_URL}/{FI_TABLE}", headers=AT_HEADERS, timeout=30,
+                           json={"records": [{"id": f, "fields": {F_UAE_PRICE: good[f]}} for f in chunk],
+                                 "typecast": True})
+        if r.status_code == 429:                       # too many requests -> wait and try once more
+            time.sleep(30)
+            r = requests.patch(f"{AT_URL}/{FI_TABLE}", headers=AT_HEADERS, timeout=30,
+                               json={"records": [{"id": f, "fields": {F_UAE_PRICE: good[f]}} for f in chunk],
+                                     "typecast": True})
+        if not r.ok:
+            log(f"[PRICES] Airtable error {r.status_code}: {r.text[:300]}")
+            for f in chunk:
+                failed[f] = f"Airtable {r.status_code}"
+        else:
+            log(f"[PRICES] Airtable updated {i + len(chunk)}/{len(fids)}")
+        time.sleep(0.25)
+
+    # 2) Postgres: our price + least price for every product that Airtable accepted
+    done = [f for f in fids if f not in failed]
+    conn = pg_conn()
+    cur = conn.cursor()
+    try:
+        for f in done:
+            cur.execute("UPDATE competitor_table SET uae_price = %s, updated_at = NOW() WHERE fi_record_id = %s",
+                        (good[f], f))
+            least_for(cur, f)
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    log(f"[PRICES] Done: {len(done)} updated, {len(failed)} failed, {len(skipped)} skipped")
+    return jsonify({"ok": not failed, "updated": len(done), "failed": failed, "skipped": skipped,
+                    "error": (f"{len(failed)} not updated in Airtable" if failed else None)})
+
+
 @app.get("/competitor/match-vp")
 def ct_match_vp_route():
     # Step 4: /competitor/match-vp?secret=XXX -> V Perfumes link / price / stock / suggestion for every product

@@ -253,6 +253,18 @@ HTML = """
  .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
  .sugg{color:#f2d675}
+ .pick{width:18px;height:18px;margin-right:8px;vertical-align:-2px;accent-color:#f2d675;cursor:pointer}
+ .pickall{display:inline-flex;align-items:center;gap:8px;color:var(--muted);font-size:14px;margin:0 2px 12px;cursor:pointer}
+ .pickall input{width:18px;height:18px;accent-color:#f2d675}
+ .card.picked{border-color:#f2d675}
+ .bulkbar{position:fixed;left:50%;transform:translateX(-50%);bottom:max(16px, env(safe-area-inset-bottom, 0px));
+          display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#0f2b3a;color:#fff;
+          border-radius:14px;padding:12px 18px;box-shadow:0 8px 24px rgba(0,0,0,.45);z-index:50;max-width:92vw}
+ .bulkcount{background:#2f7de1;border-radius:999px;padding:5px 12px;font-weight:600;font-size:14px}
+ .bulkcancel{background:#fff;color:#1c1b19;border:0;border-radius:8px;padding:9px 16px;font-weight:600;cursor:pointer}
+ .bulkupdate{background:#f2d675;color:#1c1b19;border:0;border-radius:8px;padding:9px 16px;font-weight:700;cursor:pointer}
+ .bulkupdate:disabled{opacity:.6;cursor:wait}
+ .bulkmsg{font-size:14px;color:#cfe3ff}
  .sugrow{display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap}
  .okbtn,.nobtn{border:0;border-radius:8px;padding:6px 12px;font-weight:600;cursor:pointer}
  .okbtn{background:#8cc58c;color:#10240f}
@@ -363,11 +375,23 @@ HTML = """
     {% endif %}
   </form>
   <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock or conds %} match this filter{% endif %}.</p>
+  {% if src.kind == 'competitor' and rows %}
+  <label class="pickall"><input type="checkbox" id="pickAll" onchange="pickAll(this.checked)"> Select all on this page</label>
+  {# bottom bar (like Amazon "Save all"): appears when 2 or more products are ticked #}
+  <div class="bulkbar" id="bulkbar" hidden>
+    <span class="bulkcount" id="bulkcount">0 selected</span>
+    <button type="button" class="bulkcancel" onclick="pickAll(false)">Cancel</button>
+    <button type="button" class="bulkupdate" id="bulkupdate" onclick="updateAll()">Update all</button>
+    <span class="bulkmsg" id="bulkmsg"></span>
+  </div>
+  {% endif %}
 
   {% for r in rows %}
   {% if src.kind == 'competitor' %}
   <div class="card">
-    <div class="title">{{ r.name or r.code or '' }}</div>
+    <div class="title">
+      <input type="checkbox" class="pick" data-fi="{{ r.fi }}" onchange="pickChanged()" title="Select">
+      {{ r.name or r.code or '' }}</div>
     <div class="code">{{ r.code or '' }}</div>
     <div class="meta">{% if r.brand %}Brand <b>{{ r.brand }}</b>{% endif %}{% if r.brand and r.sku %} · {% endif %}{% if r.sku %}SKU <b>{{ r.sku }}</b>{% endif %}{% if r.barcode and (r.brand or r.sku) %} · {% endif %}{% if r.barcode %}Barcode <b>{{ r.barcode }}</b>{% endif %}</div>
     <div class="least">
@@ -573,6 +597,43 @@ HTML = """
 </script>
 {% endif %}
 <script>
+  // ---- tick products + "Update all" (UAE Price in Airtable = each product's suggested price box) ----
+  function picked() { return Array.prototype.slice.call(document.querySelectorAll(".pick:checked")); }
+  function pickChanged() {
+    var n = picked().length, all = document.querySelectorAll(".pick").length;
+    var bar = document.getElementById("bulkbar"); if (!bar) return;
+    bar.hidden = n < 2;                                         // bar only from 2 ticked products
+    document.getElementById("bulkcount").textContent = n + " selected";
+    document.getElementById("bulkmsg").textContent = "";
+    var pa = document.getElementById("pickAll"); pa.checked = n === all; pa.indeterminate = n > 0 && n < all;
+    document.querySelectorAll(".pick").forEach(function (c) { c.closest(".card").classList.toggle("picked", c.checked); });
+  }
+  function pickAll(on) {
+    document.querySelectorAll(".pick").forEach(function (c) { c.checked = on; });
+    pickChanged();
+  }
+  async function updateAll() {
+    var items = [], noPrice = 0;
+    picked().forEach(function (c) {
+      var box = document.getElementById("sp-" + c.dataset.fi);
+      var price = box ? parseFloat(box.value) : NaN;
+      if (price > 0) items.push({fi_record_id: c.dataset.fi, price: price}); else noPrice++;
+    });
+    var msg = document.getElementById("bulkmsg");
+    if (!items.length) { msg.textContent = "None of the ticked products has a price in its box."; return; }
+    if (!confirm("Update UAE Price in Airtable for " + items.length + " products?" +
+                 (noPrice ? " (" + noPrice + " without a price will be skipped)" : ""))) return;
+    var btn = document.getElementById("bulkupdate"); btn.disabled = true; msg.textContent = "Updating Airtable...";
+    try {
+      var r = await fetch("/competitor/update-prices", {method: "POST", headers: {"Content-Type": "application/json"},
+                                                       body: JSON.stringify({items: items})});
+      var d = await r.json();
+      if (d.updated) { msg.textContent = d.updated + " updated" + (d.error ? " | " + d.error : ""); }
+      else throw new Error(d.error || ("HTTP " + r.status));
+      setTimeout(function () { location.reload(); }, 900);     // show the new prices / least prices
+    } catch (e) { msg.textContent = "Not updated: " + e.message; btn.disabled = false; }
+  }
+
   // Suggestion "OK" / "Not OK": tell the server, then reload so the card shows the new match / no suggestion
   async function suggestion(fi, shop, action, btn) {
     var msg = document.getElementById("sg-" + shop + "-" + fi);
