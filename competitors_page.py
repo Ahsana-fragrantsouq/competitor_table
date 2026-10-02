@@ -86,9 +86,9 @@ PRICE_FILTERS = {
 # Airtable-style filter (Competitor table tab): "Where <field> <operator> <value>", several rows = AND.
 # Only the fields / operators below are allowed (safe SQL, values always passed as parameters).
 FILTER_FIELDS = {
-    "brand":     {"label": "Brand", "col": "brand", "type": "text"},
-    "price":     {"label": "Price status", "type": "choice",
+    "price":     {"label": "Price status (High / Low / No competitor)", "type": "choice",
                   "choices": {k: v[0] for k, v in PRICE_FILTERS.items()}},
+    "brand":     {"label": "Brand", "col": "brand", "type": "multi"},      # pick several brands (chips)
     "name":      {"label": "Product name", "col": "product_name", "type": "text"},
     "code":      {"label": "Item ID", "col": "french_inventory_code", "type": "text"},
     "sku":       {"label": "SKU", "col": "sku", "type": "text"},
@@ -104,6 +104,9 @@ FILTER_OPS = {
     "number": [("eq", "="), ("ne", "≠"), ("gt", ">"), ("lt", "<"), ("ge", "≥"), ("le", "≤"),
                ("empty", "is empty"), ("notempty", "is not empty")],
     "choice": [("is", "is"), ("isnot", "is not")],
+    # brand: like Airtable "has any of..." with chips; several brands are sent as "Armaf||Afnan"
+    "multi":  [("anyof", "has any of..."), ("noneof", "has none of..."), ("contains", "contains..."),
+               ("notcontains", "does not contain..."), ("empty", "is empty"), ("notempty", "is not empty")],
 }
 NUM_SQL = {"eq": "=", "ne": "<>", "gt": ">", "lt": "<", "ge": ">=", "le": "<="}
 
@@ -138,6 +141,15 @@ def filter_sql(conds):
             where.append(f"({col} IS NULL OR {col}::text = '')")
         elif o == "notempty":
             where.append(f"({col} IS NOT NULL AND {col}::text <> '')")
+        elif o in ("anyof", "noneof"):
+            picked = [x.strip().lower() for x in v.split("||") if x.strip()]   # chips -> list of brands
+            if not picked:
+                continue
+            if o == "anyof":
+                where.append(f"LOWER({col}) = ANY(%s)")
+            else:
+                where.append(f"({col} IS NULL OR NOT (LOWER({col}) = ANY(%s)))")
+            params.append(picked)
         elif fd["type"] == "number":
             try:
                 params.append(float(v))
@@ -207,6 +219,9 @@ HTML = """
  .clear{align-self:center;color:var(--gold);padding:0 6px}
  .fbtn{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:0 16px;
        font-size:16px;cursor:pointer;min-height:48px}
+ .fquick{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+ .fquick a{border:1px solid var(--line);border-radius:999px;padding:7px 14px;color:var(--text);text-decoration:none;font-size:14px}
+ .fquick a:hover{background:#f2d675;color:#1c1b19;border-color:#f2d675}
  .fbtn.on{background:#e3f5e1;color:#1c5a24;border-color:#b9e3b4;font-weight:600}
  .fpanel{flex-basis:100%;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-top:6px}
  .ftitle{color:var(--muted);font-size:14px;margin-bottom:10px}
@@ -215,6 +230,11 @@ HTML = """
  .frow select,.frow input{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:10px;
        padding:10px 12px;font-size:15px}
  .fval input,.fval select{min-width:180px}
+ .chips{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center;background:var(--bg);border:1px solid var(--line);
+        border-radius:10px;padding:6px 8px;min-width:220px}
+ .chip{background:#e3f5e1;color:#1c5a24;border-radius:999px;padding:4px 10px;font-size:14px}
+ .chip b{cursor:pointer;margin-left:2px}
+ .chip-add{border:0 !important;background:transparent !important;padding:4px !important;min-width:120px !important;outline:none}
  .fdel{background:none;border:0;color:var(--muted);font-size:18px;cursor:pointer}
  .fadd{background:none;border:0;color:var(--gold);font-size:15px;cursor:pointer;padding:6px 0}
  .factions{display:flex;justify-content:flex-end;gap:10px;margin-top:8px}
@@ -223,7 +243,7 @@ HTML = """
  .bar input,.bar select{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;
        padding:13px 14px;font-size:16px}
  .bar input{flex:1;min-width:0}
- .bar button{background:#f2d675;color:#1c1b19;border:0;border-radius:12px;padding:0 18px;font-size:16px;font-weight:600;cursor:pointer}
+ .bar > button[type=submit]{background:#f2d675;color:#1c1b19;border:0;border-radius:12px;padding:0 18px;font-size:16px;font-weight:600;cursor:pointer}
  .prices{display:flex;gap:22px;flex-wrap:wrap;margin-top:8px}
  .plabel{color:var(--muted);font-size:13px}
  .diff{font-size:14px;margin-top:8px}
@@ -316,6 +336,12 @@ HTML = """
     {% if src.kind == 'competitor' %}
     {# Airtable-style filter panel: each row = Where <field> <operator> <value>; all rows must match (AND) #}
     <div class="fpanel" id="fpanel" hidden>
+      <div class="fquick">
+        <span class="ftitle">Quick:</span>
+        <a href="?tab=competitor&ff=price&fo=is&fv=high">High price</a>
+        <a href="?tab=competitor&ff=price&fo=is&fv=low">Low price</a>
+        <a href="?tab=competitor&ff=price&fo=is&fv=none">No competitor price</a>
+      </div>
       <div class="ftitle">In this view, show records</div>
       <div id="frows"></div>
       <button type="button" class="fadd" onclick="addRow()">+ Add condition</button>
@@ -426,7 +452,8 @@ HTML = """
 {% if src.kind == 'competitor' %}
 <script>
   // ---- Airtable-style filter panel ----
-  var FIELDS = {{ fields|tojson }}, OPS = {{ ops|tojson }}, CONDS = {{ conds|tojson }};
+  var FIELD_LIST = {{ field_list|tojson }}, OPS = {{ ops|tojson }}, CONDS = {{ conds|tojson }};
+  var FIELDS = {}; FIELD_LIST.forEach(function (f) { FIELDS[f[0]] = f[1]; });   // same order as in Python
   var EMPTY_OPS = ["empty", "notempty"];
 
   function toggleFilter() {
@@ -435,12 +462,41 @@ HTML = """
     if (!p.hidden && !document.querySelector("#frows .frow")) addRow();     // start with one empty row
   }
 
-  function valueBox(field, value) {
-    // choice field -> dropdown, number -> number box, text -> text box (brand gets suggestions)
+  function chipBox(value) {
+    // Airtable-like picker: chosen brands as chips (x to remove) + a box to add more (suggests brand names)
+    var wrap = document.createElement("span"); wrap.className = "chips";
+    var hidden = document.createElement("input"); hidden.type = "hidden"; hidden.name = "fv";
+    var list = (value || "").split("||").filter(Boolean);
+    var add = document.createElement("input"); add.type = "text"; add.placeholder = "+ add brand";
+    add.setAttribute("list", "brandlist"); add.className = "chip-add";
+    function draw() {
+      wrap.querySelectorAll(".chip").forEach(function (c) { c.remove(); });
+      list.forEach(function (b, i) {
+        var c = document.createElement("span"); c.className = "chip"; c.textContent = b + " ";
+        var x = document.createElement("b"); x.textContent = "×"; x.title = "Remove";
+        x.onclick = function () { list.splice(i, 1); draw(); };
+        c.appendChild(x); wrap.insertBefore(c, add);
+      });
+      hidden.value = list.join("||");
+    }
+    function addCurrent() {
+      var b = add.value.trim();
+      if (b && list.indexOf(b) < 0) list.push(b);
+      add.value = ""; draw();
+    }
+    add.onchange = addCurrent;                                         // picked from suggestions
+    add.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); addCurrent(); } };
+    wrap.appendChild(add); wrap.appendChild(hidden); draw();
+    return wrap;
+  }
+
+  function valueBox(field, value, op) {
+    // choice field -> dropdown, number -> number box, brand "has any/none of" -> chips, text -> text box
     var f = FIELDS[field];
+    if (f.type === "multi" && (op === "anyof" || op === "noneof")) return chipBox(value);
     if (f.type === "choice") {
       var sel = document.createElement("select"); sel.name = "fv";
-      Object.keys(f.choices).forEach(function (k) {
+      ["low", "high", "none"].forEach(function (k) {
         var o = new Option(f.choices[k], k); if (k === value) o.selected = true; sel.add(o);
       });
       return sel;
@@ -448,18 +504,18 @@ HTML = """
     var inp = document.createElement("input"); inp.name = "fv"; inp.value = value || "";
     inp.type = f.type === "number" ? "number" : "text"; if (f.type === "number") inp.step = "0.01";
     inp.placeholder = "Enter a value";
-    if (field === "brand") inp.setAttribute("list", "brandlist");
+    if (field === "brand") inp.setAttribute("list", "brandlist");     // brand "contains": suggestions too
     return inp;
   }
 
   function addRow(field, op, value) {
-    field = field || "brand";
+    field = field || "price";
     var row = document.createElement("div"); row.className = "frow";
     var where = document.createElement("span"); where.className = "fwhere";
     where.textContent = document.querySelector("#frows .frow") ? "and" : "Where";
 
     var fs = document.createElement("select"); fs.name = "ff";
-    Object.keys(FIELDS).forEach(function (k) { var o = new Option(FIELDS[k].label, k); if (k === field) o.selected = true; fs.add(o); });
+    FIELD_LIST.forEach(function (f) { var o = new Option(f[1].label, f[0]); if (f[0] === field) o.selected = true; fs.add(o); });
 
     var os = document.createElement("select"); os.name = "fo";
     var cell = document.createElement("span"); cell.className = "fval";
@@ -470,12 +526,20 @@ HTML = """
     }
     function fillValue(v) {
       cell.innerHTML = "";
-      var box = valueBox(fs.value, v);
-      if (EMPTY_OPS.indexOf(os.value) >= 0) { box.type = "hidden"; box.value = ""; }   // "is empty" needs no value
+      if (EMPTY_OPS.indexOf(os.value) >= 0) {                 // "is empty" needs no value
+        var h = document.createElement("input"); h.type = "hidden"; h.name = "fv"; h.value = "";
+        cell.appendChild(h); return;
+      }
+      var box = valueBox(fs.value, v, os.value);
       cell.appendChild(box);
     }
     fs.onchange = function () { fillOps(); fillValue(); };
-    os.onchange = function () { fillValue(cell.firstChild ? cell.firstChild.value : ""); };
+    os.onchange = function () {
+      // keep what was typed/picked when switching operator (chips <-> text: keep first brand only)
+      var cur = cell.querySelector("[name=fv]"); var v = cur ? cur.value : "";
+      var multi = os.value === "anyof" || os.value === "noneof";
+      fillValue(multi ? v : v.split("||")[0]);
+    };
 
     var del = document.createElement("button"); del.type = "button"; del.className = "fdel"; del.innerHTML = "&#128465;";
     del.title = "Remove condition";
@@ -585,7 +649,7 @@ def competitors():
 
     return render_template_string(HTML, sources=SOURCES, src=src, counts=counts, rows=rows,
                                   total=total, page=page, pages=pages, q=q, stock=stock, exists=exists,
-                                  brands=brands, conds=conds, fields=FILTER_FIELDS, ops=FILTER_OPS,
+                                  brands=brands, conds=conds, field_list=list(FILTER_FIELDS.items()), ops=FILTER_OPS,
                                   filt_labels=", ".join(dict.fromkeys(FILTER_FIELDS[f]["label"] for f, _, _ in conds)),
                                   filt_qs=urlencode([(k, x) for f, o, v in conds
                                                      for k, x in (("ff", f), ("fo", o), ("fv", v))]))
