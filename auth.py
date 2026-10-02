@@ -98,6 +98,11 @@ LOGIN_HTML = """
        padding:12px 14px;font-size:16px}
  button{width:100%;margin-top:22px;background:#f2d675;color:#1c1b19;border:0;border-radius:10px;padding:13px;
         font-size:16px;font-weight:700;cursor:pointer}
+ .pw{position:relative}
+ .pw input{padding-right:48px}
+ .eye{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:38px;height:38px;margin:0;padding:0;
+      background:none;border:0;border-radius:8px;font-size:20px;cursor:pointer;color:var(--muted)}
+ .eye:hover{background:var(--line)}
  .err{color:var(--red);font-size:14px;margin-top:14px}
 </style></head><body>
 <form method="post">
@@ -107,10 +112,25 @@ LOGIN_HTML = """
   <label for="u">Username</label>
   <input id="u" name="username" autocomplete="username" autofocus required>
   <label for="p">Password</label>
-  <input id="p" name="password" type="password" autocomplete="current-password" required>
+  <div class="pw">
+    <input id="p" name="password" type="password" autocomplete="current-password" required>
+    {# eye button: show / hide the password #}
+    <button type="button" class="eye" id="eye" onclick="togglePw()" aria-label="Show password" title="Show password">&#128065;</button>
+  </div>
   <button type="submit">Log in</button>
   {% if error %}<div class="err">{{ error }}</div>{% endif %}
 </form>
+<script>
+  function togglePw() {
+    var p = document.getElementById("p"), e = document.getElementById("eye");
+    var show = p.type === "password";
+    p.type = show ? "text" : "password";
+    e.innerHTML = show ? "&#128584;" : "&#128065;";              // see-no-evil monkey = hide, eye = show
+    e.title = show ? "Hide password" : "Show password";
+    e.setAttribute("aria-label", e.title);
+    p.focus();
+  }
+</script>
 </body></html>
 """
 
