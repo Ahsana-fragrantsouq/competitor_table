@@ -253,7 +253,9 @@ HTML = """
  .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
  .sugg{color:#f2d675}
- .pick{width:18px;height:18px;margin-right:8px;vertical-align:-2px;accent-color:#f2d675;cursor:pointer}
+ .titlerow{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+ .pick{width:20px;height:20px;flex:0 0 auto;margin-top:3px;accent-color:#f2d675;cursor:pointer}
+ .pickallrow{display:flex;justify-content:flex-end;padding-right:18px}
  .pickall{display:inline-flex;align-items:center;gap:8px;color:var(--muted);font-size:14px;margin:0 2px 12px;cursor:pointer}
  .pickall input{width:18px;height:18px;accent-color:#f2d675}
  .card.picked{border-color:#f2d675}
@@ -376,7 +378,7 @@ HTML = """
   </form>
   <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock or conds %} match this filter{% endif %}.</p>
   {% if src.kind == 'competitor' and rows %}
-  <label class="pickall"><input type="checkbox" id="pickAll" onchange="pickAll(this.checked)"> Select all on this page</label>
+  <div class="pickallrow"><label class="pickall">Select all<input type="checkbox" id="pickAll" onchange="pickAll(this.checked)"></label></div>
   {# bottom bar (like Amazon "Save all"): appears when 2 or more products are ticked #}
   <div class="bulkbar" id="bulkbar" hidden>
     <span class="bulkcount" id="bulkcount">0 selected</span>
@@ -389,9 +391,9 @@ HTML = """
   {% for r in rows %}
   {% if src.kind == 'competitor' %}
   <div class="card">
-    <div class="title">
-      <input type="checkbox" class="pick" data-fi="{{ r.fi }}" onchange="pickChanged()" title="Select">
-      {{ r.name or r.code or '' }}</div>
+    <div class="title titlerow">
+      <span>{{ r.name or r.code or '' }}</span>
+      <input type="checkbox" class="pick" data-fi="{{ r.fi }}" onchange="pickChanged()" title="Select"></div>
     <div class="code">{{ r.code or '' }}</div>
     <div class="meta">{% if r.brand %}Brand <b>{{ r.brand }}</b>{% endif %}{% if r.brand and r.sku %} · {% endif %}{% if r.sku %}SKU <b>{{ r.sku }}</b>{% endif %}{% if r.barcode and (r.brand or r.sku) %} · {% endif %}{% if r.barcode %}Barcode <b>{{ r.barcode }}</b>{% endif %}</div>
     <div class="least">
