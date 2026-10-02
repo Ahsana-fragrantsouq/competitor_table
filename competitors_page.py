@@ -42,6 +42,8 @@ SOURCES = [
               # competitor's own product name, used as the link text
               "samawa_title": "samawa_title", "ff_title": "ff_title", "bp_title": "bp_title",
               "es_title": "es_title", "vp_title": "vp_title",
+              "samawa_confirmed": "samawa_confirmed", "ff_confirmed": "ff_confirmed", "vp_confirmed": "vp_confirmed",
+              "bp_confirmed": None, "es_confirmed": None,
               "least_price": "least_price", "least_site": "least_priced_website",
               "suggested_price": "suggested_price", "fi": "fi_record_id",
               "stock": None, "updated": "updated_at"}},
@@ -251,6 +253,11 @@ HTML = """
  .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
  .sugg{color:#f2d675}
+ .sugrow{display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap}
+ .okbtn,.nobtn{border:0;border-radius:8px;padding:6px 12px;font-weight:600;cursor:pointer}
+ .okbtn{background:#8cc58c;color:#10240f}
+ .nobtn{background:#e0806c;color:#2a0f09}
+ .conf{color:var(--green);font-size:12px;margin-left:6px}
  .plink{text-align:right;max-width:65%}
  .meta{color:var(--muted);font-size:14px;margin-top:4px}
  .meta b{color:var(--text);font-weight:600}
@@ -403,7 +410,7 @@ HTML = """
       {% if url or sug %}{% set shown.n = shown.n + 1 %}
       <div class="shop">
         <div class="row">
-          <span class="plabel">{{ label }}</span>
+          <span class="plabel">{{ label }}{% if r[k ~ '_confirmed'] %} <span class="conf">✓ confirmed</span>{% endif %}</span>
           {% if url %}<span class="{{ 'in' if r[k ~ '_stock'] else 'out' }}">{{ 'In stock' if r[k ~ '_stock'] else 'Out of stock' }}</span>{% endif %}
         </div>
         {% if url %}
@@ -417,7 +424,13 @@ HTML = """
           {% endif %}
         {% else %}
           <div class="row"><span class="gtin">No match</span>
-          {% if sug %}<a class="link" href="{{ sug }}" target="_blank">Suggestion (check)</a>{% endif %}</div>
+          {% if sug %}<span class="sugrow">
+            <a class="link" href="{{ sug }}" target="_blank">Suggestion (check)</a>
+            {# OK = make it the real match, Not OK = remove it (both remembered for later match runs) #}
+            <button type="button" class="okbtn" onclick="suggestion('{{ r.fi }}', '{{ k }}', 'ok', this)">OK</button>
+            <button type="button" class="nobtn" onclick="suggestion('{{ r.fi }}', '{{ k }}', 'notok', this)">Not OK</button>
+          </span>{% endif %}</div>
+          <div class="upd-msg" id="sg-{{ k }}-{{ r.fi }}"></div>
         {% endif %}
       </div>
       {% endif %}
@@ -560,6 +573,21 @@ HTML = """
 </script>
 {% endif %}
 <script>
+  // Suggestion "OK" / "Not OK": tell the server, then reload so the card shows the new match / no suggestion
+  async function suggestion(fi, shop, action, btn) {
+    var msg = document.getElementById("sg-" + shop + "-" + fi);
+    btn.disabled = true; msg.className = "upd-msg gtin"; msg.textContent = action === "ok" ? "Saving match..." : "Removing...";
+    try {
+      var r = await fetch("/competitor/suggestion", {method: "POST", headers: {"Content-Type": "application/json"},
+                                                    body: JSON.stringify({fi_record_id: fi, shop: shop, action: action})});
+      var d = await r.json();
+      if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
+      location.reload();                       // card is rebuilt with the confirmed match (scroll position is kept)
+    } catch (e) {
+      msg.className = "upd-msg out"; msg.textContent = "Not saved: " + e.message; btn.disabled = false;
+    }
+  }
+
   // "Update price": send the (edited) suggested price to the server -> Airtable UAE Price + competitor table
   async function updatePrice(fi, btn) {
     var input = document.getElementById("sp-" + fi), msg = document.getElementById("msg-" + fi);

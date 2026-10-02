@@ -688,6 +688,8 @@ def run_match(brands, rematch=False, fi_groups=None):
 #   es_link / es_price / es_stock   Essenzi          - taken from the French Fragrance match (same products)
 #   vp_link / vp_price / vp_stock / vp_suggestion / vp_method / vp_score   V Perfumes (own matching, barcode first)
 #   <shop>_title           the competitor's own product name (shown as the link text on the page)
+#   <shop>_confirmed       TRUE = suggestion accepted with "OK" -> later match runs keep this link
+#   <shop>_rejected        link refused with "Not OK" -> never suggested again for this product
 #   least_price            lowest price: ours (always) + every shop that has it IN STOCK, VAT included
 #   least_priced_website   who has that price; ties are all listed, e.g. "Fragrant Souq, Samawa"
 #   suggested_price        lowest IN-STOCK COMPETITOR price (ours not included) minus 5%, e.g. 83 -> 78.85
@@ -742,6 +744,12 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS bp_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS es_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_title TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_confirmed BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_confirmed BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_confirmed BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_rejected TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_rejected TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_rejected TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_price NUMERIC(10,2);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_priced_website TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS suggested_price NUMERIC(10,2);
@@ -1023,6 +1031,18 @@ def ct_match_shop(shop_key):
             log(f"[{tag}] {summary['error']}")
             return summary
 
+        p = shop["prefix"]
+        # links confirmed with "OK" (kept) and links refused with "Not OK" (never suggested again)
+        cur.execute(f"SELECT fi_record_id, {p}_link, {p}_rejected, {p}_confirmed FROM competitor_table")
+        confirmed, rejected = {}, {}
+        for fid, link, rej, conf in cur.fetchall():
+            if conf and link:
+                confirmed[fid] = link
+            if rej:
+                rejected[fid] = rej
+        by_url = {e["url"]: e for e in entries}
+        log(f"[{tag}] {len(confirmed)} confirmed links kept, {len(rejected)} refused suggestions remembered")
+
         cur.execute("SELECT fi_record_id, brand, product_name, perfume_name, barcode FROM competitor_table")
         groups = {}
         for fid, brand, pname, perfume, barcode in cur.fetchall():
@@ -1064,6 +1084,16 @@ def ct_match_shop(shop_key):
 
             for fid, fields in groups[brand]:
                 pname = fields[F_PRODUCT] or fields[F_PERFUME] or fid
+                if fid in confirmed:
+                    # confirmed by the team -> keep the link, only refresh price / stock / name
+                    ce = by_url.get(confirmed[fid])
+                    if ce:
+                        updates.append((fid, ce["url"], ce["price"], ce["available"], None, "confirmed", None, ce["title"]))
+                    else:
+                        log(f"[{tag}-CONFIRMED] {pname} -> link no longer in catalog, stock set to out")
+                        updates.append((fid, confirmed[fid], None, False, None, "confirmed", None, None))
+                    summary["kept_confirmed"] = summary.get("kept_confirmed", 0) + 1
+                    continue
                 e, method, score, guess = match_one(fields, brand, brand_entries, by_barcode,
                                                     trust_barcode=shop["trust_barcode"])
                 if e:
@@ -1073,6 +1103,8 @@ def ct_match_shop(shop_key):
                 else:
                     summary["unmatched"] += 1
                     suggestion = guess["url"] if guess is not None and score >= 0.5 else None
+                    if suggestion and suggestion == rejected.get(fid):
+                        suggestion = None                 # team said "Not OK" to this link before
                     if suggestion:
                         summary["with_suggestion"] += 1
                     log(f"[{tag}-NO MATCH] {pname} | {method} | score={score}"
@@ -1359,6 +1391,109 @@ def ct_match_samawa_route():
 def ct_match_ff_route():
     # Step 3: /competitor/match-ff?secret=XXX -> French Fragrance link / price / stock / suggestion for every product
     return _ct_start(ct_match_ff, "CT-FF")
+
+
+# ---------------------------------------------------------------- suggestion OK / Not OK buttons
+# Where each shop's products are, so an accepted suggestion gets its name / price / stock
+SUGGESTION_SHOPS = {
+    "samawa": ("Samawa", "SELECT name, price, stock FROM samawa_catalog WHERE product_url = %s LIMIT 1"),
+    "ff": ("French Fragrance", "SELECT name, COALESCE(price_inc_tax, price), stock FROM french_fragrance_catalog "
+                               "WHERE product_url = %s LIMIT 1"),
+    "vp": ("V Perfumes", "SELECT name, COALESCE(price_inc_tax, price), stock FROM vperfumes_catalog "
+                         "WHERE product_url = %s LIMIT 1"),
+}
+LEAST_ORDER = [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"),
+               ("Essenzi", "es"), ("V Perfumes", "vp")]
+
+
+def link_sisters_for(cur, fid):
+    """After a French Fragrance link changes: refresh Branded Perfume + Essenzi for ONE product."""
+    for label, p, table, cp in SISTER_LINKS:
+        cur.execute("SELECT to_regclass(%s)", (table,))
+        if cur.fetchone()[0] is None:
+            continue
+        cur.execute("SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
+                    (table, f"{cp}_title"))
+        title_sql = f"COALESCE(s.{cp}_title, f.name)" if cur.fetchone() else "f.name"
+        cur.execute(f"""
+            UPDATE competitor_table c SET
+                {p}_link = s.{cp}_url, {p}_title = {title_sql},
+                {p}_price = COALESCE(s.{cp}_price_inc_tax, s.{cp}_price), {p}_stock = (s.{cp}_stock = 'In stock')
+            FROM french_fragrance_catalog f JOIN {table} s ON s.ff_id = f.id
+            WHERE c.fi_record_id = %s AND c.ff_link = f.product_url AND COALESCE(s.{cp}_stock, '') <> 'Not on site'
+        """, (fid,))
+        log(f"[SUGGEST] {label} linked for {fid}: {cur.rowcount}")
+
+
+def least_for(cur, fid):
+    """Recalculate least price / least priced website / suggested price for ONE product (same rules as LEAST_SQL)."""
+    cols = ", ".join(f"{p}_price, {p}_stock, {p}_link" for _, p in LEAST_ORDER)
+    cur.execute(f"SELECT uae_price, {cols} FROM competitor_table WHERE fi_record_id = %s", (fid,))
+    row = cur.fetchone()
+    if not row:
+        return
+    offers = [("Fragrant Souq", float(row[0]))] if row[0] and row[0] > 0 else []
+    comp = []
+    for i, (label, _) in enumerate(LEAST_ORDER):
+        price, stock, link = row[1 + i * 3: 4 + i * 3]
+        if stock and link and price and price > 0:                 # only in-stock competitors count
+            comp.append((label, float(price)))
+    offers += comp
+    least = min((pr for _, pr in offers), default=None)
+    sites = ", ".join(s for s, pr in offers if least is not None and abs(pr - least) < 0.005) or None
+    best_comp = min((pr for _, pr in comp), default=None)
+    suggested = round(best_comp * (1 - SUGGEST_BELOW), SUGGEST_DECIMALS) if best_comp else None
+    cur.execute("UPDATE competitor_table SET least_price = %s, least_priced_website = %s, suggested_price = %s "
+                "WHERE fi_record_id = %s", (least, sites, suggested, fid))
+    log(f"[SUGGEST] Least for {fid}: {least} ({sites}) | suggested {suggested}")
+
+
+@app.post("/competitor/suggestion")
+def ct_suggestion_route():
+    """OK / Not OK buttons next to a suggestion link on /competitors.
+    Body (JSON): {"fi_record_id": "recXXX", "shop": "samawa" | "ff" | "vp", "action": "ok" | "notok"}"""
+    body = request.get_json(silent=True) or {}
+    fid, shop, action = str(body.get("fi_record_id") or ""), body.get("shop"), body.get("action")
+    if shop not in SUGGESTION_SHOPS or action not in ("ok", "notok") or not fid.startswith("rec"):
+        return jsonify({"ok": False, "error": "wrong request"}), 400
+    label, catalog_sql = SUGGESTION_SHOPS[shop]
+    conn = pg_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(CT_CREATE)
+        cur.execute(f"SELECT {shop}_suggestion FROM competitor_table WHERE fi_record_id = %s", (fid,))
+        row = cur.fetchone()
+        url = row[0] if row else None
+        if not url:
+            return jsonify({"ok": False, "error": "No suggestion for this product any more"}), 404
+
+        if action == "notok":
+            # remove the suggestion and remember it, so the next match run does not suggest it again
+            cur.execute(f"UPDATE competitor_table SET {shop}_suggestion = NULL, {shop}_rejected = %s, "
+                        f"updated_at = NOW() WHERE fi_record_id = %s", (url, fid))
+            conn.commit()
+            log(f"[SUGGEST] NOT OK: {fid} {label} {url}")
+            return jsonify({"ok": True, "action": "notok"})
+
+        # OK -> it becomes the real match, with name / price / stock from that shop's catalog
+        cur.execute(catalog_sql, (url,))
+        item = cur.fetchone()
+        name, price, stock = item if item else (None, None, None)
+        cur.execute(f"""UPDATE competitor_table SET
+                {shop}_link = %s, {shop}_title = %s, {shop}_price = %s, {shop}_stock = %s,
+                {shop}_suggestion = NULL, {shop}_confirmed = TRUE, {shop}_method = 'confirmed', {shop}_score = NULL,
+                updated_at = NOW()
+            WHERE fi_record_id = %s""", (url, name, price, stock == "In stock", fid))
+        if shop == "ff":
+            link_sisters_for(cur, fid)            # Branded Perfume / Essenzi follow the French Fragrance link
+        least_for(cur, fid)
+        conn.commit()
+        log(f"[SUGGEST] OK: {fid} {label} -> {name} | AED {price} | {stock}")
+        return jsonify({"ok": True, "action": "ok", "name": name, "price": float(price) if price else None,
+                        "stock": stock})
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.get("/competitor/match-vp")
