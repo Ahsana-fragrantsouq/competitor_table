@@ -68,6 +68,20 @@ SOURCES = [
 ]
 SOURCE_BY_KEY = {s["key"]: s for s in SOURCES}
 
+# Price filters for the Competitor table tab. Only IN-STOCK competitor prices count:
+#   suggested_price is filled only when at least one competitor has the product in stock,
+#   least_priced_website lists everyone with the lowest price (ours + in-stock competitors).
+PRICE_FILTERS = {
+    # we are the cheapest (ties with a competitor count as low)
+    "low": ("Low price (we're cheapest)",
+            "suggested_price IS NOT NULL AND uae_price > 0 AND least_priced_website LIKE '%%Fragrant Souq%%'"),
+    # an in-stock competitor is cheaper than us
+    "high": ("High price (competitor cheaper)",
+             "suggested_price IS NOT NULL AND uae_price > 0 AND least_priced_website NOT LIKE '%%Fragrant Souq%%'"),
+    # no competitor has it in stock
+    "none": ("No competitor price", "suggested_price IS NULL"),
+}
+
 
 def db_conn():
     url = os.environ.get("FF_DATABASE_URL")
@@ -116,7 +130,9 @@ HTML = """
  .arrow.hide{visibility:hidden}
  .tab{flex:0 0 auto;padding:11px 16px;border-radius:12px;color:var(--muted);text-decoration:none;white-space:nowrap;font-size:16px}
  .tab.on{background:var(--bg);color:var(--text);font-weight:600}
- .bar{display:flex;gap:8px;margin:14px 0 6px}
+ .bar{display:flex;gap:8px;margin:14px 0 6px;flex-wrap:wrap}
+ .bar select{max-width:100%}
+ .clear{align-self:center;color:var(--gold);padding:0 6px}
  .bar input,.bar select{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;
        padding:13px 14px;font-size:16px}
  .bar input{flex:1;min-width:0}
@@ -202,9 +218,23 @@ HTML = """
       <option value="Out of stock" {% if stock=='Out of stock' %}selected{% endif %}>Out of stock</option>
       <option value="Not on site" {% if stock=='Not on site' %}selected{% endif %}>Not on site</option>
     </select>{% endif %}
+    {% if src.kind == 'competitor' %}
+    {# Brand + price filters (Competitor table only). They change the list as soon as you pick one. #}
+    <select name="brand" onchange="this.form.submit()">
+      <option value="">All brands</option>
+      {% for b in brands %}<option value="{{ b.brand }}" {% if b.brand == brand %}selected{% endif %}>{{ b.brand }} ({{ b.n }})</option>{% endfor %}
+    </select>
+    <select name="pf" onchange="this.form.submit()">
+      <option value="">All prices</option>
+      {% for key, item in price_filters.items() %}
+      <option value="{{ key }}" {% if pf == key %}selected{% endif %}>{{ item[0] }} ({{ pf_counts.get(key, 0) }})</option>
+      {% endfor %}
+    </select>
+    {% endif %}
     <button type="submit">Go</button>
+    {% if q or stock or brand or pf %}<a class="clear" href="?tab={{ src.key }}">Clear</a>{% endif %}
   </form>
-  <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock %} match this filter{% endif %}.</p>
+  <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock or brand or pf %} match this filter{% endif %}.</p>
 
   {% for r in rows %}
   {% if src.kind == 'competitor' %}
@@ -294,9 +324,9 @@ HTML = """
   {% endfor %}
 
   <div class="pager">
-    <a class="pbtn {% if page <= 1 %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&page={{ page-1 }}">Previous</a>
+    <a class="pbtn {% if page <= 1 %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&brand={{ brand|urlencode }}&pf={{ pf }}&page={{ page-1 }}">Previous</a>
     <span class="gtin">Page {{ page }} of {{ pages }}</span>
-    <a class="pbtn {% if page >= pages %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&page={{ page+1 }}">Next</a>
+    <a class="pbtn {% if page >= pages %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&brand={{ brand|urlencode }}&pf={{ pf }}&page={{ page+1 }}">Next</a>
   </div>
 {% endif %}
 
@@ -332,11 +362,16 @@ def competitors():
     src = SOURCE_BY_KEY.get(tab, SOURCES[1])
     q = request.args.get("q", "").strip()
     stock = request.args.get("stock", "").strip()
+    brand = request.args.get("brand", "").strip()          # Competitor table: brand dropdown
+    pf = request.args.get("pf", "").strip()                # Competitor table: price filter (low / high / none)
+    if pf not in PRICE_FILTERS:
+        pf = ""
     try:
         page = max(int(request.args.get("page", 1)), 1)
     except ValueError:
         page = 1
-    print(f"[competitors] tab={src['key']} q={q!r} stock={stock!r} page={page}", flush=True)
+    print(f"[competitors] tab={src['key']} q={q!r} stock={stock!r} brand={brand!r} pf={pf!r} page={page}", flush=True)
+    brands, pf_counts = [], {}
 
     conn = db_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -355,6 +390,22 @@ def competitors():
             if stock and c.get("stock"):
                 where.append(f"{c['stock']} = %s")
                 params.append(stock)
+            if src.get("kind") == "competitor":
+                # brand list for the dropdown + how many products each price filter has (for the chosen brand)
+                cur.execute("SELECT brand, COUNT(*) AS n FROM competitor_table WHERE brand IS NOT NULL "
+                            "GROUP BY brand ORDER BY brand")
+                brands = cur.fetchall()
+                if brand:
+                    where.append("brand = %s")
+                    params.append(brand)
+                base_sql = ("WHERE " + " AND ".join(where)) if where else ""
+                cur.execute("SELECT " + ", ".join(
+                    f"COUNT(*) FILTER (WHERE {cond}) AS {key}" for key, (_, cond) in PRICE_FILTERS.items())
+                    + f" FROM competitor_table {base_sql}", params)
+                pf_counts = dict(cur.fetchone())
+                print(f"[competitors] Price filter counts: {pf_counts}", flush=True)
+                if pf:
+                    where.append(PRICE_FILTERS[pf][1])
             where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
             cur.execute(f"SELECT COUNT(*) AS c FROM {src['table']} {where_sql}", params)
@@ -382,4 +433,6 @@ def competitors():
         conn.close()
 
     return render_template_string(HTML, sources=SOURCES, src=src, counts=counts, rows=rows,
-                                  total=total, page=page, pages=pages, q=q, stock=stock, exists=exists)
+                                  total=total, page=page, pages=pages, q=q, stock=stock, exists=exists,
+                                  brand=brand, brands=brands, pf=pf, pf_counts=pf_counts,
+                                  price_filters=PRICE_FILTERS)
