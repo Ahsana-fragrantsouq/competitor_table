@@ -14,6 +14,7 @@ import os
 import math
 import psycopg2
 import psycopg2.extras
+from urllib.parse import urlencode
 from flask import Blueprint, request, render_template_string
 
 competitors_bp = Blueprint("competitors", __name__)
@@ -82,6 +83,77 @@ PRICE_FILTERS = {
     "none": ("No competitor price", "suggested_price IS NULL"),
 }
 
+# Airtable-style filter (Competitor table tab): "Where <field> <operator> <value>", several rows = AND.
+# Only the fields / operators below are allowed (safe SQL, values always passed as parameters).
+FILTER_FIELDS = {
+    "brand":     {"label": "Brand", "col": "brand", "type": "text"},
+    "price":     {"label": "Price status", "type": "choice",
+                  "choices": {k: v[0] for k, v in PRICE_FILTERS.items()}},
+    "name":      {"label": "Product name", "col": "product_name", "type": "text"},
+    "code":      {"label": "Item ID", "col": "french_inventory_code", "type": "text"},
+    "sku":       {"label": "SKU", "col": "sku", "type": "text"},
+    "barcode":   {"label": "Barcode", "col": "barcode", "type": "text"},
+    "uae_price": {"label": "Our UAE price", "col": "uae_price", "type": "number"},
+    "least":     {"label": "Least price", "col": "least_price", "type": "number"},
+    "suggested": {"label": "Suggested price", "col": "suggested_price", "type": "number"},
+    "site":      {"label": "Least priced website", "col": "least_priced_website", "type": "text"},
+}
+FILTER_OPS = {
+    "text":   [("is", "is"), ("isnot", "is not"), ("contains", "contains"), ("notcontains", "does not contain"),
+               ("empty", "is empty"), ("notempty", "is not empty")],
+    "number": [("eq", "="), ("ne", "≠"), ("gt", ">"), ("lt", "<"), ("ge", "≥"), ("le", "≤"),
+               ("empty", "is empty"), ("notempty", "is not empty")],
+    "choice": [("is", "is"), ("isnot", "is not")],
+}
+NUM_SQL = {"eq": "=", "ne": "<>", "gt": ">", "lt": "<", "ge": ">=", "le": "<="}
+
+
+def read_filters(args):
+    """URL ?ff=brand&fo=is&fv=Armaf&ff=price&fo=is&fv=high ... -> list of valid (field, op, value)."""
+    out = []
+    for f, o, v in zip(args.getlist("ff"), args.getlist("fo"), args.getlist("fv")):
+        fd = FILTER_FIELDS.get(f)
+        if not fd or o not in dict(FILTER_OPS[fd["type"]]):
+            continue
+        v = (v or "").strip()
+        if o not in ("empty", "notempty") and v == "":
+            continue                                   # condition without a value -> ignored
+        out.append((f, o, v))
+    return out
+
+
+def filter_sql(conds):
+    """(field, op, value) list -> (list of SQL pieces, params). Unknown values are skipped."""
+    where, params = [], []
+    for f, o, v in conds:
+        fd = FILTER_FIELDS[f]
+        if fd["type"] == "choice":                     # Price status: Low / High / No competitor price
+            if v not in PRICE_FILTERS:
+                continue
+            cond = PRICE_FILTERS[v][1]
+            where.append(f"({cond})" if o == "is" else f"NOT ({cond})")
+            continue
+        col = fd["col"]
+        if o == "empty":
+            where.append(f"({col} IS NULL OR {col}::text = '')")
+        elif o == "notempty":
+            where.append(f"({col} IS NOT NULL AND {col}::text <> '')")
+        elif fd["type"] == "number":
+            try:
+                params.append(float(v))
+            except ValueError:
+                continue
+            where.append(f"{col} {NUM_SQL[o]} %s")
+        elif o == "is":
+            where.append(f"LOWER({col}) = LOWER(%s)"); params.append(v)
+        elif o == "isnot":
+            where.append(f"({col} IS NULL OR LOWER({col}) <> LOWER(%s))"); params.append(v)
+        elif o == "contains":
+            where.append(f"{col} ILIKE %s"); params.append(f"%{v}%")
+        elif o == "notcontains":
+            where.append(f"({col} IS NULL OR {col} NOT ILIKE %s)"); params.append(f"%{v}%")
+    return where, params
+
 
 def db_conn():
     url = os.environ.get("FF_DATABASE_URL")
@@ -133,6 +205,21 @@ HTML = """
  .bar{display:flex;gap:8px;margin:14px 0 6px;flex-wrap:wrap}
  .bar select{max-width:100%}
  .clear{align-self:center;color:var(--gold);padding:0 6px}
+ .fbtn{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:0 16px;
+       font-size:16px;cursor:pointer;min-height:48px}
+ .fbtn.on{background:#e3f5e1;color:#1c5a24;border-color:#b9e3b4;font-weight:600}
+ .fpanel{flex-basis:100%;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-top:6px}
+ .ftitle{color:var(--muted);font-size:14px;margin-bottom:10px}
+ .frow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+ .fwhere{width:52px;color:var(--muted);font-size:14px}
+ .frow select,.frow input{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:10px;
+       padding:10px 12px;font-size:15px}
+ .fval input,.fval select{min-width:180px}
+ .fdel{background:none;border:0;color:var(--muted);font-size:18px;cursor:pointer}
+ .fadd{background:none;border:0;color:var(--gold);font-size:15px;cursor:pointer;padding:6px 0}
+ .factions{display:flex;justify-content:flex-end;gap:10px;margin-top:8px}
+ .fcancel{background:none;border:0;color:var(--text);font-size:15px;cursor:pointer}
+ .fapply{background:#f2d675;color:#1c1b19;border:0;border-radius:10px;padding:10px 18px;font-weight:600;cursor:pointer}
  .bar input,.bar select{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;
        padding:13px 14px;font-size:16px}
  .bar input{flex:1;min-width:0}
@@ -219,22 +306,28 @@ HTML = """
       <option value="Not on site" {% if stock=='Not on site' %}selected{% endif %}>Not on site</option>
     </select>{% endif %}
     {% if src.kind == 'competitor' %}
-    {# Brand + price filters (Competitor table only). They change the list as soon as you pick one. #}
-    <select name="brand" onchange="this.form.submit()">
-      <option value="">All brands</option>
-      {% for b in brands %}<option value="{{ b.brand }}" {% if b.brand == brand %}selected{% endif %}>{{ b.brand }} ({{ b.n }})</option>{% endfor %}
-    </select>
-    <select name="pf" onchange="this.form.submit()">
-      <option value="">All prices</option>
-      {% for key, item in price_filters.items() %}
-      <option value="{{ key }}" {% if pf == key %}selected{% endif %}>{{ item[0] }} ({{ pf_counts.get(key, 0) }})</option>
-      {% endfor %}
-    </select>
+    <button type="button" class="fbtn {% if conds %}on{% endif %}" onclick="toggleFilter()">
+      &#9776; {% if conds %}Filtered by {{ filt_labels }}{% else %}Filter{% endif %}
+    </button>
     {% endif %}
     <button type="submit">Go</button>
-    {% if q or stock or brand or pf %}<a class="clear" href="?tab={{ src.key }}">Clear</a>{% endif %}
+    {% if q or stock or conds %}<a class="clear" href="?tab={{ src.key }}">Clear</a>{% endif %}
+
+    {% if src.kind == 'competitor' %}
+    {# Airtable-style filter panel: each row = Where <field> <operator> <value>; all rows must match (AND) #}
+    <div class="fpanel" id="fpanel" hidden>
+      <div class="ftitle">In this view, show records</div>
+      <div id="frows"></div>
+      <button type="button" class="fadd" onclick="addRow()">+ Add condition</button>
+      <div class="factions">
+        <button type="button" class="fcancel" onclick="toggleFilter()">Cancel</button>
+        <button type="submit" class="fapply">Apply</button>
+      </div>
+    </div>
+    <datalist id="brandlist">{% for b in brands %}<option value="{{ b }}">{% endfor %}</datalist>
+    {% endif %}
   </form>
-  <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock or brand or pf %} match this filter{% endif %}.</p>
+  <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock or conds %} match this filter{% endif %}.</p>
 
   {% for r in rows %}
   {% if src.kind == 'competitor' %}
@@ -324,12 +417,82 @@ HTML = """
   {% endfor %}
 
   <div class="pager">
-    <a class="pbtn {% if page <= 1 %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&brand={{ brand|urlencode }}&pf={{ pf }}&page={{ page-1 }}">Previous</a>
+    <a class="pbtn {% if page <= 1 %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&{{ filt_qs }}&page={{ page-1 }}">Previous</a>
     <span class="gtin">Page {{ page }} of {{ pages }}</span>
-    <a class="pbtn {% if page >= pages %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&brand={{ brand|urlencode }}&pf={{ pf }}&page={{ page+1 }}">Next</a>
+    <a class="pbtn {% if page >= pages %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&{{ filt_qs }}&page={{ page+1 }}">Next</a>
   </div>
 {% endif %}
 
+{% if src.kind == 'competitor' %}
+<script>
+  // ---- Airtable-style filter panel ----
+  var FIELDS = {{ fields|tojson }}, OPS = {{ ops|tojson }}, CONDS = {{ conds|tojson }};
+  var EMPTY_OPS = ["empty", "notempty"];
+
+  function toggleFilter() {
+    var p = document.getElementById("fpanel");
+    p.hidden = !p.hidden;
+    if (!p.hidden && !document.querySelector("#frows .frow")) addRow();     // start with one empty row
+  }
+
+  function valueBox(field, value) {
+    // choice field -> dropdown, number -> number box, text -> text box (brand gets suggestions)
+    var f = FIELDS[field];
+    if (f.type === "choice") {
+      var sel = document.createElement("select"); sel.name = "fv";
+      Object.keys(f.choices).forEach(function (k) {
+        var o = new Option(f.choices[k], k); if (k === value) o.selected = true; sel.add(o);
+      });
+      return sel;
+    }
+    var inp = document.createElement("input"); inp.name = "fv"; inp.value = value || "";
+    inp.type = f.type === "number" ? "number" : "text"; if (f.type === "number") inp.step = "0.01";
+    inp.placeholder = "Enter a value";
+    if (field === "brand") inp.setAttribute("list", "brandlist");
+    return inp;
+  }
+
+  function addRow(field, op, value) {
+    field = field || "brand";
+    var row = document.createElement("div"); row.className = "frow";
+    var where = document.createElement("span"); where.className = "fwhere";
+    where.textContent = document.querySelector("#frows .frow") ? "and" : "Where";
+
+    var fs = document.createElement("select"); fs.name = "ff";
+    Object.keys(FIELDS).forEach(function (k) { var o = new Option(FIELDS[k].label, k); if (k === field) o.selected = true; fs.add(o); });
+
+    var os = document.createElement("select"); os.name = "fo";
+    var cell = document.createElement("span"); cell.className = "fval";
+
+    function fillOps(selected) {
+      os.innerHTML = "";
+      OPS[FIELDS[fs.value].type].forEach(function (p) { var o = new Option(p[1], p[0]); if (p[0] === selected) o.selected = true; os.add(o); });
+    }
+    function fillValue(v) {
+      cell.innerHTML = "";
+      var box = valueBox(fs.value, v);
+      if (EMPTY_OPS.indexOf(os.value) >= 0) { box.type = "hidden"; box.value = ""; }   // "is empty" needs no value
+      cell.appendChild(box);
+    }
+    fs.onchange = function () { fillOps(); fillValue(); };
+    os.onchange = function () { fillValue(cell.firstChild ? cell.firstChild.value : ""); };
+
+    var del = document.createElement("button"); del.type = "button"; del.className = "fdel"; del.innerHTML = "&#128465;";
+    del.title = "Remove condition";
+    del.onclick = function () {
+      row.remove();
+      var first = document.querySelector("#frows .frow .fwhere"); if (first) first.textContent = "Where";
+    };
+
+    fillOps(op); fillValue(value);
+    [where, fs, os, cell, del].forEach(function (el) { row.appendChild(el); });
+    document.getElementById("frows").appendChild(row);
+  }
+
+  // rebuild the rows that are active now (so you can see / change them)
+  CONDS.forEach(function (c) { addRow(c[0], c[1], c[2]); });
+</script>
+{% endif %}
 <script>
   // "Update price": send the (edited) suggested price to the server -> Airtable UAE Price + competitor table
   async function updatePrice(fi, btn) {
@@ -362,16 +525,13 @@ def competitors():
     src = SOURCE_BY_KEY.get(tab, SOURCES[1])
     q = request.args.get("q", "").strip()
     stock = request.args.get("stock", "").strip()
-    brand = request.args.get("brand", "").strip()          # Competitor table: brand dropdown
-    pf = request.args.get("pf", "").strip()                # Competitor table: price filter (low / high / none)
-    if pf not in PRICE_FILTERS:
-        pf = ""
+    conds = read_filters(request.args)                     # Competitor table: Airtable-style conditions
     try:
         page = max(int(request.args.get("page", 1)), 1)
     except ValueError:
         page = 1
-    print(f"[competitors] tab={src['key']} q={q!r} stock={stock!r} brand={brand!r} pf={pf!r} page={page}", flush=True)
-    brands, pf_counts = [], {}
+    print(f"[competitors] tab={src['key']} q={q!r} stock={stock!r} filters={conds} page={page}", flush=True)
+    brands = []
 
     conn = db_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -391,21 +551,12 @@ def competitors():
                 where.append(f"{c['stock']} = %s")
                 params.append(stock)
             if src.get("kind") == "competitor":
-                # brand list for the dropdown + how many products each price filter has (for the chosen brand)
-                cur.execute("SELECT brand, COUNT(*) AS n FROM competitor_table WHERE brand IS NOT NULL "
-                            "GROUP BY brand ORDER BY brand")
-                brands = cur.fetchall()
-                if brand:
-                    where.append("brand = %s")
-                    params.append(brand)
-                base_sql = ("WHERE " + " AND ".join(where)) if where else ""
-                cur.execute("SELECT " + ", ".join(
-                    f"COUNT(*) FILTER (WHERE {cond}) AS {key}" for key, (_, cond) in PRICE_FILTERS.items())
-                    + f" FROM competitor_table {base_sql}", params)
-                pf_counts = dict(cur.fetchone())
-                print(f"[competitors] Price filter counts: {pf_counts}", flush=True)
-                if pf:
-                    where.append(PRICE_FILTERS[pf][1])
+                # brand names -> suggestions in the filter's value box
+                cur.execute("SELECT DISTINCT brand FROM competitor_table WHERE brand IS NOT NULL ORDER BY brand")
+                brands = [r["brand"] for r in cur.fetchall()]
+                fw, fp = filter_sql(conds)
+                where += fw
+                params += fp
             where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
             cur.execute(f"SELECT COUNT(*) AS c FROM {src['table']} {where_sql}", params)
@@ -434,5 +585,7 @@ def competitors():
 
     return render_template_string(HTML, sources=SOURCES, src=src, counts=counts, rows=rows,
                                   total=total, page=page, pages=pages, q=q, stock=stock, exists=exists,
-                                  brand=brand, brands=brands, pf=pf, pf_counts=pf_counts,
-                                  price_filters=PRICE_FILTERS)
+                                  brands=brands, conds=conds, fields=FILTER_FIELDS, ops=FILTER_OPS,
+                                  filt_labels=", ".join(dict.fromkeys(FILTER_FIELDS[f]["label"] for f, _, _ in conds)),
+                                  filt_qs=urlencode([(k, x) for f, o, v in conds
+                                                     for k, x in (("ff", f), ("fo", o), ("fv", v))]))
