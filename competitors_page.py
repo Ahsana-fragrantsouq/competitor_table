@@ -262,6 +262,7 @@ HTML = """
  .bulkbar{position:fixed;left:50%;transform:translateX(-50%);bottom:max(16px, env(safe-area-inset-bottom, 0px));
           display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#0f2b3a;color:#fff;
           border-radius:14px;padding:12px 18px;box-shadow:0 8px 24px rgba(0,0,0,.45);z-index:50;max-width:92vw}
+ .bulkbar[hidden]{display:none}            /* without this, display:flex above would keep the bar visible */
  .bulkcount{background:#2f7de1;border-radius:999px;padding:5px 12px;font-weight:600;font-size:14px}
  .bulkcancel{background:#fff;color:#1c1b19;border:0;border-radius:8px;padding:9px 16px;font-weight:600;cursor:pointer}
  .bulkupdate{background:#f2d675;color:#1c1b19;border:0;border-radius:8px;padding:9px 16px;font-weight:700;cursor:pointer}
