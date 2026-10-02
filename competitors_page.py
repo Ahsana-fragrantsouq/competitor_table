@@ -39,6 +39,9 @@ SOURCES = [
               "bp_url": "bp_link", "bp_price": "bp_price", "bp_stock": "bp_stock", "bp_suggestion": None,
               "es_url": "es_link", "es_price": "es_price", "es_stock": "es_stock", "es_suggestion": None,
               "vp_url": "vp_link", "vp_price": "vp_price", "vp_stock": "vp_stock", "vp_suggestion": "vp_suggestion",
+              # competitor's own product name, used as the link text
+              "samawa_title": "samawa_title", "ff_title": "ff_title", "bp_title": "bp_title",
+              "es_title": "es_title", "vp_title": "vp_title",
               "least_price": "least_price", "least_site": "least_priced_website",
               "suggested_price": "suggested_price", "fi": "fi_record_id",
               "stock": None, "updated": "updated_at"}},
@@ -250,6 +253,7 @@ HTML = """
  .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
  .sugg{color:#f2d675}
+ .plink{text-align:right;max-width:65%}
  .meta{color:var(--muted);font-size:14px;margin-top:4px}
  .meta b{color:var(--text);font-weight:600}
  .upd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px}
@@ -407,7 +411,7 @@ HTML = """
         {% if url %}
           <div class="row">
             <span class="price">{% if price is not none %}AED {{ '%.2f' % price }}{% else %}No price{% endif %}</span>
-            <a class="link" href="{{ url }}" target="_blank">View on {{ label }}</a>
+            <a class="link plink" href="{{ url }}" target="_blank" title="Open on {{ label }}">{{ r[k ~ '_title'] or ('View on ' ~ label) }}</a>
           </div>
           {% if r.uae_price is not none and price is not none %}
             {% set d = price - r.uae_price %}

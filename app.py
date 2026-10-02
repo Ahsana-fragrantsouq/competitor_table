@@ -687,6 +687,7 @@ def run_match(brands, rematch=False, fi_groups=None):
 #   bp_link / bp_price / bp_stock   Branded Perfume  - taken from the French Fragrance match (same products)
 #   es_link / es_price / es_stock   Essenzi          - taken from the French Fragrance match (same products)
 #   vp_link / vp_price / vp_stock / vp_suggestion / vp_method / vp_score   V Perfumes (own matching, barcode first)
+#   <shop>_title           the competitor's own product name (shown as the link text on the page)
 #   least_price            lowest price: ours (always) + every shop that has it IN STOCK, VAT included
 #   least_priced_website   who has that price; ties are all listed, e.g. "Fragrant Souq, Samawa"
 #   suggested_price        lowest IN-STOCK COMPETITOR price (ours not included) minus 5%, e.g. 83 -> 78.85
@@ -736,6 +737,11 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_stock BOOLEAN DEFAULT F
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_suggestion TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_method TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_score NUMERIC(5,3);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_title TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_title TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS bp_title TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS es_title TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_price NUMERIC(10,2);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_priced_website TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS suggested_price NUMERIC(10,2);
@@ -771,8 +777,9 @@ UPDATE competitor_table AS c SET
     {prefix}_suggestion = v.suggestion,
     {prefix}_method     = v.method,
     {prefix}_score      = v.score::numeric,
+    {prefix}_title      = v.title,
     updated_at          = NOW()
-FROM (VALUES %s) AS v(fi_record_id, link, price, stock, suggestion, method, score)
+FROM (VALUES %s) AS v(fi_record_id, link, price, stock, suggestion, method, score, title)
 WHERE c.fi_record_id = v.fi_record_id;
 """
 
@@ -1062,7 +1069,7 @@ def ct_match_shop(shop_key):
                 if e:
                     summary["matched_barcode" if method.startswith("barcode") else "matched_fuzzy"] += 1
                     log(f"[{tag}-MATCH:{method} {score}] {pname} -> {e['title']} | AED {e['price']} | stock={e['available']}")
-                    updates.append((fid, e["url"], e["price"], e["available"], None, method, score))
+                    updates.append((fid, e["url"], e["price"], e["available"], None, method, score, e["title"]))
                 else:
                     summary["unmatched"] += 1
                     suggestion = guess["url"] if guess is not None and score >= 0.5 else None
@@ -1070,7 +1077,7 @@ def ct_match_shop(shop_key):
                         summary["with_suggestion"] += 1
                     log(f"[{tag}-NO MATCH] {pname} | {method} | score={score}"
                         + (f" | suggestion {suggestion}" if suggestion else ""))
-                    updates.append((fid, None, None, False, suggestion, method[:200], score))
+                    updates.append((fid, None, None, False, suggestion, method[:200], score, None))
 
             # save every 500 products so results appear while it runs
             if len(updates) >= 500 or bi == len(brands):
@@ -1199,10 +1206,16 @@ def ct_update_least():
                 log(f"[CT-LEAST] {table} does not exist yet -> {label} skipped")
                 continue
             # clear old values, then take them from the sister catalog through the French Fragrance match
-            cur.execute(f"UPDATE competitor_table SET {p}_link = NULL, {p}_price = NULL, {p}_stock = FALSE")
+            cur.execute(f"UPDATE competitor_table SET {p}_link = NULL, {p}_price = NULL, {p}_stock = FALSE, "
+                        f"{p}_title = NULL")
+            # product name on that site if the catalog has it (filled by the PC scraper), else French Fragrance name
+            cur.execute("SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
+                        (table, f"{cp}_title"))
+            title_sql = f"COALESCE(s.{cp}_title, f.name)" if cur.fetchone() else "f.name"
             cur.execute(f"""
                 UPDATE competitor_table c SET
                     {p}_link  = s.{cp}_url,
+                    {p}_title = {title_sql},
                     {p}_price = COALESCE(s.{cp}_price_inc_tax, s.{cp}_price),
                     {p}_stock = (s.{cp}_stock = 'In stock')
                 FROM french_fragrance_catalog f
