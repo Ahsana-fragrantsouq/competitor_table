@@ -556,7 +556,7 @@ def match_one(fields, brand, brand_entries, by_barcode, trust_barcode=False):
         if all(name_score(fi_tokens, e["tokens"] - brand_tokens) >= 0.95 for e in tied):
             # Samawa has duplicate listings of the same perfume -> prefer in stock, then cheapest
             best = sorted(tied, key=lambda e: (not e["available"], e["price"]))[0]
-            log(f"[DUPLICATE] {product_name}: {len(tied)} Samawa listings, picked '{best['title']}'")
+            log(f"[DUPLICATE] {product_name}: {len(tied)} listings, picked '{best['title']}'")
         else:
             return None, f"ambiguous ({tied[0]['title']} | {tied[1]['title']})", best_score, tied[0]
     return best, method("fuzzy", best), best_score, None
@@ -1127,7 +1127,8 @@ def ct_match_shop(shop_key):
                 trimmed = []
                 for e in brand_entries:
                     pos = e["title_norm"].find(bnorm)
-                    if pos > 0:
+                    # "Santal 33 by Le Labo": the words before the brand ARE the perfume name -> keep them
+                    if pos > 0 and not e["title_norm"][:pos + 1].endswith(" by "):
                         e = {**e, "tokens": e["tokens"] - tokens(e["title_norm"][:pos])}
                     trimmed.append(e)
                 brand_entries = trimmed
