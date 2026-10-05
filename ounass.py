@@ -49,7 +49,7 @@ ON_BADGES = ["GIFT WITH PURCHASE", "MOST DESIRED", "NEW DESIGNER", "ONLINE EXCLU
 ON_PAGE_PARAMS = [("p", lambda n: n), ("page", lambda n: n), ("fh_start_index", lambda n: (n - 1) * ON_PER_PAGE)]
 
 on_lock = threading.Lock()
-on_state = {"running": False, "last": None}
+on_state = {"running": False, "last": None, "last_http": None}
 
 
 def on_log(*args):
@@ -155,6 +155,14 @@ def on_get(path, params=None):
         if r.status_code == 429 or r.status_code >= 500:
             on_log(f"[ON] HTTP {r.status_code} (busy)")
             continue
+        # remember what came back, so /ounass/test can show it (blocked page? empty page?)
+        title = re.search(r"<title[^>]*>(.*?)</title>", r.text, re.S | re.I)
+        on_state["last_http"] = {"url": r.url, "status": r.status_code, "size": len(r.text),
+                                 "title": clean(title.group(1))[:120] if title else None,
+                                 "shop_links": len(re.findall(r"/shop-[^\"']+?_\d+\.html", r.text)),
+                                 "has_showing": "Showing" in r.text,
+                                 "server": r.headers.get("server"), "start": clean(r.text[:1500])[:400]}
+        on_log(f"[ON] answer: {on_state['last_http']}")
         if r.status_code in (403, 401) or "captcha" in r.text[:3000].lower():
             raise RuntimeError(f"Ounass is blocking this server (HTTP {r.status_code})")
         return r.text
@@ -267,13 +275,15 @@ def on_test_route():
     path = ON_CATEGORIES[0]
     try:
         first = on_get(path) or ""
+        first_http = on_state["last_http"]
         items = on_parse(first)
         pname, pval = detect_paging(path, {x["url"] for x in items})
         second = on_parse(on_get(path, {pname: pval(2)}) or "") if pname else []
     except RuntimeError as ex:
         on_log(f"[ON-TEST] {ex}")
-        return jsonify({"ok": False, "error": str(ex)})
-    result = {"ok": bool(items), "site_total": total_items(first), "page1_products": len(items),
+        return jsonify({"ok": False, "error": str(ex), "what_ounass_returned": on_state["last_http"]})
+    result = {"ok": bool(items), "what_ounass_returned": first_http,
+              "site_total": total_items(first), "page1_products": len(items),
               "paging_method": pname, "page2_products": len(second),
               "page1_first_3": items[:3], "page2_first_3": second[:3],
               "brands_seen": sorted({x["brand"] or "-" for x in items})[:15]}
