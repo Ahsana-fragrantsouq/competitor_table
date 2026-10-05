@@ -29,7 +29,7 @@ SOURCES = [
      "search": ["product_name", "french_inventory_code", "sku", "brand", "barcode"],
      # shops shown on each card: (label, column prefix in competitor_table). Add V Perfumes here later.
      "shops": [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"), ("Essenzi", "es"),
-               ("V Perfumes", "vp")],
+               ("V Perfumes", "vp"), ("Al Injaz", "aj")],
      "cols": {"code": "french_inventory_code", "sku": "sku", "brand": "brand", "barcode": "barcode", "name": "product_name",
               "uae_price": "uae_price",
               "samawa_url": "samawa_link", "samawa_price": "samawa_price", "samawa_stock": "samawa_stock",
@@ -39,11 +39,14 @@ SOURCES = [
               "bp_url": "bp_link", "bp_price": "bp_price", "bp_stock": "bp_stock", "bp_suggestion": None,
               "es_url": "es_link", "es_price": "es_price", "es_stock": "es_stock", "es_suggestion": None,
               "vp_url": "vp_link", "vp_price": "vp_price", "vp_stock": "vp_stock", "vp_suggestion": "vp_suggestion",
+              "aj_url": "aj_link", "aj_price": "aj_price", "aj_stock": "aj_stock", "aj_suggestion": "aj_suggestion",
+              "aj_title": "aj_title", "aj_confirmed": "aj_confirmed",
               # competitor's own product name, used as the link text
               "samawa_title": "samawa_title", "ff_title": "ff_title", "bp_title": "bp_title",
               "es_title": "es_title", "vp_title": "vp_title",
               "samawa_confirmed": "samawa_confirmed", "ff_confirmed": "ff_confirmed", "vp_confirmed": "vp_confirmed",
               "bp_confirmed": None, "es_confirmed": None,
+              "our_link": "our_link", "our_title": "our_title",
               "least_price": "least_price", "least_site": "least_priced_website",
               "suggested_price": "suggested_price", "fi": "fi_record_id",
               "stock": None, "updated": "updated_at"}},
@@ -68,6 +71,11 @@ SOURCES = [
     # V Perfumes = perfumes from the vperfumes.com UAE "Perfumes" category (no gift sets)
     {"key": "vp", "label": "V Perfumes", "table": "vperfumes_catalog",
      "cols": {"name": "name", "brand": None, "gtin": "gtin", "url": "product_url",
+              "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
+              "updated": "updated_at"}},
+    # Al Injaz Perfumes = alinjazperfumes.com (WooCommerce product list), alinjaz.py
+    {"key": "aj", "label": "Al Injaz", "table": "alinjaz_catalog",
+     "cols": {"name": "name", "brand": None, "gtin": "COALESCE(gtin, sku)", "url": "product_url",
               "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
               "updated": "updated_at"}},
     # {"key": "shop3", "label": "Shop 3", "table": "shop3_catalog", "cols": {...}},   # add more here
@@ -253,6 +261,8 @@ HTML = """
  .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
  .sugg{color:#f2d675}
+ .prices{align-items:flex-end}
+ .ourlink{margin-left:auto;text-align:right;max-width:65%;align-self:flex-end}
  .topbar{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
  .who{color:var(--muted);font-size:14px} .who b{color:var(--text)} .who a{color:var(--gold)}
  .titlerow{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
@@ -382,7 +392,7 @@ HTML = """
   </form>
   <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock or conds %} match this filter{% endif %}.</p>
   {% if src.kind == 'competitor' and rows %}
-  <div class="pickallrow"><label class="pickall">Select all<input type="checkbox" id="pickAll" onchange="pickAll(this.checked)"></label></div>
+  <div class="pickallrow"><label class="pickall">Select all on this page <input type="checkbox" id="pickAll" onchange="pickAll(this.checked)"></label></div>
   {# bottom bar (like Amazon "Save all"): appears when 2 or more products are ticked #}
   <div class="bulkbar" id="bulkbar" hidden>
     <span class="bulkcount" id="bulkcount">0 selected</span>
@@ -407,9 +417,9 @@ HTML = """
         <div><div class="plabel">Least priced website</div>
              {# each website name opens that product on that website #}
              {% set site_links = {
-                  'Fragrant Souq': 'https://fragrantsouq.com/search?q=' ~ ((r.sku or r.name or '')|urlencode),
+                  'Fragrant Souq': r.our_link or ('https://fragrantsouq.com/search?q=' ~ ((r.sku or r.name or '')|urlencode)),
                   'Samawa': r.samawa_url, 'French Fragrance': r.ff_url,
-                  'Branded Perfume': r.bp_url, 'Essenzi': r.es_url, 'V Perfumes': r.vp_url} %}
+                  'Branded Perfume': r.bp_url, 'Essenzi': r.es_url, 'V Perfumes': r.vp_url, 'Al Injaz': r.aj_url} %}
              <span class="{{ 'in' if 'Fragrant Souq' in (r.least_site or '') else 'out' }}">
                {%- for site in (r.least_site or '').split(', ') -%}
                  {%- if site_links.get(site) -%}
@@ -432,6 +442,9 @@ HTML = """
     </div>
     <div class="prices">
       <div><div class="plabel">Our UAE price</div><span class="price" id="our-{{ r.fi }}">{% if r.uae_price is not none %}AED {{ '%.2f' % r.uae_price }}{% else %}-{% endif %}</span></div>
+      {# our own product page on fragrantsouq.com (matched by SKU), like the competitors' links #}
+      <div class="ourlink">{% if r.our_link %}<a class="link" href="{{ r.our_link }}" target="_blank" title="Open on fragrantsouq.com">{{ r.our_title or r.name }}</a>
+        {% else %}<span class="gtin">Not on fragrantsouq.com</span>{% endif %}</div>
     </div>
     {# only shops that have this product (a match) or a suggestion to check; "No match" shops are hidden #}
     {% set shown = namespace(n=0) %}

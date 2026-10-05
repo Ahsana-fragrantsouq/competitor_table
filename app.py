@@ -13,6 +13,7 @@ Files in this project
   branded_perfume.py  -> copies French Fragrance products and reads the same pages on brandedperfume.com
   essenzi.py          -> same for essenzi.com (table essenzi_catalog); page reading = es_scraper.py on the PC
   vperfumes.py        -> downloads the vperfumes.com UAE Perfumes category into vperfumes_catalog
+  alinjaz.py          -> downloads alinjazperfumes.com (WooCommerce product list) into alinjaz_catalog
 
 Normal order to run things (open these URLs in the browser)
   1. /samawa-catalog/run?secret=XXX        download Samawa website into Postgres (samawa_catalog)
@@ -21,6 +22,8 @@ Normal order to run things (open these URLs in the browser)
   4. /competitor/match-ff?secret=XXX       same for French Fragrance (uses french_fragrance_catalog)
   5. /competitor/update-least?secret=XXX   Branded Perfume + Essenzi prices (via FF match) + least price
   6. /competitor/match-vp?secret=XXX       find each product on V Perfumes (vperfumes_catalog, barcode first)
+  7. /competitor/load-our-links?secret=XXX our own product page on fragrantsouq.com for each product (by SKU)
+  8. /alinjaz/run?secret=XXX then /competitor/match-aj?secret=XXX   Al Injaz Perfumes
      (least price is also recalculated automatically at the end of steps 2, 3 and 4)
   Progress: step 1 -> /samawa-catalog/status | steps 2, 3, 4 -> /samawa/status | Result -> /competitors
 
@@ -56,6 +59,7 @@ from competitors_page import competitors_bp        # /competitors
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
 from vperfumes import vperfumes_bp                 # /vperfumes/test, /vperfumes/run, /vperfumes/status
+from alinjaz import alinjaz_bp                     # /alinjaz/test, /alinjaz/run, /alinjaz/status
 from auth import auth_bp, init_auth                # /login, /logout + login check on every page
 
 app = Flask(__name__)
@@ -65,6 +69,7 @@ app.register_blueprint(competitors_bp)
 app.register_blueprint(branded_perfume_bp)
 app.register_blueprint(essenzi_bp)
 app.register_blueprint(vperfumes_bp)
+app.register_blueprint(alinjaz_bp)
 app.register_blueprint(auth_bp)
 init_auth(app)                                     # users from Render env var USERS (see auth.py)
 
@@ -692,7 +697,9 @@ def run_match(brands, rematch=False, fi_groups=None):
 #   bp_link / bp_price / bp_stock   Branded Perfume  - taken from the French Fragrance match (same products)
 #   es_link / es_price / es_stock   Essenzi          - taken from the French Fragrance match (same products)
 #   vp_link / vp_price / vp_stock / vp_suggestion / vp_method / vp_score   V Perfumes (own matching, barcode first)
+#   aj_link / aj_price / aj_stock / aj_suggestion / aj_method / aj_score   Al Injaz Perfumes (same way)
 #   <shop>_title           the competitor's own product name (shown as the link text on the page)
+#   our_link / our_title   OUR product page on fragrantsouq.com (matched by SKU) - /competitor/load-our-links
 #   <shop>_confirmed       TRUE = suggestion accepted with "OK" -> later match runs keep this link
 #   <shop>_rejected        link refused with "Not OK" -> never suggested again for this product
 #   least_price            lowest price: ours (always) + every shop that has it IN STOCK, VAT included
@@ -755,6 +762,17 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_confirmed BOOLEAN DEFAU
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_rejected TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_rejected TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_rejected TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aj_link TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aj_price NUMERIC(10,2);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aj_stock BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aj_suggestion TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aj_method TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aj_score NUMERIC(5,3);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aj_title TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aj_confirmed BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aj_rejected TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_link TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_price NUMERIC(10,2);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_priced_website TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS suggested_price NUMERIC(10,2);
@@ -991,6 +1009,32 @@ def vp_entries_from_db(cur):
     return entries, by_barcode
 
 
+def aj_entries_from_db(cur):
+    """alinjaz_catalog rows -> same entry format, so match_one() works unchanged.
+    No brand column (brand is at the start of the name); gtin only when their SKU is a real barcode."""
+    cur.execute("SELECT to_regclass('alinjaz_catalog')")
+    if cur.fetchone()[0] is None:
+        log("[CT-MATCH] alinjaz_catalog does not exist yet")
+        return [], {}
+    cur.execute("SELECT product_url, gtin, name, COALESCE(price_inc_tax, price), stock, volume "
+                "FROM alinjaz_catalog WHERE COALESCE(stock, '') <> 'Not on site'")
+    entries, by_barcode = [], {}
+    for url, gtin, name, price, stock, volume in cur.fetchall():
+        name = name or ""
+        full_n = norm_text(name)
+        e = {"handle": (url or "").rstrip("/"), "url": url, "title": name, "vendor_key": "",
+             "title_key": key(name), "title_norm": full_n,
+             "size": parse_size(volume) or parse_size(name), "type": detect_type(full_n),
+             "gender": detect_gender(full_n), "tokens": tokens(norm_text(re.split(r"\s-\s|,", name)[0])),
+             "price": float(price or 0), "available": stock == "In stock"}
+        entries.append(e)
+        bc = norm_barcode(gtin)
+        if bc:
+            by_barcode[bc] = e
+    log(f"[CT-MATCH] {len(entries)} Al Injaz products loaded from alinjaz_catalog | {len(by_barcode)} with barcode")
+    return entries, by_barcode
+
+
 # One entry per competitor shop. To add a new shop later (e.g. V Perfumes):
 #   1. load its products into a Postgres table, 2. write a loader like ff_entries_from_db,
 #   3. add its columns to CT_CREATE, 4. add one entry here + one route below.
@@ -1004,6 +1048,9 @@ SHOPS = {
     "vp": {"label": "V Perfumes", "prefix": "vp", "loader": vp_entries_from_db,
            "empty_hint": "vperfumes_catalog is empty - run /vperfumes/run first",
            "trust_barcode": True},       # V Perfumes sku = real barcode -> barcode match is trusted
+    "aj": {"label": "Al Injaz", "prefix": "aj", "loader": aj_entries_from_db,
+           "empty_hint": "alinjaz_catalog is empty - run /alinjaz/run first",
+           "trust_barcode": False},      # not sure their SKUs are always barcodes -> name must agree too
 }
 
 
@@ -1073,7 +1120,7 @@ def ct_match_shop(shop_key):
             brand_entries = [e for e in entries if (e["vendor_key"] and e["vendor_key"].startswith(bkey))
                              or bnorm in e["title_norm"]
                              or (len(e["vendor_key"]) >= 4 and e["vendor_key"] in bkey)]
-            if shop_key in ("ff", "vp"):
+            if shop_key in ("ff", "vp", "aj"):
                 # French Fragrance / V Perfumes titles start with the FULL brand ("Christian Dior Sauvage ...").
                 # Our brand is "Dior" -> the word "christian" would lower the name score.
                 # So for FF, ignore the words written BEFORE our brand name in the title.
@@ -1149,6 +1196,11 @@ def ct_match_vp():
     return ct_match_shop("vp")
 
 
+def ct_match_aj():
+    """Match all products to Al Injaz Perfumes."""
+    return ct_match_shop("aj")
+
+
 # ---------------------------------------------------------------- Branded Perfume / Essenzi + least price
 # Branded Perfume and Essenzi sell the SAME products as French Fragrance (same company, same links).
 # So a product matched to French Fragrance (ff_link) is also matched to them:
@@ -1184,6 +1236,9 @@ WITH offers AS (
     UNION ALL
     SELECT fi_record_id, 'V Perfumes', vp_price, 6
       FROM competitor_table WHERE vp_stock AND vp_link IS NOT NULL AND vp_price > 0
+    UNION ALL
+    SELECT fi_record_id, 'Al Injaz', aj_price, 7
+      FROM competitor_table WHERE aj_stock AND aj_link IS NOT NULL AND aj_price > 0
 ),
 best AS (
     SELECT fi_record_id, MIN(price) AS min_price FROM offers GROUP BY fi_record_id
@@ -1219,6 +1274,8 @@ WITH competitor_offers AS (
     SELECT fi_record_id, es_price FROM competitor_table WHERE es_stock AND es_link IS NOT NULL AND es_price > 0
     UNION ALL
     SELECT fi_record_id, vp_price FROM competitor_table WHERE vp_stock AND vp_link IS NOT NULL AND vp_price > 0
+    UNION ALL
+    SELECT fi_record_id, aj_price FROM competitor_table WHERE aj_stock AND aj_link IS NOT NULL AND aj_price > 0
 )
 UPDATE competitor_table c
 SET suggested_price = ROUND(m.min_price * (1 - {SUGGEST_BELOW}), {SUGGEST_DECIMALS})
@@ -1406,9 +1463,11 @@ SUGGESTION_SHOPS = {
                                "WHERE product_url = %s LIMIT 1"),
     "vp": ("V Perfumes", "SELECT name, COALESCE(price_inc_tax, price), stock FROM vperfumes_catalog "
                          "WHERE product_url = %s LIMIT 1"),
+    "aj": ("Al Injaz", "SELECT name, COALESCE(price_inc_tax, price), stock FROM alinjaz_catalog "
+                       "WHERE product_url = %s LIMIT 1"),
 }
 LEAST_ORDER = [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"),
-               ("Essenzi", "es"), ("V Perfumes", "vp")]
+               ("Essenzi", "es"), ("V Perfumes", "vp"), ("Al Injaz", "aj")]
 
 
 def link_sisters_for(cur, fid):
@@ -1558,6 +1617,91 @@ def ct_update_prices_route():
     log(f"[PRICES] Done: {len(done)} updated, {len(failed)} failed, {len(skipped)} skipped")
     return jsonify({"ok": not failed, "updated": len(done), "failed": failed, "skipped": skipped,
                     "error": (f"{len(failed)} not updated in Airtable" if failed else None)})
+
+
+# ---------------------------------------------------------------- OUR product pages (fragrantsouq.com)
+OUR_SITE = os.environ.get("OUR_SITE", "https://fragrantsouq.com")
+
+
+def ct_load_our_links():
+    """Read every product of our Shopify store (public products.json, 250 per page) and save
+    our_link + our_title in competitor_table, matched by SKU (Shopify variant SKU = French Inventories SKU)."""
+    started = time.time()
+    summary = {"step": "load-our-links", "shopify_products": 0, "shopify_skus": 0, "linked": 0}
+    state["last_summary"] = summary
+    by_sku = {}
+    page = 1
+    while page <= 100:                                   # Shopify limit: 100 pages x 250 = 25,000 products
+        r = None
+        for wait in (0, 10, 30, 60):
+            if wait:
+                log(f"[OUR] page {page}: busy, retry in {wait}s")
+                time.sleep(wait)
+            try:
+                r = requests.get(f"{OUR_SITE}/products.json", params={"limit": 250, "page": page},
+                                 headers=SAMAWA_HEADERS, timeout=60)
+            except requests.RequestException as ex:
+                log(f"[OUR] page {page}: network error {ex}")
+                r = None
+                continue
+            if r.status_code == 429 or r.status_code >= 500:
+                continue
+            break
+        if r is None or not r.ok:
+            log(f"[OUR] page {page}: stopped (HTTP {getattr(r, 'status_code', '-')})")
+            break
+        products = r.json().get("products", [])
+        if not products:
+            break
+        for p in products:
+            variants = p.get("variants", [])
+            for v in variants:
+                sku = (v.get("sku") or "").strip().upper()
+                if not sku:
+                    continue
+                url = f"{OUR_SITE}/products/{p.get('handle')}"
+                if len(variants) > 1:
+                    url += f"?variant={v.get('id')}"   # open the right size directly
+                by_sku[sku] = (url, (p.get("title") or "").strip())
+        summary["shopify_products"] += len(products)
+        log(f"[OUR] page {page}: {len(products)} products (total {summary['shopify_products']}, {len(by_sku)} SKUs)")
+        if len(products) < 250:
+            break
+        page += 1
+        time.sleep(1)
+    summary["shopify_skus"] = len(by_sku)
+
+    conn = pg_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(CT_CREATE)
+        cur.execute("UPDATE competitor_table SET our_link = NULL, our_title = NULL")
+        if by_sku:
+            execute_values(cur, """
+                UPDATE competitor_table c SET our_link = v.url, our_title = v.title
+                FROM (VALUES %s) AS v(sku, url, title)
+                WHERE UPPER(TRIM(c.sku)) = v.sku""", [(k, u, t) for k, (u, t) in by_sku.items()], page_size=1000)
+        cur.execute("SELECT COUNT(*), COUNT(our_link) FROM competitor_table")
+        total, linked = cur.fetchone()
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    summary.update(linked=linked, not_on_shopify=total - linked, seconds=round(time.time() - started, 1))
+    log(f"[OUR DONE] {summary}")
+    return summary
+
+
+@app.get("/competitor/load-our-links")
+def ct_load_our_links_route():
+    # /competitor/load-our-links?secret=XXX -> our product page link for every product (by SKU)
+    return _ct_start(ct_load_our_links, "CT-OUR")
+
+
+@app.get("/competitor/match-aj")
+def ct_match_aj_route():
+    # /competitor/match-aj?secret=XXX -> Al Injaz link / price / stock / suggestion for every product
+    return _ct_start(ct_match_aj, "CT-AJ")
 
 
 @app.get("/competitor/match-vp")
