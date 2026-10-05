@@ -14,6 +14,7 @@ Files in this project
   essenzi.py          -> same for essenzi.com (table essenzi_catalog); page reading = es_scraper.py on the PC
   vperfumes.py        -> downloads the vperfumes.com UAE Perfumes category into vperfumes_catalog
   alinjaz.py          -> downloads alinjazperfumes.com (WooCommerce product list) into alinjaz_catalog
+  ounass.py           -> downloads ounass.ae women + men fragrance pages into ounass_catalog
 
 Normal order to run things (open these URLs in the browser)
   1. /samawa-catalog/run?secret=XXX        download Samawa website into Postgres (samawa_catalog)
@@ -24,6 +25,7 @@ Normal order to run things (open these URLs in the browser)
   6. /competitor/match-vp?secret=XXX       find each product on V Perfumes (vperfumes_catalog, barcode first)
   7. /competitor/load-our-links?secret=XXX our own product page on fragrantsouq.com for each product (by SKU)
   8. /alinjaz/run?secret=XXX then /competitor/match-aj?secret=XXX   Al Injaz Perfumes
+  9. /ounass/run?secret=XXX  then /competitor/match-on?secret=XXX   Ounass
      (least price is also recalculated automatically at the end of steps 2, 3 and 4)
   Progress: step 1 -> /samawa-catalog/status | steps 2, 3, 4 -> /samawa/status | Result -> /competitors
 
@@ -60,6 +62,7 @@ from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /loa
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
 from vperfumes import vperfumes_bp                 # /vperfumes/test, /vperfumes/run, /vperfumes/status
 from alinjaz import alinjaz_bp                     # /alinjaz/test, /alinjaz/run, /alinjaz/status
+from ounass import ounass_bp                       # /ounass/test, /ounass/run, /ounass/status
 from auth import auth_bp, init_auth                # /login, /logout + login check on every page
 
 app = Flask(__name__)
@@ -70,6 +73,7 @@ app.register_blueprint(branded_perfume_bp)
 app.register_blueprint(essenzi_bp)
 app.register_blueprint(vperfumes_bp)
 app.register_blueprint(alinjaz_bp)
+app.register_blueprint(ounass_bp)
 app.register_blueprint(auth_bp)
 init_auth(app)                                     # users from Render env var USERS (see auth.py)
 
@@ -698,6 +702,7 @@ def run_match(brands, rematch=False, fi_groups=None):
 #   es_link / es_price / es_stock   Essenzi          - taken from the French Fragrance match (same products)
 #   vp_link / vp_price / vp_stock / vp_suggestion / vp_method / vp_score   V Perfumes (own matching, barcode first)
 #   aj_link / aj_price / aj_stock / aj_suggestion / aj_method / aj_score   Al Injaz Perfumes (same way)
+#   on_link / on_price / on_stock / on_suggestion / on_method / on_score   Ounass (brand cleaned, name match)
 #   <shop>_title           the competitor's own product name (shown as the link text on the page)
 #   our_link / our_title   OUR product page on fragrantsouq.com (matched by SKU) - /competitor/load-our-links
 #   <shop>_confirmed       TRUE = suggestion accepted with "OK" -> later match runs keep this link
@@ -771,6 +776,15 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aj_score NUMERIC(5,3);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aj_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aj_confirmed BOOLEAN DEFAULT FALSE;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aj_rejected TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS on_link TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS on_price NUMERIC(10,2);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS on_stock BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS on_suggestion TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS on_method TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS on_score NUMERIC(5,3);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS on_title TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS on_confirmed BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS on_rejected TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_link TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_price NUMERIC(10,2);
@@ -1035,6 +1049,42 @@ def aj_entries_from_db(cur):
     return entries, by_barcode
 
 
+# Ounass writes brands as "YSL Beauty", "TOM FORD BEAUTY", "Ajmal Perfumes" -> cleaned before matching
+ON_BRAND_ALIASES = {"ysl": "Yves Saint Laurent", "d&g": "Dolce & Gabbana"}
+ON_BRAND_SUFFIX = re.compile(r"\s+(beauty|fragrances?|parfums?|perfumes?|cosmetics)$", re.I)
+
+
+def on_clean_brand(b):
+    """'YSL Beauty' -> 'Yves Saint Laurent', 'TOM FORD BEAUTY' -> 'TOM FORD', 'Ajmal Perfumes' -> 'Ajmal'."""
+    b = (b or "").strip()
+    if b.lower().startswith("parfums de") or b.lower().startswith("parfums "):
+        return b                                          # 'Parfums de Marly' is the real brand name
+    b = ON_BRAND_SUFFIX.sub("", b).strip()
+    return ON_BRAND_ALIASES.get(b.lower(), b)
+
+
+def on_entries_from_db(cur):
+    """ounass_catalog rows -> same entry format. Title = cleaned brand + name (Ounass keeps them apart)."""
+    cur.execute("SELECT to_regclass('ounass_catalog')")
+    if cur.fetchone()[0] is None:
+        log("[CT-MATCH] ounass_catalog does not exist yet")
+        return [], {}
+    cur.execute("SELECT product_url, brand, name, COALESCE(price_inc_tax, price), stock, volume "
+                "FROM ounass_catalog WHERE COALESCE(stock, '') <> 'Not on site'")
+    entries = []
+    for url, brand, name, price, stock, volume in cur.fetchall():
+        b = on_clean_brand(brand)
+        title = f"{b} {name or ''}".strip()
+        full_n = norm_text(title)
+        entries.append({"handle": (url or "").rstrip("/"), "url": url, "title": title, "vendor_key": key(b),
+                        "title_key": key(title), "title_norm": full_n,
+                        "size": parse_size(volume) or parse_size(name), "type": detect_type(full_n),
+                        "gender": detect_gender(full_n), "tokens": tokens(norm_text(re.split(r"\s-\s|,", title)[0])),
+                        "price": float(price or 0), "available": stock == "In stock"})
+    log(f"[CT-MATCH] {len(entries)} Ounass products loaded from ounass_catalog (no barcodes)")
+    return entries, {}
+
+
 # One entry per competitor shop. To add a new shop later (e.g. V Perfumes):
 #   1. load its products into a Postgres table, 2. write a loader like ff_entries_from_db,
 #   3. add its columns to CT_CREATE, 4. add one entry here + one route below.
@@ -1051,6 +1101,9 @@ SHOPS = {
     "aj": {"label": "Al Injaz", "prefix": "aj", "loader": aj_entries_from_db,
            "empty_hint": "alinjaz_catalog is empty - run /alinjaz/run first",
            "trust_barcode": False},      # not sure their SKUs are always barcodes -> name must agree too
+    "on": {"label": "Ounass", "prefix": "on", "loader": on_entries_from_db,
+           "empty_hint": "ounass_catalog is empty - run /ounass/run first",
+           "trust_barcode": False},      # no barcodes on Ounass -> name matching only
 }
 
 
@@ -1120,7 +1173,7 @@ def ct_match_shop(shop_key):
             brand_entries = [e for e in entries if (e["vendor_key"] and e["vendor_key"].startswith(bkey))
                              or bnorm in e["title_norm"]
                              or (len(e["vendor_key"]) >= 4 and e["vendor_key"] in bkey)]
-            if shop_key in ("ff", "vp", "aj"):
+            if shop_key in ("ff", "vp", "aj", "on"):
                 # French Fragrance / V Perfumes titles start with the FULL brand ("Christian Dior Sauvage ...").
                 # Our brand is "Dior" -> the word "christian" would lower the name score.
                 # So for FF, ignore the words written BEFORE our brand name in the title.
@@ -1202,6 +1255,11 @@ def ct_match_aj():
     return ct_match_shop("aj")
 
 
+def ct_match_on():
+    """Match all products to Ounass."""
+    return ct_match_shop("on")
+
+
 # ---------------------------------------------------------------- Branded Perfume / Essenzi + least price
 # Branded Perfume and Essenzi sell the SAME products as French Fragrance (same company, same links).
 # So a product matched to French Fragrance (ff_link) is also matched to them:
@@ -1240,6 +1298,9 @@ WITH offers AS (
     UNION ALL
     SELECT fi_record_id, 'Al Injaz', aj_price, 7
       FROM competitor_table WHERE aj_stock AND aj_link IS NOT NULL AND aj_price > 0
+    UNION ALL
+    SELECT fi_record_id, 'Ounass', on_price, 8
+      FROM competitor_table WHERE on_stock AND on_link IS NOT NULL AND on_price > 0
 ),
 best AS (
     SELECT fi_record_id, MIN(price) AS min_price FROM offers GROUP BY fi_record_id
@@ -1277,6 +1338,8 @@ WITH competitor_offers AS (
     SELECT fi_record_id, vp_price FROM competitor_table WHERE vp_stock AND vp_link IS NOT NULL AND vp_price > 0
     UNION ALL
     SELECT fi_record_id, aj_price FROM competitor_table WHERE aj_stock AND aj_link IS NOT NULL AND aj_price > 0
+    UNION ALL
+    SELECT fi_record_id, on_price FROM competitor_table WHERE on_stock AND on_link IS NOT NULL AND on_price > 0
 )
 UPDATE competitor_table c
 SET suggested_price = ROUND(m.min_price * (1 - {SUGGEST_BELOW}), {SUGGEST_DECIMALS})
@@ -1466,9 +1529,12 @@ SUGGESTION_SHOPS = {
                          "WHERE product_url = %s LIMIT 1"),
     "aj": ("Al Injaz", "SELECT name, COALESCE(price_inc_tax, price), stock FROM alinjaz_catalog "
                        "WHERE product_url = %s LIMIT 1"),
+    "on": ("Ounass", "SELECT CONCAT_WS(' ', brand, name), COALESCE(price_inc_tax, price), stock FROM ounass_catalog "
+                     "WHERE product_url = %s LIMIT 1"),
 }
 LEAST_ORDER = [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"),
-               ("Essenzi", "es"), ("V Perfumes", "vp"), ("Al Injaz", "aj")]
+               ("Essenzi", "es"), ("V Perfumes", "vp"), ("Al Injaz", "aj"),
+               ("Ounass", "on")]
 
 
 def link_sisters_for(cur, fid):
@@ -1697,6 +1763,12 @@ def ct_load_our_links():
 def ct_load_our_links_route():
     # /competitor/load-our-links?secret=XXX -> our product page link for every product (by SKU)
     return _ct_start(ct_load_our_links, "CT-OUR")
+
+
+@app.get("/competitor/match-on")
+def ct_match_on_route():
+    # /competitor/match-on?secret=XXX -> Ounass link / price / stock / suggestion for every product
+    return _ct_start(ct_match_on, "CT-ON")
 
 
 @app.get("/competitor/match-aj")
