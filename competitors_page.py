@@ -138,41 +138,58 @@ NAV_HTML = """
       {% endfor %}
     </div>
   </details>
-  <a href="/settings" class="{{ 'on' if active == 'settings' else '' }}">Settings</a>
+  <details class="dd" id="ddSet">
+    <summary class="{{ 'on' if active == 'settings' else '' }}">Settings<span class="car">&#9662;</span></summary>
+    <div class="ddmenu">
+      {% for key, label, about in settings_options %}
+      <a href="/settings/{{ key }}" class="{{ 'cur' if key == cur_key else '' }}"><span>{{ label }}</span></a>
+      {% endfor %}
+    </div>
+  </details>
 </nav>
 <script>
   // Menu logs: open the browser console (F12 -> Console) to see them
   (function () {
-    var d = document.getElementById("ddComp");
+    var dds = Array.prototype.slice.call(document.querySelectorAll(".menu details.dd"));
     console.log("[MENU] Page loaded: " + location.pathname + location.search);
-    if (!d) return;
-    d.addEventListener("toggle", function () {                 // dropdown opened / closed
-      console.log("[MENU] Competitors dropdown " + (d.open ? "opened" : "closed"));
-    });
-    d.querySelectorAll(".ddmenu a").forEach(function (a) {    // shop picked from the dropdown
-      a.addEventListener("click", function () {
-        console.log("[MENU] Opening shop table: " + a.querySelector("span").textContent + " -> " + a.href);
+    dds.forEach(function (d) {
+      var name = d.querySelector("summary").firstChild.textContent.trim();     // "Competitors" / "Settings"
+      d.addEventListener("toggle", function () {
+        console.log("[MENU] " + name + " dropdown " + (d.open ? "opened" : "closed"));
+        if (d.open) dds.forEach(function (o) { if (o !== d) o.removeAttribute("open"); });   // only one open
+      });
+      d.querySelectorAll(".ddmenu a").forEach(function (a) {
+        a.addEventListener("click", function () {
+          console.log("[MENU] " + name + " -> " + a.querySelector("span").textContent + " (" + a.href + ")");
+        });
       });
     });
-    document.querySelectorAll(".menu > a").forEach(function (a) {   // Competitor table / Settings
+    document.querySelectorAll(".menu > a").forEach(function (a) {   // Competitor table
       a.addEventListener("click", function () { console.log("[MENU] Menu click: " + a.textContent.trim()); });
     });
-    // close the dropdown when clicking anywhere else or pressing Esc
+    // close dropdowns when clicking anywhere else or pressing Esc
     document.addEventListener("click", function (e) {
-      if (d.open && !d.contains(e.target)) {
-        console.log("[MENU] Click outside -> closing dropdown");
-        d.removeAttribute("open");
-      }
+      dds.forEach(function (d) {
+        if (d.open && !d.contains(e.target)) { console.log("[MENU] Click outside -> closing dropdown"); d.removeAttribute("open"); }
+      });
     });
     document.addEventListener("keydown", function (e) {
-      if (e.key === "Escape" && d.open) {
-        console.log("[MENU] Esc pressed -> closing dropdown");
-        d.removeAttribute("open");
-      }
+      if (e.key !== "Escape") return;
+      dds.forEach(function (d) {
+        if (d.open) { console.log("[MENU] Esc pressed -> closing dropdown"); d.removeAttribute("open"); }
+      });
     });
   })();
 </script>
 """
+
+
+# Settings options (pages are empty for now - content will be added later)
+SETTINGS_OPTIONS = [
+    ("users", "User management", "Admin creates users and manages them (add, change password, remove)."),
+    ("discount", "Auto discount rate", "How far below the cheapest competitor the suggested price is set."),
+    ("automate", "Automate", "Run downloads, matching and price updates automatically on a schedule."),
+]
 
 
 def render_nav(active, cur_key, counts):
@@ -180,7 +197,8 @@ def render_nav(active, cur_key, counts):
     shops = [s["label"] for s in SOURCES if s["key"] != "competitor"]
     print(f"[MENU] Building menu: active={active!r} current page={cur_key!r} | "
           f"Competitors dropdown has {len(shops)} shops: {', '.join(shops)}", flush=True)
-    return render_template_string(NAV_HTML, active=active, cur_key=cur_key, counts=counts or {}, sources=SOURCES)
+    return render_template_string(NAV_HTML, active=active, cur_key=cur_key, counts=counts or {}, sources=SOURCES,
+                                  settings_options=SETTINGS_OPTIONS)
 # competitor names for the "Competitor" filter: "Samawa" -> column prefix "samawa" (samawa_link, samawa_stock ...)
 COMPETITORS = {label: prefix for label, prefix in SOURCES[0]["shops"]}
 
@@ -875,19 +893,39 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
  .topbar{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
  .who{color:var(--muted);font-size:14px} .who b{color:var(--text)} .who a{color:var(--gold)}
  .empty{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;color:var(--muted);margin-top:16px}
+ .empty b{color:var(--text);font-size:18px}
+ .opts{display:grid;gap:12px;margin-top:16px}
+ .opt{display:flex;flex-direction:column;gap:6px;background:var(--card);border:1px solid var(--line);border-radius:16px;
+      padding:18px 20px;color:var(--text);text-decoration:none}
+ .opt:hover{border-color:#f2d675}
+ .opt b{font-size:18px} .opt span{color:var(--muted);font-size:14px}
+ .back{display:inline-block;margin-top:14px;color:var(--gold)}
 {{ nav_css|safe }}
 </style></head><body><div class="page">
-<div class="topbar"><h1>Settings</h1>
+<div class="topbar"><h1>{{ title }}</h1>
   {% if g.user %}<span class="who">Logged in as <b>{{ g.user }}</b> · <a href="/logout">Log out</a></span>{% endif %}</div>
 {{ nav_html|safe }}
-<div class="empty">Nothing here yet.</div>
+{% if option %}
+<a class="back" href="/settings">&larr; All settings</a>
+<div class="empty"><b>{{ option[1] }}</b><br>{{ option[2] }}<br><br>Coming soon.</div>
+{% else %}
+<div class="opts">
+  {% for key, label, about in options %}
+  <a class="opt" href="/settings/{{ key }}"><b>{{ label }}</b><span>{{ about }}</span></a>
+  {% endfor %}
+</div>
+{% endif %}
 </div></body></html>"""
 
 
 @competitors_bp.route("/settings")
-def settings_page():
-    """Settings menu item - empty for now (options will be added here later)."""
-    print("[competitors] settings page opened", flush=True)
+@competitors_bp.route("/settings/<key>")
+def settings_page(key=None):
+    """Settings: /settings lists the 3 options, /settings/<key> opens one (empty for now)."""
+    option = next((o for o in SETTINGS_OPTIONS if o[0] == key), None)
+    if key and not option:
+        print(f"[SETTINGS] Unknown option '{key}' -> showing all settings", flush=True)
+    print(f"[SETTINGS] Opened: {option[1] if option else 'all settings'}", flush=True)
     counts = {}
     try:
         conn = db_conn()
@@ -900,4 +938,6 @@ def settings_page():
     except Exception as ex:
         print(f"[competitors] settings: counts not loaded ({ex})", flush=True)
     print(f"[MENU] Settings page shown to {g.get('user') or 'unknown user'}", flush=True)
-    return render_template_string(SETTINGS_HTML, nav_html=render_nav("settings", None, counts), nav_css=NAV_CSS)
+    return render_template_string(SETTINGS_HTML, nav_html=render_nav("settings", option[0] if option else None, counts),
+                                  nav_css=NAV_CSS, option=option, options=SETTINGS_OPTIONS,
+                                  title=option[1] if option else "Settings")
