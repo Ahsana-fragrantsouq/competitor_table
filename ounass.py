@@ -175,7 +175,8 @@ def detect_paging(path, first_urls):
         body = on_get(path, {name: value(2)}) or ""
         new = [x for x in on_parse(body) if x["url"] not in first_urls]
         on_log(f"[ON] paging test ?{name}={value(2)}: {len(new)} new products")
-        if new:
+        # a real page 2 has (almost) all NEW products; a few new ones = page 1 again + rotating/sponsored items
+        if len(new) >= ON_PER_PAGE // 2:
             return name, value
         time.sleep(1)
     return None, None
