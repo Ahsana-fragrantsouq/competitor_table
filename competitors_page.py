@@ -1043,7 +1043,8 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 <a class="back" href="/settings">&larr; All settings</a>
 {# Auto discount rate: admin writes the % (e.g. 2 or 5). Saved in table app_settings, key 'discount_rate'. #}
 <form class="dform" method="post" action="/settings/discount">
-  <label for="rate">Discount below the cheapest in-stock competitor</label>
+  <label for="rate">Auto discount rate</label>
+  <p> Discount below the cheapest in-stock competitor </p>
   <div class="drow">
     <input id="rate" name="rate" type="number" min="0" max="50" step="0.1" required
            value="{{ '%g' % rate if rate is not none else '' }}" placeholder="e.g. 5">
