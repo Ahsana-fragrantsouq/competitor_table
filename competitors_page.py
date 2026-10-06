@@ -900,12 +900,64 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
  .opt:hover{border-color:#f2d675}
  .opt b{font-size:18px} .opt span{color:var(--muted);font-size:14px}
  .back{display:inline-block;margin-top:14px;color:var(--gold)}
+ .hint{color:var(--muted);font-size:14px;margin:10px 2px}
+ .bsearch{display:flex;gap:8px;margin-top:14px}
+ .bsearch input{flex:1;min-width:0;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;
+                padding:13px 14px;font-size:16px}
+ .bsearch button{background:#f2d675;color:#1c1b19;border:0;border-radius:12px;padding:0 20px;font-size:16px;font-weight:600;cursor:pointer}
+ .blist{background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+ .brow{display:flex;justify-content:space-between;gap:12px;padding:13px 18px;color:var(--text);text-decoration:none;
+       border-top:1px solid var(--line)}
+ .brow:first-child{border-top:0}
+ .brow:hover{background:var(--bg)}
+ .brow .n{color:var(--muted);font-variant-numeric:tabular-nums}
 {{ nav_css|safe }}
 </style></head><body><div class="page">
 <div class="topbar"><h1>{{ title }}</h1>
   {% if g.user %}<span class="who">Logged in as <b>{{ g.user }}</b> · <a href="/logout">Log out</a></span>{% endif %}</div>
 {{ nav_html|safe }}
-{% if option %}
+{% if option and option[0] == 'automate' %}
+<a class="back" href="/settings">&larr; All settings</a>
+{# Automate: search brands at the top, all brands with their product count below #}
+<form class="bsearch" method="get" onsubmit="return true">
+  <input type="search" name="q" id="bq" value="{{ q }}" placeholder="Search brands" autocomplete="off">
+  <button type="submit">Search</button>
+</form>
+<p class="hint" id="bcount">{{ brands|length }} brand{{ '' if brands|length == 1 else 's' }}{% if q %} matching "{{ q }}"{% endif %}
+   · {{ brands|sum(attribute='n') }} products</p>
+<div class="blist" id="blist">
+  {% for b in brands %}
+  <a class="brow" data-name="{{ b.brand|lower }}" data-n="{{ b.n }}"
+     href="/competitors?tab=competitor&ff=brand&fo=anyof&fv={{ b.brand|urlencode }}" title="Open {{ b.brand }} in the competitor table">
+    <span>{{ b.brand }}</span><span class="n">{{ b.n }}</span></a>
+  {% else %}
+  <div class="empty">No brands found{% if q %} for "{{ q }}"{% endif %}.</div>
+  {% endfor %}
+</div>
+<script>
+  // live search: hides brands that don't contain the typed text (no page reload needed)
+  (function () {
+    var box = document.getElementById("bq"), rows = document.querySelectorAll("#blist .brow");
+    var info = document.getElementById("bcount"), timer;
+    console.log("[AUTOMATE] " + rows.length + " brands on the page");
+    box.addEventListener("input", function () {
+      var t = box.value.trim().toLowerCase(), shown = 0, products = 0;
+      rows.forEach(function (r) {
+        var ok = !t || r.dataset.name.indexOf(t) >= 0;
+        r.style.display = ok ? "" : "none";
+        if (ok) { shown++; products += +r.dataset.n; }
+      });
+      info.textContent = shown + " brand" + (shown === 1 ? "" : "s") + (t ? ' matching "' + box.value.trim() + '"' : "") +
+                         " · " + products + " products";
+      clearTimeout(timer);
+      timer = setTimeout(function () { console.log("[AUTOMATE] Search '" + t + "' -> " + shown + " brands"); }, 400);
+    });
+    rows.forEach(function (r) {
+      r.addEventListener("click", function () { console.log("[AUTOMATE] Opening brand: " + r.querySelector("span").textContent); });
+    });
+  })();
+</script>
+{% elif option %}
 <a class="back" href="/settings">&larr; All settings</a>
 <div class="empty"><b>{{ option[1] }}</b><br>{{ option[2] }}<br><br>Coming soon.</div>
 {% else %}
@@ -926,12 +978,21 @@ def settings_page(key=None):
     if key and not option:
         print(f"[SETTINGS] Unknown option '{key}' -> showing all settings", flush=True)
     print(f"[SETTINGS] Opened: {option[1] if option else 'all settings'}", flush=True)
-    counts = {}
+    counts, brands = {}, []
+    q = request.args.get("q", "").strip()
     try:
         conn = db_conn()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         try:
             counts = tab_counts(cur)                 # numbers next to each shop in the Competitors menu
+            if option and option[0] == "automate":
+                # Automate: every brand of our products with how many products it has (search = brand contains q)
+                sql = ("SELECT brand, COUNT(*) AS n FROM competitor_table WHERE brand IS NOT NULL AND brand <> ''"
+                       + (" AND brand ILIKE %s" if q else "") + " GROUP BY brand ORDER BY LOWER(brand)")
+                cur.execute(sql, [f"%{q}%"] if q else [])
+                brands = cur.fetchall()
+                print(f"[AUTOMATE] Search {q!r}: {len(brands)} brands, "
+                      f"{sum(b['n'] for b in brands)} products", flush=True)
         finally:
             cur.close()
             conn.close()
@@ -939,5 +1000,5 @@ def settings_page(key=None):
         print(f"[competitors] settings: counts not loaded ({ex})", flush=True)
     print(f"[MENU] Settings page shown to {g.get('user') or 'unknown user'}", flush=True)
     return render_template_string(SETTINGS_HTML, nav_html=render_nav("settings", option[0] if option else None, counts),
-                                  nav_css=NAV_CSS, option=option, options=SETTINGS_OPTIONS,
+                                  nav_css=NAV_CSS, option=option, options=SETTINGS_OPTIONS, brands=brands, q=q,
                                   title=option[1] if option else "Settings")
