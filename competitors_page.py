@@ -504,7 +504,7 @@ HTML = """
   </form>
   <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock or conds %} match this filter{% endif %}.</p>
   {% if src.kind == 'competitor' and rows %}
-  <div class="pickallrow"><label class="pickall">Select all on this page <input type="checkbox" id="pickAll" onchange="pickAll(this.checked)"></label></div>
+  <div class="pickallrow"><label class="pickall">Select all <input type="checkbox" id="pickAll" onchange="pickAll(this.checked)"></label></div>
   {# bottom bar (like Amazon "Save all"): appears when 2 or more products are ticked #}
   <div class="bulkbar" id="bulkbar" hidden>
     <span class="bulkcount" id="bulkcount">0 selected</span>
@@ -940,8 +940,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 </form>
 <p class="hint" id="bcount">{{ brands|length }} brand{{ '' if brands|length == 1 else 's' }}{% if q %} matching "{{ q }}"{% endif %}
    · {{ brands|sum(attribute='n') }} products</p>
-<p class="hint">Tick a brand = <b>automatic</b>: its UAE Price in Airtable follows the suggested price (now, and after every
-   price update). Untick = <b>manual</b>. Currently {{ auto_set|length }} brand{{ '' if auto_set|length == 1 else 's' }} on automatic.</p>
+
 <div class="blist" id="blist">
   {% for b in brands %}
   <div class="brow" data-name="{{ b.brand|lower }}" data-n="{{ b.n }}">
