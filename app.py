@@ -56,7 +56,7 @@ import unicodedata
 from urllib.parse import urlparse
 
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 
 # Pages / jobs that live in their own files ("blueprints") and are plugged into this app
 from ff_catalog_page import ff_catalog_bp          # /ff-catalog
@@ -134,6 +134,16 @@ def log(*args):
     print(*args, flush=True)
 
 
+# Detailed logs for the small matching helpers (called thousands of times per run).
+# Off by default so Render logs stay readable; set env var DEBUG_MATCH=1 on Render to switch them on.
+DEBUG_MATCH = os.environ.get("DEBUG_MATCH") == "1"
+
+
+def dlog(*args):
+    if DEBUG_MATCH:
+        print(*args, flush=True)
+
+
 # ---------------------------------------------------------------- text helpers
 # Product names are written differently on every site ("Eau de Parfum" vs "EDP", "Pour Homme" vs "Men").
 # These helpers turn names into the same simple form so they can be compared.
@@ -170,6 +180,7 @@ STOP = {
 
 def as_text(v):
     """Any Airtable value (text / number / list) -> plain text."""
+    dlog(f"[as_text] {str(v)[:60]!r}")
     # Airtable lookups can come back as lists
     if v is None:
         return ""
@@ -181,6 +192,7 @@ def as_text(v):
 def norm_text(s):
     """Clean a name for comparing: lowercase, no accents/symbols, no sizes, EDP/EDT codes. Example:
     'Dior Sauvage Eau de Parfum 100ml' -> ' dior sauvage edp '"""
+    dlog(f"[norm_text] {str(s)[:80]!r}")
     s = re.sub(r"[\u2018\u2019\u201a\u201b`\u00b4]", " ", as_text(s))  # curly apostrophes -> space (L’Interdit = L'Interdit)
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()  # remove accents
     s = s.lower().replace("&", " and ")
@@ -196,12 +208,14 @@ def norm_text(s):
 
 def key(s):
     """Letters + digits only, lowercase: 'Christian Dior' -> 'christiandior'. Used to compare brand names."""
+    dlog(f"[key] {str(s)[:60]!r}")
     s = unicodedata.normalize("NFKD", as_text(s)).encode("ascii", "ignore").decode()
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
 def tokens(normed):
     """Cleaned name -> set of important words (STOP words and sizes removed): {'dior', 'sauvage'}."""
+    dlog(f"[tokens] {str(normed)[:80]!r}")
     out = set()
     for t in normed.split():
         if t in STOP or re.fullmatch(r"\d+(ml|oz)", t):
@@ -212,6 +226,7 @@ def tokens(normed):
 
 def detect_type(normed):
     """Find the concentration in a cleaned name: extrait / edp / edt / edc / parfum, or None."""
+    dlog(f"[detect_type] {str(normed)[:80]!r}")
     for code in ("extrait", "edp", "edt", "edc"):
         if f" {code} " in normed:
             return code
@@ -224,6 +239,7 @@ def detect_type(normed):
 
 def detect_gender(normed):
     """Find the gender in a cleaned name: men / women / unisex, or None if not mentioned."""
+    dlog(f"[detect_gender] {str(normed)[:80]!r}")
     if " unisex " in normed:
         return "unisex"
     men = any(w in normed for w in (" men ", " man ", " homme ", " him "))
@@ -239,18 +255,21 @@ def detect_gender(normed):
 
 def parse_size(text):
     """'100 ml' / 'Sauvage 100ml' -> 100.0 (None if no ml size in the text)."""
+    dlog(f"[parse_size] {str(text)[:60]!r}")
     m = re.search(r"(\d+(?:\.\d+)?)\s*ml\b", as_text(text).lower())
     return float(m.group(1)) if m else None
 
 
 def norm_barcode(v):
     """Keep digits only, drop leading zeros. Less than 8 digits is not a real barcode -> None."""
+    dlog(f"[norm_barcode] {v!r}")
     digits = re.sub(r"\D", "", as_text(v)).lstrip("0")
     return digits if len(digits) >= 8 else None
 
 
 def token_hit(t, pool):
     """Is word t in the other name? Allows small spelling differences ('musc' ~ 'musk', 'magestic' ~ 'majestic')."""
+    dlog(f"[token_hit] {t!r} in {sorted(pool)[:8]}")
     if t in pool:
         return True
     if any(c.isdigit() for c in t):
@@ -269,6 +288,7 @@ def name_score(fi_tokens, sm_tokens):
     coverage  = how many of OUR words are in their name (60%)
     precision = how many of THEIR words are in our name (40%)
     1.0 = same words. A match needs MATCH_THRESHOLD (0.85)."""
+    dlog(f"[name_score] ours={sorted(fi_tokens)} theirs={sorted(sm_tokens)}")
     if not fi_tokens or not sm_tokens:
         return 0.0
     coverage = sum(token_hit(t, sm_tokens) for t in fi_tokens) / len(fi_tokens)
@@ -283,6 +303,7 @@ MAX_PAGES = 100  # Shopify storefront hard limit: page 101+ returns 400 (max 25,
 
 def slim(p):
     # keep only what matching needs (drops body_html/images) -> much less memory on 512 MB instance
+    dlog(f"[slim] product {p.get('handle')}")
     return {
         "id": p.get("id"),
         "handle": p.get("handle", ""),
@@ -350,6 +371,7 @@ BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "10"))   # brands per batch
 
 def collection_matches(c, bkeys):
     """Is this Samawa collection a brand page for one of these brands? (used by the OLD /samawa/run)"""
+    dlog(f"[collection_matches] {c.get('title') if isinstance(c, dict) else c}")
     ckey, hkey = key(c.get("title")), key(c.get("handle"))
     # exact name, or brand inside collection name (brand >= 5 letters), or "Dior" inside "Christian Dior"
     return any(bk and (bk in (ckey, hkey) or (len(bk) >= 5 and (bk in ckey or bk in hkey))
@@ -407,6 +429,7 @@ def build_index(catalog):
 
 def samawa_fields(e):
     """Samawa entry -> Airtable Competitor fields (OLD /samawa/run only)."""
+    dlog("[samawa_fields] reading fields")
     return {C_URL: f"{SAMAWA_BASE}/products/{e['handle']}", C_PRICE: e["price"], C_STOCK: e["available"]}
 
 
@@ -497,6 +520,7 @@ def fetch_all_brand_products():
 # match_one() is shared: the old /samawa/run and the new /competitor/match-samawa both use it.
 def pick_by_size(entries, size):
     """From several variants of one Samawa product, pick the one with the same ml size (else the first)."""
+    dlog("[pick_by_size] choosing variant by size")
     if size:
         for e in entries:
             if e["size"] and abs(e["size"] - size) <= 0.5:
@@ -533,6 +557,7 @@ def match_one(fields, brand, brand_entries, by_barcode, trust_barcode=False):
 
     def score(e):
         # returns None when the candidate is impossible (wrong size / type / gender)
+        dlog(f"[score] candidate {e.get('title')!r}")
         if fi_size and (not e["size"] or abs(e["size"] - fi_size) > 0.5):
             return None
         if fi_gender and e["gender"] and "unisex" not in (fi_gender, e["gender"]) and fi_gender != e["gender"]:
@@ -543,6 +568,7 @@ def match_one(fields, brand, brand_entries, by_barcode, trust_barcode=False):
         return round(s, 3)
 
     def method(base, e):
+        dlog(f"[method] {base} -> {e.get('title')!r}")
         return f"{base}(type {fi_type}->{e['type']})" if fi_type and e["type"] and fi_type != e["type"] else base
 
     scored = [(s, e) for e in brand_entries if (s := score(e)) is not None]
@@ -845,6 +871,7 @@ ON CONFLICT (fi_record_id) DO UPDATE SET
 
 def ct_update_sql(prefix):
     """Save query for one shop: updates only that shop's columns (samawa_* or ff_*) of many rows at once."""
+    log(f"[CT-SAVE-SQL] Building save query for shop prefix '{prefix}'")
     return f"""
 UPDATE competitor_table AS c SET
     {prefix}_link       = v.link,
@@ -871,6 +898,7 @@ def pg_conn():
 
 def first_text(v):
     """Airtable lookups / multi-selects come back as lists -> first value as text."""
+    dlog(f"[first_text] {str(v)[:60]!r}")
     if isinstance(v, list):
         v = v[0] if v else None
     if v is None:
@@ -881,6 +909,7 @@ def first_text(v):
 
 def first_number(v):
     """Airtable number / currency / lookup -> number with 2 decimals (None if empty)."""
+    dlog(f"[first_number] {str(v)[:60]!r}")
     if isinstance(v, list):
         v = v[0] if v else None
     try:
@@ -1087,6 +1116,7 @@ ON_BRAND_SUFFIX = re.compile(r"\s+(beauty|fragrances?|parfums?|perfumes?|cosmeti
 
 def on_clean_brand(b):
     """'YSL Beauty' -> 'Yves Saint Laurent', 'TOM FORD BEAUTY' -> 'TOM FORD', 'Ajmal Perfumes' -> 'Ajmal'."""
+    dlog(f"[on_clean_brand] Ounass brand {b!r}")
     b = (b or "").strip()
     if b.lower().startswith("parfums de") or b.lower().startswith("parfums "):
         return b                                          # 'Parfums de Marly' is the real brand name
@@ -1325,36 +1355,43 @@ def ct_match_shop(shop_key):
 
 def ct_match_samawa():
     """STEP 2 - match all products to Samawa."""
+    log("[CT-SAMAWA] Step 2 started: match all products to Samawa")
     return ct_match_shop("samawa")
 
 
 def ct_match_ff():
     """STEP 3 - match all products to French Fragrance."""
+    log("[CT-FF] Step 3 started: match all products to French Fragrance")
     return ct_match_shop("ff")
 
 
 def ct_match_vp():
     """STEP 4 - match all products to V Perfumes."""
+    log("[CT-VP] Step 4 started: match all products to V Perfumes")
     return ct_match_shop("vp")
 
 
 def ct_match_aj():
     """Match all products to Al Injaz Perfumes."""
+    log("[CT-AJ] Started: match all products to Al Injaz")
     return ct_match_shop("aj")
 
 
 def ct_match_on():
     """Match all products to Ounass."""
+    log("[CT-ON] Started: match all products to Ounass")
     return ct_match_shop("on")
 
 
 def ct_match_am():
     """Match all products to Amberiya."""
+    log("[CT-AM] Started: match all products to Amberiya")
     return ct_match_shop("am")
 
 
 def ct_match_ng():
     """Match all products to Niche Gallerie."""
+    log("[CT-NG] Started: match all products to Niche Gallerie")
     return ct_match_shop("ng")
 
 
@@ -1507,11 +1544,16 @@ def ct_update_least():
         conn.close()
     result["seconds"] = round(time.time() - started, 1)
     log(f"[CT-LEAST DONE] {result}")
+    try:
+        result["auto"] = auto_apply(reason="after least-price update")   # Settings -> Automate brands
+    except Exception as ex:
+        log(f"[AUTO] skipped after least-price update: {ex}")
     return result
 
 
 def ct_update_least_job():
     """For /competitor/update-least (e.g. after the Branded Perfume / Essenzi scrapers finished)."""
+    log("[CT-LEAST] /competitor/update-least started (Branded Perfume + Essenzi prices, least price, automatic brands)")
     summary = {"step": "update-least"}
     state["last_summary"] = summary
     summary.update(ct_update_least())
@@ -1556,6 +1598,7 @@ def _worker(brands, rematch=False):
 @app.get("/")
 def health():
     """Health check - Render / you can open / to see the service is alive."""
+    log("[HEALTH] / checked (Render health check or browser)")
     return jsonify({"ok": True, "service": "samawa-matcher"})
 
 
@@ -1594,6 +1637,7 @@ def trigger_from_url():
 @app.get("/samawa/status")
 def status():
     """Progress / result of the current or last job: /samawa/run, /competitor/load-fi, /competitor/match-samawa."""
+    log(f"[STATUS] status requested | running={state.get('running')}")
     return jsonify({"running": run_lock.locked(), "last_summary": state["last_summary"]})
 
 
@@ -1612,18 +1656,21 @@ def _ct_start(fn, label):
 @app.get("/competitor/load-fi")
 def ct_load_fi_route():
     # Step 1: /competitor/load-fi?secret=XXX -> all French Inventories products into competitor_table
+    log("[ROUTE] /competitor/load-fi called")
     return _ct_start(ct_load_fi, "CT-LOAD")
 
 
 @app.get("/competitor/match-samawa")
 def ct_match_samawa_route():
     # Step 2: /competitor/match-samawa?secret=XXX -> Samawa link / price / stock / suggestion for every product
+    log("[ROUTE] /competitor/match-samawa called")
     return _ct_start(ct_match_samawa, "CT-MATCH")
 
 
 @app.get("/competitor/match-ff")
 def ct_match_ff_route():
     # Step 3: /competitor/match-ff?secret=XXX -> French Fragrance link / price / stock / suggestion for every product
+    log("[ROUTE] /competitor/match-ff called")
     return _ct_start(ct_match_ff, "CT-FF")
 
 
@@ -1740,6 +1787,125 @@ def ct_suggestion_route():
         conn.close()
 
 
+def airtable_set_prices(good, tag="PRICES"):
+    """Write UAE Price to Airtable for many products ({fi_record_id: price}), 10 per request (Airtable limit),
+    then save our new price + least price in Postgres. Returns (done_ids, failed {id: error})."""
+    fids = list(good)
+    failed = {}
+    for i in range(0, len(fids), 10):
+        chunk = fids[i:i + 10]
+        body = {"records": [{"id": f, "fields": {F_UAE_PRICE: good[f]}} for f in chunk], "typecast": True}
+        r = requests.patch(f"{AT_URL}/{FI_TABLE}", headers=AT_HEADERS, timeout=30, json=body)
+        if r.status_code == 429:                       # too many requests -> wait and try once more
+            log(f"[{tag}] Airtable busy (429) -> waiting 30s")
+            time.sleep(30)
+            r = requests.patch(f"{AT_URL}/{FI_TABLE}", headers=AT_HEADERS, timeout=30, json=body)
+        if not r.ok:
+            log(f"[{tag}] Airtable error {r.status_code}: {r.text[:300]}")
+            for f in chunk:
+                failed[f] = f"Airtable {r.status_code}"
+        else:
+            log(f"[{tag}] Airtable updated {i + len(chunk)}/{len(fids)}")
+        time.sleep(0.25)                               # Airtable allows 5 requests per second
+
+    done = [f for f in fids if f not in failed]
+    conn = pg_conn()
+    cur = conn.cursor()
+    try:
+        for f in done:
+            cur.execute("UPDATE competitor_table SET uae_price = %s, updated_at = NOW() WHERE fi_record_id = %s",
+                        (good[f], f))
+            least_for(cur, f)                          # least price / suggested price for this product
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    return done, failed
+
+
+# ---------------------------------------------------------------- Automate (Settings -> Automate)
+# Brands ticked on /settings/automate are on AUTOMATIC: their UAE Price in Airtable is set to the suggested price
+#   - right away when "Update all" is clicked, and
+#   - again after every match / least-price run (prices change -> new suggested price -> Airtable updated).
+# Unticked brands are MANUAL: nothing is changed automatically (use the Update price buttons yourself).
+AUTO_CREATE = """
+CREATE TABLE IF NOT EXISTS brand_automation (
+    brand       TEXT PRIMARY KEY,            -- brand name as in competitor_table / French Inventories
+    auto        BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_by  TEXT,                        -- user who ticked / unticked it
+    updated_at  TIMESTAMP DEFAULT NOW()
+);
+"""
+auto_lock = threading.Lock()
+
+
+def auto_brands(cur):
+    """Brands that are on automatic (lower case)."""
+    log("[AUTO] Reading automatic brands from brand_automation")
+    cur.execute(AUTO_CREATE)
+    cur.execute("SELECT LOWER(brand) FROM brand_automation WHERE auto")
+    return [r[0] for r in cur.fetchall()]
+
+
+def auto_apply(brands=None, reason=""):
+    """Set UAE Price = suggested price in Airtable for every product of the automatic brands
+    (or only `brands`, when given) whose price is different. Products without a suggested price are skipped."""
+    with auto_lock:                                    # never two automatic updates at the same time
+        conn = pg_conn()
+        cur = conn.cursor()
+        try:
+            wanted = [b.lower() for b in brands] if brands is not None else auto_brands(cur)
+            conn.commit()
+            if not wanted:
+                log(f"[AUTO] {reason}: no automatic brands -> nothing to do")
+                return {"brands": 0, "products": 0, "updated": 0, "failed": 0}
+            cur.execute("""SELECT fi_record_id, suggested_price FROM competitor_table
+                           WHERE LOWER(brand) = ANY(%s) AND suggested_price > 0
+                             AND uae_price IS DISTINCT FROM suggested_price""", (wanted,))
+            good = {fid: float(p) for fid, p in cur.fetchall()}
+        finally:
+            cur.close()
+            conn.close()
+        log(f"[AUTO] {reason}: {len(wanted)} automatic brands -> {len(good)} products need a new price")
+        if not good:
+            return {"brands": len(wanted), "products": 0, "updated": 0, "failed": 0}
+        done, failed = airtable_set_prices(good, tag="AUTO")
+        result = {"brands": len(wanted), "products": len(good), "updated": len(done), "failed": len(failed)}
+        log(f"[AUTO DONE] {reason}: {result}")
+        return result
+
+
+@app.post("/automate/save")
+def automate_save_route():
+    """'Update all' on /settings/automate. Body: {"auto": [brands ticked], "manual": [brands unticked]}.
+    Saves the choice, then updates the newly automatic brands' prices in Airtable in the background."""
+    body = request.get_json(silent=True) or {}
+    auto = [str(b).strip() for b in body.get("auto") or [] if str(b).strip()]
+    manual = [str(b).strip() for b in body.get("manual") or [] if str(b).strip()]
+    if not auto and not manual:
+        return jsonify({"ok": False, "error": "Nothing changed"}), 400
+    user = g.get("user") or "unknown"
+    conn = pg_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(AUTO_CREATE)
+        rows = [(b, True, user) for b in auto] + [(b, False, user) for b in manual]
+        execute_values(cur, """INSERT INTO brand_automation (brand, auto, updated_by) VALUES %s
+                               ON CONFLICT (brand) DO UPDATE SET auto = EXCLUDED.auto,
+                                   updated_by = EXCLUDED.updated_by, updated_at = NOW()""", rows)
+        cur.execute("""SELECT COUNT(*) FROM competitor_table WHERE LOWER(brand) = ANY(%s) AND suggested_price > 0
+                         AND uae_price IS DISTINCT FROM suggested_price""", ([b.lower() for b in auto],))
+        to_update = cur.fetchone()[0]
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    log(f"[AUTO] {user} set AUTOMATIC: {auto or '-'} | MANUAL: {manual or '-'} | {to_update} products to update now")
+    if auto and to_update:
+        threading.Thread(target=lambda: auto_apply(auto, reason=f"Update all by {user}"), daemon=True).start()
+    return jsonify({"ok": True, "auto": len(auto), "manual": len(manual), "to_update": to_update})
+
+
 @app.post("/competitor/update-prices")
 def ct_update_prices_route():
     """'Update all' bar on /competitors: set UAE Price in Airtable for SEVERAL products at once.
@@ -1760,40 +1926,7 @@ def ct_update_prices_route():
         return jsonify({"ok": False, "error": "No valid prices to update"}), 400
     log(f"[PRICES] Bulk update requested for {len(good)} products ({len(skipped)} skipped)")
 
-    # 1) Airtable: 10 records per request (Airtable limit), wait a little between requests
-    fids = list(good)
-    failed = {}
-    for i in range(0, len(fids), 10):
-        chunk = fids[i:i + 10]
-        r = requests.patch(f"{AT_URL}/{FI_TABLE}", headers=AT_HEADERS, timeout=30,
-                           json={"records": [{"id": f, "fields": {F_UAE_PRICE: good[f]}} for f in chunk],
-                                 "typecast": True})
-        if r.status_code == 429:                       # too many requests -> wait and try once more
-            time.sleep(30)
-            r = requests.patch(f"{AT_URL}/{FI_TABLE}", headers=AT_HEADERS, timeout=30,
-                               json={"records": [{"id": f, "fields": {F_UAE_PRICE: good[f]}} for f in chunk],
-                                     "typecast": True})
-        if not r.ok:
-            log(f"[PRICES] Airtable error {r.status_code}: {r.text[:300]}")
-            for f in chunk:
-                failed[f] = f"Airtable {r.status_code}"
-        else:
-            log(f"[PRICES] Airtable updated {i + len(chunk)}/{len(fids)}")
-        time.sleep(0.25)
-
-    # 2) Postgres: our price + least price for every product that Airtable accepted
-    done = [f for f in fids if f not in failed]
-    conn = pg_conn()
-    cur = conn.cursor()
-    try:
-        for f in done:
-            cur.execute("UPDATE competitor_table SET uae_price = %s, updated_at = NOW() WHERE fi_record_id = %s",
-                        (good[f], f))
-            least_for(cur, f)
-        conn.commit()
-    finally:
-        cur.close()
-        conn.close()
+    done, failed = airtable_set_prices(good, tag="PRICES")
     log(f"[PRICES] Done: {len(done)} updated, {len(failed)} failed, {len(skipped)} skipped")
     return jsonify({"ok": not failed, "updated": len(done), "failed": failed, "skipped": skipped,
                     "error": (f"{len(failed)} not updated in Airtable" if failed else None)})
@@ -1875,36 +2008,42 @@ def ct_load_our_links():
 @app.get("/competitor/load-our-links")
 def ct_load_our_links_route():
     # /competitor/load-our-links?secret=XXX -> our product page link for every product (by SKU)
+    log("[ROUTE] /competitor/load-our-links called")
     return _ct_start(ct_load_our_links, "CT-OUR")
 
 
 @app.get("/competitor/match-ng")
 def ct_match_ng_route():
     # /competitor/match-ng?secret=XXX -> Niche Gallerie link / price / stock / suggestion for every product
+    log("[ROUTE] /competitor/match-ng called")
     return _ct_start(ct_match_ng, "CT-NG")
 
 
 @app.get("/competitor/match-am")
 def ct_match_am_route():
     # /competitor/match-am?secret=XXX -> Amberiya link / price / stock / suggestion for every product
+    log("[ROUTE] /competitor/match-am called")
     return _ct_start(ct_match_am, "CT-AM")
 
 
 @app.get("/competitor/match-on")
 def ct_match_on_route():
     # /competitor/match-on?secret=XXX -> Ounass link / price / stock / suggestion for every product
+    log("[ROUTE] /competitor/match-on called")
     return _ct_start(ct_match_on, "CT-ON")
 
 
 @app.get("/competitor/match-aj")
 def ct_match_aj_route():
     # /competitor/match-aj?secret=XXX -> Al Injaz link / price / stock / suggestion for every product
+    log("[ROUTE] /competitor/match-aj called")
     return _ct_start(ct_match_aj, "CT-AJ")
 
 
 @app.get("/competitor/match-vp")
 def ct_match_vp_route():
     # Step 4: /competitor/match-vp?secret=XXX -> V Perfumes link / price / stock / suggestion for every product
+    log("[ROUTE] /competitor/match-vp called")
     return _ct_start(ct_match_vp, "CT-VP")
 
 
@@ -1953,6 +2092,7 @@ def ct_update_price_route():
 @app.get("/competitor/update-least")
 def ct_update_least_route():
     # /competitor/update-least?secret=XXX -> take latest Branded Perfume / Essenzi prices + recalculate least price
+    log("[ROUTE] /competitor/update-least called")
     return _ct_start(ct_update_least_job, "CT-LEAST")
 
 

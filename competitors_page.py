@@ -248,6 +248,7 @@ NUM_SQL = {"eq": "=", "ne": "<>", "gt": ">", "lt": "<", "ge": ">=", "le": "<="}
 
 def read_filters(args):
     """URL ?ff=brand&fo=is&fv=Armaf&ff=price&fo=is&fv=high ... -> list of valid (field, op, value)."""
+    print(f"[FILTER] Reading filter rows from the URL: ff={args.getlist('ff')} fo={args.getlist('fo')}", flush=True)
     out = []
     for f, o, v in zip(args.getlist("ff"), args.getlist("fo"), args.getlist("fv")):
         fd = FILTER_FIELDS.get(f)
@@ -262,6 +263,7 @@ def read_filters(args):
 
 def filter_sql(conds):
     """(field, op, value) list -> (list of SQL pieces, params). Unknown values are skipped."""
+    print(f"[FILTER] Turning {len(conds)} filter condition(s) into SQL: {conds}", flush=True)
     where, params = [], []
     for f, o, v in conds:
         fd = FILTER_FIELDS[f]
@@ -331,6 +333,7 @@ def db_conn():
 
 
 def table_exists(cur, table):
+    print(f"[competitors] Checking table exists: {table}", flush=True)
     cur.execute("SELECT to_regclass(%s) IS NOT NULL AS ok", (table,))
     return cur.fetchone()["ok"]
 
@@ -906,10 +909,22 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
                 padding:13px 14px;font-size:16px}
  .bsearch button{background:#f2d675;color:#1c1b19;border:0;border-radius:12px;padding:0 20px;font-size:16px;font-weight:600;cursor:pointer}
  .blist{background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden}
- .brow{display:flex;justify-content:space-between;gap:12px;padding:13px 18px;color:var(--text);text-decoration:none;
-       border-top:1px solid var(--line)}
+ .brow{display:flex;align-items:center;gap:12px;padding:11px 18px;border-top:1px solid var(--line)}
+ .brow a{flex:1;color:var(--text);text-decoration:none}
+ .brow a:hover{text-decoration:underline}
+ .auto{background:#e3f5e1;color:#1c5a24;border-radius:999px;padding:2px 9px;font-size:12px;font-weight:700}
+ .apick{width:20px;height:20px;accent-color:#f2d675;cursor:pointer;flex:0 0 auto}
+ .bulkbar{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+          background:#0f2b3a;color:#fff;border-radius:14px;padding:12px 18px;box-shadow:0 8px 24px rgba(0,0,0,.45);z-index:50;max-width:92vw}
+ .bulkbar[hidden]{display:none}
+ .bulkcount{background:#2f7de1;border-radius:999px;padding:5px 12px;font-weight:600;font-size:14px}
+ .bulkcancel{background:#fff;color:#1c1b19;border:0;border-radius:8px;padding:9px 16px;font-weight:600;cursor:pointer}
+ .bulkupdate{background:#f2d675;color:#1c1b19;border:0;border-radius:8px;padding:9px 16px;font-weight:700;cursor:pointer}
+ .bulkupdate:disabled{opacity:.6;cursor:wait}
+ .bulkmsg{font-size:14px;color:#cfe3ff}
  .brow:first-child{border-top:0}
  .brow:hover{background:var(--bg)}
+ .blist{margin-bottom:90px}
  .brow .n{color:var(--muted);font-variant-numeric:tabular-nums}
 {{ nav_css|safe }}
 </style></head><body><div class="page">
@@ -925,11 +940,18 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 </form>
 <p class="hint" id="bcount">{{ brands|length }} brand{{ '' if brands|length == 1 else 's' }}{% if q %} matching "{{ q }}"{% endif %}
    · {{ brands|sum(attribute='n') }} products</p>
+<p class="hint">Tick a brand = <b>automatic</b>: its UAE Price in Airtable follows the suggested price (now, and after every
+   price update). Untick = <b>manual</b>. Currently {{ auto_set|length }} brand{{ '' if auto_set|length == 1 else 's' }} on automatic.</p>
 <div class="blist" id="blist">
   {% for b in brands %}
-  <a class="brow" data-name="{{ b.brand|lower }}" data-n="{{ b.n }}"
-     href="/competitors?tab=competitor&ff=brand&fo=anyof&fv={{ b.brand|urlencode }}" title="Open {{ b.brand }} in the competitor table">
-    <span>{{ b.brand }}</span><span class="n">{{ b.n }}</span></a>
+  <div class="brow" data-name="{{ b.brand|lower }}" data-n="{{ b.n }}">
+    <a href="/competitors?tab=competitor&ff=brand&fo=anyof&fv={{ b.brand|urlencode }}" title="Open {{ b.brand }} in the competitor table">{{ b.brand }}</a>
+    {% if b.brand|lower in auto_set %}<span class="auto">AUTO</span>{% endif %}
+    <span class="n">{{ b.n }}</span>
+    {# ticked = automatic. data-was = saved state, so only real changes are sent #}
+    <input type="checkbox" class="apick" data-brand="{{ b.brand }}" data-was="{{ 1 if b.brand|lower in auto_set else 0 }}"
+           {% if b.brand|lower in auto_set %}checked{% endif %} title="Automatic price update">
+  </div>
   {% else %}
   <div class="empty">No brands found{% if q %} for "{{ q }}"{% endif %}.</div>
   {% endfor %}
@@ -953,10 +975,59 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
       timer = setTimeout(function () { console.log("[AUTOMATE] Search '" + t + "' -> " + shown + " brands"); }, 400);
     });
     rows.forEach(function (r) {
-      r.addEventListener("click", function () { console.log("[AUTOMATE] Opening brand: " + r.querySelector("span").textContent); });
+      r.querySelector("a").addEventListener("click", function () {
+        console.log("[AUTOMATE] Opening brand: " + r.querySelector("a").textContent);
+      });
     });
   })();
+
+  // ---- ticks: automatic / manual + "Update all" bar ----
+  function changes() {
+    var auto = [], manual = [];
+    document.querySelectorAll(".apick").forEach(function (c) {
+      var was = c.dataset.was === "1";
+      if (c.checked && !was) auto.push(c.dataset.brand);        // newly ticked  -> automatic
+      if (!c.checked && was) manual.push(c.dataset.brand);      // newly unticked -> manual
+    });
+    return {auto: auto, manual: manual};
+  }
+  function pickChanged(c) {
+    console.log("[AUTOMATE] " + c.dataset.brand + (c.checked ? " ticked (automatic)" : " unticked (manual)"));
+    var ch = changes(), n = ch.auto.length + ch.manual.length;
+    document.getElementById("abar").hidden = n === 0;           // bar shows while there are unsaved changes
+    document.getElementById("acount").textContent = n + " brand" + (n === 1 ? "" : "s") + " changed";
+    document.getElementById("amsg").textContent = "";
+  }
+  document.querySelectorAll(".apick").forEach(function (c) { c.addEventListener("change", function () { pickChanged(c); }); });
+  function cancelAuto() {
+    document.querySelectorAll(".apick").forEach(function (c) { c.checked = c.dataset.was === "1"; });
+    document.getElementById("abar").hidden = true;
+    console.log("[AUTOMATE] Cancel -> ticks reset");
+  }
+  async function saveAuto() {
+    var ch = changes(), msg = document.getElementById("amsg"), btn = document.getElementById("asave");
+    var text = (ch.auto.length ? "AUTOMATIC: " + ch.auto.join(", ") + " (their UAE Price in Airtable will be set to the suggested price now). " : "") +
+               (ch.manual.length ? "MANUAL: " + ch.manual.join(", ") : "");
+    if (!confirm(text)) return;
+    btn.disabled = true; msg.textContent = "Saving...";
+    console.log("[AUTOMATE] Update all -> auto:", ch.auto, "manual:", ch.manual);
+    try {
+      var r = await fetch("/automate/save", {method: "POST", headers: {"Content-Type": "application/json"},
+                                             body: JSON.stringify(ch)});
+      var d = await r.json();
+      if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
+      msg.textContent = "Saved." + (d.to_update ? " Updating " + d.to_update + " products in Airtable in the background..." : "");
+      console.log("[AUTOMATE] Saved:", d);
+      setTimeout(function () { location.reload(); }, 1800);
+    } catch (e) { msg.textContent = "Not saved: " + e.message; btn.disabled = false; }
+  }
 </script>
+<div class="bulkbar" id="abar" hidden>
+  <span class="bulkcount" id="acount">0 brands changed</span>
+  <button type="button" class="bulkcancel" onclick="cancelAuto()">Cancel</button>
+  <button type="button" class="bulkupdate" id="asave" onclick="saveAuto()">Update all</button>
+  <span class="bulkmsg" id="amsg"></span>
+</div>
 {% elif option %}
 <a class="back" href="/settings">&larr; All settings</a>
 <div class="empty"><b>{{ option[1] }}</b><br>{{ option[2] }}<br><br>Coming soon.</div>
@@ -978,7 +1049,7 @@ def settings_page(key=None):
     if key and not option:
         print(f"[SETTINGS] Unknown option '{key}' -> showing all settings", flush=True)
     print(f"[SETTINGS] Opened: {option[1] if option else 'all settings'}", flush=True)
-    counts, brands = {}, []
+    counts, brands, auto_set = {}, [], set()
     q = request.args.get("q", "").strip()
     try:
         conn = db_conn()
@@ -991,6 +1062,11 @@ def settings_page(key=None):
                        + (" AND brand ILIKE %s" if q else "") + " GROUP BY brand ORDER BY LOWER(brand)")
                 cur.execute(sql, [f"%{q}%"] if q else [])
                 brands = cur.fetchall()
+                cur.execute("SELECT to_regclass('brand_automation') AS t")
+                if cur.fetchone()["t"]:
+                    cur.execute("SELECT LOWER(brand) AS b FROM brand_automation WHERE auto")
+                    auto_set = {r["b"] for r in cur.fetchall()}
+                print(f"[AUTOMATE] {len(auto_set)} brands on automatic", flush=True)
                 print(f"[AUTOMATE] Search {q!r}: {len(brands)} brands, "
                       f"{sum(b['n'] for b in brands)} products", flush=True)
         finally:
@@ -1000,5 +1076,5 @@ def settings_page(key=None):
         print(f"[competitors] settings: counts not loaded ({ex})", flush=True)
     print(f"[MENU] Settings page shown to {g.get('user') or 'unknown user'}", flush=True)
     return render_template_string(SETTINGS_HTML, nav_html=render_nav("settings", option[0] if option else None, counts),
-                                  nav_css=NAV_CSS, option=option, options=SETTINGS_OPTIONS, brands=brands, q=q,
+                                  nav_css=NAV_CSS, option=option, options=SETTINGS_OPTIONS, brands=brands, q=q, auto_set=auto_set,
                                   title=option[1] if option else "Settings")
