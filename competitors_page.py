@@ -96,6 +96,8 @@ SOURCES = [
     # {"key": "shop3", "label": "Shop 3", "table": "shop3_catalog", "cols": {...}},   # add more here
 ]
 SOURCE_BY_KEY = {s["key"]: s for s in SOURCES}
+# competitor names for the "Competitor" filter: "Samawa" -> column prefix "samawa" (samawa_link, samawa_stock ...)
+COMPETITORS = {label: prefix for label, prefix in SOURCES[0]["shops"]}
 
 # Price filters for the Competitor table tab. Only IN-STOCK competitor prices count:
 #   suggested_price is filled only when at least one competitor has the product in stock,
@@ -117,6 +119,7 @@ FILTER_FIELDS = {
     "price":     {"label": "Price status (High / Low / No competitor)", "type": "choice",
                   "choices": {k: v[0] for k, v in PRICE_FILTERS.items()}},
     "brand":     {"label": "Brand", "col": "brand", "type": "multi"},      # pick several brands (chips)
+    "comp":      {"label": "Competitor", "type": "comp"},                  # pick competitor shops (chips)
     "name":      {"label": "Product name", "col": "product_name", "type": "text"},
     "sku":       {"label": "SKU", "col": "sku", "type": "text"},
     "uae_price": {"label": "Our UAE price", "col": "uae_price", "type": "number"},
@@ -133,6 +136,9 @@ FILTER_OPS = {
     # brand: like Airtable "has any of..." with chips; several brands are sent as "Armaf||Afnan"
     "multi":  [("anyof", "has any of..."), ("noneof", "has none of..."), ("contains", "contains..."),
                ("notcontains", "does not contain..."), ("empty", "is empty"), ("notempty", "is not empty")],
+    # competitor: which shops SELL the product (= matched link on that shop)
+    "comp":   [("anyof", "has any of..."), ("allof", "has all of..."), ("noneof", "has none of..."),
+               ("instock", "in stock at any of..."), ("cheapest", "cheapest is any of...")],
 }
 NUM_SQL = {"eq": "=", "ne": "<>", "gt": ">", "lt": "<", "ge": ">=", "le": "<="}
 
@@ -161,6 +167,26 @@ def filter_sql(conds):
                 continue
             cond = PRICE_FILTERS[v][1]
             where.append(f"({cond})" if o == "is" else f"NOT ({cond})")
+            continue
+        if fd["type"] == "comp":                       # Competitor: which shops have the product
+            picked = [n.strip() for n in v.split("||") if n.strip() in COMPETITORS]   # unknown names ignored
+            if not picked:
+                continue
+            if o == "cheapest":                        # shop is (one of) the least priced website(s)
+                parts = ["least_priced_website ILIKE %s" for _ in picked]
+                params += [f"%{n}%" for n in picked]
+                where.append("(" + " OR ".join(parts) + ")")
+                continue
+            if o == "instock":
+                parts = [f"({COMPETITORS[n]}_link IS NOT NULL AND {COMPETITORS[n]}_stock)" for n in picked]
+            else:
+                parts = [f"{COMPETITORS[n]}_link IS NOT NULL" for n in picked]
+            if o == "allof":
+                where.append("(" + " AND ".join(parts) + ")")
+            elif o == "noneof":
+                where.append("NOT (" + " OR ".join(parts) + ")")
+            else:                                      # anyof / instock
+                where.append("(" + " OR ".join(parts) + ")")
             continue
         col = fd["col"]
         if o == "empty":
@@ -403,6 +429,7 @@ HTML = """
       </div>
     </div>
     <datalist id="brandlist">{% for b in brands %}<option value="{{ b }}">{% endfor %}</datalist>
+    <datalist id="complist">{% for c in competitors %}<option value="{{ c }}">{% endfor %}</datalist>
     {% endif %}
   </form>
   <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock or conds %} match this filter{% endif %}.</p>
@@ -536,13 +563,13 @@ HTML = """
     if (!p.hidden && !document.querySelector("#frows .frow")) addRow();     // start with one empty row
   }
 
-  function chipBox(value) {
+  function chipBox(value, listId, word) {
     // Airtable-like picker: chosen brands as chips (x to remove) + a box to add more (suggests brand names)
     var wrap = document.createElement("span"); wrap.className = "chips";
     var hidden = document.createElement("input"); hidden.type = "hidden"; hidden.name = "fv";
     var list = (value || "").split("||").filter(Boolean);
-    var add = document.createElement("input"); add.type = "text"; add.placeholder = "+ add brand";
-    add.setAttribute("list", "brandlist"); add.className = "chip-add";
+    var add = document.createElement("input"); add.type = "text"; add.placeholder = "+ add " + (word || "brand");
+    add.setAttribute("list", listId || "brandlist"); add.className = "chip-add";
     function draw() {
       wrap.querySelectorAll(".chip").forEach(function (c) { c.remove(); });
       list.forEach(function (b, i) {
@@ -567,6 +594,7 @@ HTML = """
   function valueBox(field, value, op) {
     // choice field -> dropdown, number -> number box, brand "has any/none of" -> chips, text -> text box
     var f = FIELDS[field];
+    if (f.type === "comp") return chipBox(value, "complist", "competitor");      // competitor names as chips
     if (f.type === "multi" && (op === "anyof" || op === "noneof")) return chipBox(value);
     if (f.type === "choice") {
       var sel = document.createElement("select"); sel.name = "fv";
@@ -611,7 +639,7 @@ HTML = """
     os.onchange = function () {
       // keep what was typed/picked when switching operator (chips <-> text: keep first brand only)
       var cur = cell.querySelector("[name=fv]"); var v = cur ? cur.value : "";
-      var multi = os.value === "anyof" || os.value === "noneof";
+      var multi = FIELDS[fs.value].type === "comp" || os.value === "anyof" || os.value === "noneof";
       fillValue(multi ? v : v.split("||")[0]);
     };
 
@@ -775,7 +803,8 @@ def competitors():
 
     return render_template_string(HTML, sources=SOURCES, src=src, counts=counts, rows=rows,
                                   total=total, page=page, pages=pages, q=q, stock=stock, exists=exists,
-                                  brands=brands, conds=conds, field_list=list(FILTER_FIELDS.items()), ops=FILTER_OPS,
+                                  brands=brands, competitors=list(COMPETITORS), conds=conds,
+                                  field_list=list(FILTER_FIELDS.items()), ops=FILTER_OPS,
                                   filt_labels=", ".join(dict.fromkeys(FILTER_FIELDS[f]["label"] for f, _, _ in conds)),
                                   filt_qs=urlencode([(k, x) for f, o, v in conds
                                                      for k, x in (("ff", f), ("fo", o), ("fv", v))]))
