@@ -32,7 +32,9 @@ nichegallerie_bp = Blueprint("nichegallerie", __name__)
 
 NG_SITE = "https://nichegallerie.com"
 NG_API = NG_SITE + "/wp-json/wc/store/v1/products"    # WooCommerce Store API (public)
-NG_PER_PAGE = 100                                     # WooCommerce maximum per request
+NG_PER_PAGE = 100
+NG_CURRENCY = "currency=AED&wmc-currency=AED"         # ask the currency plugin for AED prices
+NG_TO_AED = {"USD": 3.6725, "SAR": 0.9793}            # fallback when the site still answers in another currency                                     # WooCommerce maximum per request
 NG_MAX_PAGES = 300
 NG_DELAY = 1.0                                        # seconds between requests (be gentle)
 NG_HEADERS = {
@@ -95,6 +97,16 @@ def ng_item(p):
         price_inc = None
     if not price_inc:
         price_inc = None
+    # The site changes currency by visitor country (from India it answers in USD).
+    # We ask for AED; if it still answers in USD, convert with the fixed AED peg (1 USD = 3.6725 AED).
+    currency = (prices.get("currency_code") or "AED").upper()
+    if price_inc and currency != "AED":
+        rate = NG_TO_AED.get(currency)
+        if rate:
+            price_inc = round(price_inc * rate)
+        else:
+            ng_log(f"[NG] {name}: price in {currency} (no rate known) -> price left empty")
+            price_inc = None
     sku = (p.get("sku") or "").strip() or None
     digits = re.sub(r"\D", "", sku or "")
     m = re.search(r"(\d[\d,]*(?:\.\d+)?)\s*ml\b", name, re.I)               # "100mL" -> "100 ml"
@@ -107,6 +119,7 @@ def ng_item(p):
         "price": round(price_inc / 1.05, 2) if price_inc else None,
         "stock": "In stock" if p.get("is_in_stock") else "Out of stock",
         "volume": f"{m.group(1).replace(',', '')} ml" if m else None,
+        "currency_sent": currency,                 # what the site answered in (AED expected)
     }
 
 
@@ -117,7 +130,7 @@ def ng_get(page):
             ng_log(f"[NG] page {page}: retry {attempt}/3 in {wait}s")
             time.sleep(wait)
         try:
-            r = requests.get(NG_API, params={"per_page": NG_PER_PAGE, "page": page},
+            r = requests.get(f"{NG_API}?{NG_CURRENCY}", params={"per_page": NG_PER_PAGE, "page": page},
                              headers=NG_HEADERS, timeout=60)
         except requests.RequestException as ex:
             ng_log(f"[NG] page {page}: network error {ex}")

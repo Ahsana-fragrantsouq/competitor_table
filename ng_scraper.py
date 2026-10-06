@@ -43,7 +43,7 @@ def db():
 def read_page(page, n):
     """Open one page of the product list in Chrome and return the products (list), or None on failure.
     If SiteGround shows its bot check, Chrome solves it by itself - we just wait until the list appears."""
-    url = f"{aj.NG_API}?per_page={aj.NG_PER_PAGE}&page={n}"
+    url = f"{aj.NG_API}?{aj.NG_CURRENCY}&per_page={aj.NG_PER_PAGE}&page={n}"       # AED prices
     for attempt in range(1, 4):
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=90000)

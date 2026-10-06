@@ -15,7 +15,7 @@ import math
 import psycopg2
 import psycopg2.extras
 from urllib.parse import urlencode
-from flask import Blueprint, request, render_template_string
+from flask import Blueprint, request, render_template_string, g
 
 competitors_bp = Blueprint("competitors", __name__)
 
@@ -103,6 +103,84 @@ SOURCES = [
     # {"key": "shop3", "label": "Shop 3", "table": "shop3_catalog", "cols": {...}},   # add more here
 ]
 SOURCE_BY_KEY = {s["key"]: s for s in SOURCES}
+
+# ---------------------------------------------------------------- menu bar (like fragrantsouq.com)
+# Competitor table | Competitors ▾ (every shop's own table) | Settings
+NAV_CSS = """
+ .menu{display:flex;gap:6px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line);
+       margin:0 0 6px;padding:0 0 10px}
+ .menu > a,.menu summary{color:var(--text);text-decoration:none;font-weight:600;font-size:17px;
+       padding:9px 12px;border-radius:10px;cursor:pointer;list-style:none;white-space:nowrap}
+ .menu summary::-webkit-details-marker{display:none}
+ .menu > a:hover,.menu summary:hover{background:var(--card)}
+ .menu .on{color:#f2d675;box-shadow:inset 0 -2px 0 #f2d675;border-radius:10px 10px 0 0}
+ .dd{position:relative}
+ .dd .car{font-size:12px;margin-left:4px;display:inline-block;transition:transform .15s}
+ .dd[open] .car{transform:rotate(180deg)}
+ .ddmenu{position:absolute;left:0;top:calc(100% + 6px);z-index:60;min-width:250px;background:var(--card);
+         border:1px solid var(--line);border-radius:12px;padding:6px;box-shadow:0 10px 28px rgba(0,0,0,.45)}
+ .ddmenu a{display:flex;justify-content:space-between;gap:16px;padding:10px 12px;border-radius:8px;
+           color:var(--text);text-decoration:none;font-size:15px}
+ .ddmenu a:hover{background:var(--bg)}
+ .ddmenu a.cur{color:#f2d675;font-weight:600}
+ .ddmenu .n{color:var(--muted);font-size:13px}
+"""
+
+NAV_HTML = """
+<nav class="menu" aria-label="Main menu">
+  <a href="/competitors?tab=competitor" class="{{ 'on' if active == 'competitor' else '' }}">Competitor table</a>
+  <details class="dd" id="ddComp">
+    <summary class="{{ 'on' if active == 'shop' else '' }}">Competitors<span class="car">&#9662;</span></summary>
+    <div class="ddmenu">
+      {% for s in sources if s.key != 'competitor' %}
+      <a href="/competitors?tab={{ s.key }}" class="{{ 'cur' if s.key == cur_key else '' }}">
+        <span>{{ s.label }}</span><span class="n">{{ counts.get(s.key, 0) }}</span></a>
+      {% endfor %}
+    </div>
+  </details>
+  <a href="/settings" class="{{ 'on' if active == 'settings' else '' }}">Settings</a>
+</nav>
+<script>
+  // Menu logs: open the browser console (F12 -> Console) to see them
+  (function () {
+    var d = document.getElementById("ddComp");
+    console.log("[MENU] Page loaded: " + location.pathname + location.search);
+    if (!d) return;
+    d.addEventListener("toggle", function () {                 // dropdown opened / closed
+      console.log("[MENU] Competitors dropdown " + (d.open ? "opened" : "closed"));
+    });
+    d.querySelectorAll(".ddmenu a").forEach(function (a) {    // shop picked from the dropdown
+      a.addEventListener("click", function () {
+        console.log("[MENU] Opening shop table: " + a.querySelector("span").textContent + " -> " + a.href);
+      });
+    });
+    document.querySelectorAll(".menu > a").forEach(function (a) {   // Competitor table / Settings
+      a.addEventListener("click", function () { console.log("[MENU] Menu click: " + a.textContent.trim()); });
+    });
+    // close the dropdown when clicking anywhere else or pressing Esc
+    document.addEventListener("click", function (e) {
+      if (d.open && !d.contains(e.target)) {
+        console.log("[MENU] Click outside -> closing dropdown");
+        d.removeAttribute("open");
+      }
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && d.open) {
+        console.log("[MENU] Esc pressed -> closing dropdown");
+        d.removeAttribute("open");
+      }
+    });
+  })();
+</script>
+"""
+
+
+def render_nav(active, cur_key, counts):
+    """Menu bar HTML. active = 'competitor' / 'shop' / 'settings'."""
+    shops = [s["label"] for s in SOURCES if s["key"] != "competitor"]
+    print(f"[MENU] Building menu: active={active!r} current page={cur_key!r} | "
+          f"Competitors dropdown has {len(shops)} shops: {', '.join(shops)}", flush=True)
+    return render_template_string(NAV_HTML, active=active, cur_key=cur_key, counts=counts or {}, sources=SOURCES)
 # competitor names for the "Competitor" filter: "Samawa" -> column prefix "samawa" (samawa_link, samawa_stock ...)
 COMPETITORS = {label: prefix for label, prefix in SOURCES[0]["shops"]}
 
@@ -262,17 +340,7 @@ HTML = """
  body{margin:0;background:var(--bg);color:var(--text);font-family:Roboto,-apple-system,Segoe UI,Arial,sans-serif}
  .page{max-width:760px;margin:0 auto;padding:22px 18px 40px}
  h1{font-size:26px;margin:4px 0 18px}
- .tabs{display:flex;gap:4px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:5px;
-       overflow-x:auto;scrollbar-width:none}
- .tabs::-webkit-scrollbar{display:none}
- .tabwrap{display:flex;align-items:center;gap:6px}
- .tabwrap .tabs{flex:1;min-width:0;scroll-behavior:smooth}
- .arrow{flex:0 0 auto;width:40px;height:40px;border-radius:50%;border:1px solid var(--line);background:var(--card);
-        color:var(--text);font-size:26px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
- .arrow:hover{background:#f2d675;color:#1c1b19}
- .arrow.hide{visibility:hidden}
- .tab{flex:0 0 auto;padding:11px 16px;border-radius:12px;color:var(--muted);text-decoration:none;white-space:nowrap;font-size:16px}
- .tab.on{background:var(--bg);color:var(--text);font-weight:600}
+{{ nav_css|safe }}
  .bar{display:flex;gap:8px;margin:14px 0 6px;flex-wrap:wrap}
  .bar select{max-width:100%}
  .clear{align-self:center;color:var(--gold);padding:0 6px}
@@ -363,36 +431,10 @@ HTML = """
  :focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 </style></head><body><div class="page">
 
-<div class="topbar"><h1>Saved data</h1>
+<div class="topbar"><h1>{{ src.label }}</h1>
   {% if g.user %}<span class="who">Logged in as <b>{{ g.user }}</b> · <a href="/logout">Log out</a></span>{% endif %}</div>
 
-<div class="tabwrap">
-  <button type="button" class="arrow left" id="tabLeft" aria-label="Scroll tabs left">&#8249;</button>
-  <nav class="tabs" id="tabs">
-    {% for s in sources %}
-    <a class="tab {% if s.key == src.key %}on{% endif %}" href="?tab={{ s.key }}">{{ s.label }} {{ counts[s.key] }}</a>
-    {% endfor %}
-  </nav>
-  <button type="button" class="arrow right" id="tabRight" aria-label="Scroll tabs right">&#8250;</button>
-</div>
-<script>
-  // Tab bar arrows: scroll the tabs left/right, hide an arrow when there is nothing more on that side
-  (function () {
-    var tabs = document.getElementById("tabs");
-    var left = document.getElementById("tabLeft"), right = document.getElementById("tabRight");
-    function update() {
-      left.classList.toggle("hide", tabs.scrollLeft <= 2);
-      right.classList.toggle("hide", tabs.scrollLeft + tabs.clientWidth >= tabs.scrollWidth - 2);
-    }
-    left.onclick = function () { tabs.scrollBy({left: -220, behavior: "smooth"}); };
-    right.onclick = function () { tabs.scrollBy({left: 220, behavior: "smooth"}); };
-    tabs.addEventListener("scroll", update);
-    window.addEventListener("resize", update);
-    var on = tabs.querySelector(".tab.on");            // open page with the selected tab fully visible
-    if (on) tabs.scrollLeft = on.offsetLeft - (tabs.clientWidth - on.offsetWidth) / 2;
-    update();
-  })();
-</script>
+{{ nav_html|safe }}
 
 {% if not src.table %}
   <p class="hint"></p>
@@ -809,10 +851,53 @@ def competitors():
         cur.close()
         conn.close()
 
+    active = "competitor" if src["key"] == "competitor" else "shop"
+    print(f"[MENU] Showing page '{src['label']}' (menu item: "
+          f"{'Competitor table' if active == 'competitor' else 'Competitors'})", flush=True)
     return render_template_string(HTML, sources=SOURCES, src=src, counts=counts, rows=rows,
+                                  nav_html=render_nav(active, src["key"], counts), nav_css=NAV_CSS,
                                   total=total, page=page, pages=pages, q=q, stock=stock, exists=exists,
                                   brands=brands, competitors=list(COMPETITORS), conds=conds,
                                   field_list=list(FILTER_FIELDS.items()), ops=FILTER_OPS,
                                   filt_labels=", ".join(dict.fromkeys(FILTER_FIELDS[f]["label"] for f, _, _ in conds)),
                                   filt_qs=urlencode([(k, x) for f, o, v in conds
                                                      for k, x in (("ff", f), ("fo", o), ("fv", v))]))
+
+# ---------------------------------------------------------------- Settings (empty for now)
+SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+ :root{--bg:#1c1b19;--card:#252420;--line:#3a3833;--text:#f2efe9;--muted:#a9a397;--gold:#d8b76e}
+ *{box-sizing:border-box}
+ body{margin:0;background:var(--bg);color:var(--text);font-family:Roboto,-apple-system,Segoe UI,Arial,sans-serif}
+ .page{max-width:760px;margin:0 auto;padding:22px 18px 40px}
+ h1{font-size:26px;margin:4px 0 18px}
+ .topbar{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+ .who{color:var(--muted);font-size:14px} .who b{color:var(--text)} .who a{color:var(--gold)}
+ .empty{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;color:var(--muted);margin-top:16px}
+{{ nav_css|safe }}
+</style></head><body><div class="page">
+<div class="topbar"><h1>Settings</h1>
+  {% if g.user %}<span class="who">Logged in as <b>{{ g.user }}</b> · <a href="/logout">Log out</a></span>{% endif %}</div>
+{{ nav_html|safe }}
+<div class="empty">Nothing here yet.</div>
+</div></body></html>"""
+
+
+@competitors_bp.route("/settings")
+def settings_page():
+    """Settings menu item - empty for now (options will be added here later)."""
+    print("[competitors] settings page opened", flush=True)
+    counts = {}
+    try:
+        conn = db_conn()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            counts = tab_counts(cur)                 # numbers next to each shop in the Competitors menu
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as ex:
+        print(f"[competitors] settings: counts not loaded ({ex})", flush=True)
+    print(f"[MENU] Settings page shown to {g.get('user') or 'unknown user'}", flush=True)
+    return render_template_string(SETTINGS_HTML, nav_html=render_nav("settings", None, counts), nav_css=NAV_CSS)
