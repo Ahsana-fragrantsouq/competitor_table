@@ -749,6 +749,7 @@ def run_match(brands, rematch=False, fi_groups=None):
 #   least_price            lowest price: ours (always) + every shop that has it IN STOCK, VAT included
 #   least_priced_website   who has that price; ties are all listed, e.g. "Fragrant Souq, Samawa"
 #   suggested_price        lowest IN-STOCK COMPETITOR price (ours not included) minus 5%, e.g. 83 -> 78.85
+#                          (HARDCODED DISCOUNT 5% - see SUGGEST_BELOW)
 import psycopg2
 import psycopg2.extras
 from psycopg2.extras import execute_values
@@ -1459,6 +1460,7 @@ WHERE c.fi_record_id = w.fi_record_id;
 
 
 # Suggested price settings - change here later (e.g. 0.03 = 3% below, 0 decimals = whole AED)
+# HARDCODED DISCOUNT 5% - later replace with Settings -> Auto discount rate (table app_settings, key 'discount_rate')
 SUGGEST_BELOW = 0.05        # 5% below the cheapest in-stock competitor
 SUGGEST_DECIMALS = 0        # 78.85 -> 79 (nearest whole AED; 2 = keep 78.85)
 
@@ -1487,6 +1489,7 @@ WITH competitor_offers AS (
     SELECT fi_record_id, ng_price FROM competitor_table WHERE ng_stock AND ng_link IS NOT NULL AND ng_price > 0
 )
 UPDATE competitor_table c
+-- HARDCODED DISCOUNT 5% (SUGGEST_BELOW) - later use Settings -> Auto discount rate
 SET suggested_price = ROUND(m.min_price * (1 - {SUGGEST_BELOW}), {SUGGEST_DECIMALS})
 FROM (SELECT fi_record_id, MIN(price) AS min_price FROM competitor_offers GROUP BY fi_record_id) m
 WHERE c.fi_record_id = m.fi_record_id;
@@ -1733,6 +1736,7 @@ def least_for(cur, fid):
     least = min((pr for _, pr in offers), default=None)
     sites = ", ".join(s for s, pr in offers if least is not None and abs(pr - least) < 0.005) or None
     best_comp = min((pr for _, pr in comp), default=None)
+    # HARDCODED DISCOUNT 5% - later replace with Settings -> Auto discount rate (table app_settings, key 'discount_rate')
     suggested = round(best_comp * (1 - SUGGEST_BELOW), SUGGEST_DECIMALS) if best_comp else None
     cur.execute("UPDATE competitor_table SET least_price = %s, least_priced_website = %s, suggested_price = %s "
                 "WHERE fi_record_id = %s", (least, sites, suggested, fid))

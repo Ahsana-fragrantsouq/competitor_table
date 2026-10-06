@@ -15,7 +15,7 @@ import math
 import psycopg2
 import psycopg2.extras
 from urllib.parse import urlencode
-from flask import Blueprint, request, render_template_string, g
+from flask import Blueprint, request, render_template_string, g, redirect
 
 competitors_bp = Blueprint("competitors", __name__)
 
@@ -504,7 +504,7 @@ HTML = """
   </form>
   <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock or conds %} match this filter{% endif %}.</p>
   {% if src.kind == 'competitor' and rows %}
-  <div class="pickallrow"><label class="pickall">Select all <input type="checkbox" id="pickAll" onchange="pickAll(this.checked)"></label></div>
+  <div class="pickallrow"><label class="pickall">Select all on this page <input type="checkbox" id="pickAll" onchange="pickAll(this.checked)"></label></div>
   {# bottom bar (like Amazon "Save all"): appears when 2 or more products are ticked #}
   <div class="bulkbar" id="bulkbar" hidden>
     <span class="bulkcount" id="bulkcount">0 selected</span>
@@ -904,6 +904,17 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
  .opt b{font-size:18px} .opt span{color:var(--muted);font-size:14px}
  .back{display:inline-block;margin-top:14px;color:var(--gold)}
  .hint{color:var(--muted);font-size:14px;margin:10px 2px}
+ .hint b{color:var(--text)}
+ .dform{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin-top:14px}
+ .dform label{display:block;font-weight:600;margin-bottom:10px}
+ .drow{display:flex;align-items:center;gap:8px}
+ .drow input{width:130px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:10px;
+             padding:11px 12px;font-size:18px}
+ .drow .pct{font-size:18px;color:var(--muted)}
+ .drow button{margin-left:6px;background:#f2d675;color:#1c1b19;border:0;border-radius:10px;padding:11px 20px;
+              font-size:16px;font-weight:700;cursor:pointer}
+ .ok{color:#8cc58c;margin:10px 2px} .err{color:#e0806c;margin:10px 2px}
+ .note{color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:12px;margin:14px 0 0}
  .bsearch{display:flex;gap:8px;margin-top:14px}
  .bsearch input{flex:1;min-width:0;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;
                 padding:13px 14px;font-size:16px}
@@ -940,7 +951,8 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 </form>
 <p class="hint" id="bcount">{{ brands|length }} brand{{ '' if brands|length == 1 else 's' }}{% if q %} matching "{{ q }}"{% endif %}
    · {{ brands|sum(attribute='n') }} products</p>
-
+<p class="hint">Tick a brand = <b>automatic</b>: its UAE Price in Airtable follows the suggested price (now, and after every
+   price update). Untick = <b>manual</b>. Currently {{ auto_set|length }} brand{{ '' if auto_set|length == 1 else 's' }} on automatic.</p>
 <div class="blist" id="blist">
   {% for b in brands %}
   <div class="brow" data-name="{{ b.brand|lower }}" data-n="{{ b.n }}">
@@ -1027,6 +1039,25 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
   <button type="button" class="bulkupdate" id="asave" onclick="saveAuto()">Update all</button>
   <span class="bulkmsg" id="amsg"></span>
 </div>
+{% elif option and option[0] == 'discount' %}
+<a class="back" href="/settings">&larr; All settings</a>
+{# Auto discount rate: admin writes the % (e.g. 2 or 5). Saved in table app_settings, key 'discount_rate'. #}
+<form class="dform" method="post" action="/settings/discount">
+  <label for="rate">Discount below the cheapest in-stock competitor</label>
+  <div class="drow">
+    <input id="rate" name="rate" type="number" min="0" max="50" step="0.1" required
+           value="{{ '%g' % rate if rate is not none else '' }}" placeholder="e.g. 5">
+    <span class="pct">%</span>
+    <button type="submit">Save</button>
+  </div>
+  <p class="hint">Example: cheapest competitor AED 100 &rarr; with {{ '%g' % (rate if rate is not none else 5) }}% the suggested price is
+     AED {{ '%g' % (100 - (rate if rate is not none else 5)) }}.</p>
+  {% if saved %}<p class="ok">Saved: {{ '%g' % rate }}%.</p>{% endif %}
+  {% if error %}<p class="err">{{ error }}</p>{% endif %}
+  {% if rate_info %}<p class="hint">Last changed by <b>{{ rate_info.updated_by or '-' }}</b> on {{ rate_info.updated_at.strftime('%d %b %Y, %H:%M') }}.</p>{% endif %}
+  <p class="note">Not used yet: suggested prices are still calculated with the fixed 5% in the code.
+     This value will be used once that is switched over.</p>
+</form>
 {% elif option %}
 <a class="back" href="/settings">&larr; All settings</a>
 <div class="empty"><b>{{ option[1] }}</b><br>{{ option[2] }}<br><br>Coming soon.</div>
@@ -1049,12 +1080,17 @@ def settings_page(key=None):
         print(f"[SETTINGS] Unknown option '{key}' -> showing all settings", flush=True)
     print(f"[SETTINGS] Opened: {option[1] if option else 'all settings'}", flush=True)
     counts, brands, auto_set = {}, [], set()
+    rate, rate_info = None, None
     q = request.args.get("q", "").strip()
     try:
         conn = db_conn()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         try:
             counts = tab_counts(cur)                 # numbers next to each shop in the Competitors menu
+            if option and option[0] == "discount":
+                rate_info = get_setting(cur, "discount_rate")
+                rate = float(rate_info["value"]) if rate_info else None
+                print(f"[DISCOUNT] Saved discount rate: {rate if rate is not None else 'not set (code uses 5%)'}", flush=True)
             if option and option[0] == "automate":
                 # Automate: every brand of our products with how many products it has (search = brand contains q)
                 sql = ("SELECT brand, COUNT(*) AS n FROM competitor_table WHERE brand IS NOT NULL AND brand <> ''"
@@ -1076,4 +1112,55 @@ def settings_page(key=None):
     print(f"[MENU] Settings page shown to {g.get('user') or 'unknown user'}", flush=True)
     return render_template_string(SETTINGS_HTML, nav_html=render_nav("settings", option[0] if option else None, counts),
                                   nav_css=NAV_CSS, option=option, options=SETTINGS_OPTIONS, brands=brands, q=q, auto_set=auto_set,
+                                  rate=rate, rate_info=rate_info, saved=request.args.get("saved") == "1",
+                                  error=request.args.get("error"),
                                   title=option[1] if option else "Settings")
+
+
+# ---------------------------------------------------------------- app settings (values the admin changes on the page)
+SETTINGS_CREATE = """
+CREATE TABLE IF NOT EXISTS app_settings (
+    key         TEXT PRIMARY KEY,             -- e.g. 'discount_rate'
+    value       TEXT,                         -- e.g. '5'  (percent)
+    updated_by  TEXT,                         -- user who saved it
+    updated_at  TIMESTAMP DEFAULT NOW()
+);
+"""
+
+
+def get_setting(cur, key):
+    """One saved setting as a dict {value, updated_by, updated_at}, or None when it was never saved."""
+    cur.execute(SETTINGS_CREATE)
+    cur.execute("SELECT value, updated_by, updated_at FROM app_settings WHERE key = %s", (key,))
+    row = cur.fetchone()
+    print(f"[SETTINGS] Read '{key}': {dict(row) if row else 'not saved yet'}", flush=True)
+    return row
+
+
+@competitors_bp.route("/settings/discount", methods=["POST"])
+def discount_save():
+    """Save the Auto discount rate written by the admin (0 - 50 %)."""
+    raw = (request.form.get("rate") or "").strip().replace("%", "")
+    user = g.get("user") or "unknown"
+    print(f"[DISCOUNT] {user} wants to save discount rate {raw!r}", flush=True)
+    try:
+        rate = round(float(raw), 2)
+    except ValueError:
+        print("[DISCOUNT] Not a number -> not saved", flush=True)
+        return redirect("/settings/discount?error=Please+write+a+number,+e.g.+5")
+    if not 0 <= rate <= 50:
+        print(f"[DISCOUNT] {rate} is outside 0-50 -> not saved", flush=True)
+        return redirect("/settings/discount?error=The+rate+must+be+between+0+and+50")
+    conn = db_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(SETTINGS_CREATE)
+        cur.execute("""INSERT INTO app_settings (key, value, updated_by) VALUES ('discount_rate', %s, %s)
+                       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by,
+                                                       updated_at = NOW()""", (str(rate), user))
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    print(f"[DISCOUNT] Saved discount rate {rate}% by {user}", flush=True)
+    return redirect("/settings/discount?saved=1")
