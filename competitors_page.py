@@ -492,12 +492,14 @@ HTML = """
  .least .upd{flex-wrap:nowrap}
  .least .sugg-in{width:92px}
  .least .nextc{white-space:nowrap}
- .least .second{margin-left:auto;text-align:right}          /* pushed to the right end of the box */
+ .least .updcol{margin-left:auto;align-self:center}        /* Update price pushed to the right ... */
+ .least .second{text-align:right;padding-left:18px;border-left:1px solid var(--line)}   /* ... next to Second least */
  .least .second .plabel{font-size:12px}
  .least .upd-msg{min-height:0;margin-top:0}
  .least .upd-msg:not(:empty){margin-top:6px}
  @media (max-width:860px){ .least{flex-wrap:wrap} .least > div{flex:0 1 auto;max-width:100%}
-                           .least .upd{flex-wrap:wrap} }   /* phones: wrap again */
+                           .least .upd{flex-wrap:wrap}
+                           .least .second{border-left:0;padding-left:0;margin-left:auto} }   /* phones: wrap again */
  .hint{color:var(--muted);font-size:14px;margin:6px 2px 16px}
  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-bottom:12px}
  .title{font-size:18px;font-weight:600;margin-bottom:6px;line-height:1.35}
@@ -613,9 +615,11 @@ HTML = """
                <input class="sugg-in" type="number" step="0.01" min="0" id="sp-{{ r.fi }}"
                       value="{{ '%g' % r.suggested_price if r.suggested_price is not none else '' }}"
                       placeholder="{{ 'No competitor in stock' if r.suggested_price is none else '' }}">
-               <button type="button" class="upd-btn" onclick="updatePrice('{{ r.fi }}', this)">Update price</button>
              </div>
              <div class="upd-msg" id="msg-{{ r.fi }}"></div></div>
+        {# right side of the box: Update price button, then Second least #}
+        <div class="updcol">
+             <button type="button" class="upd-btn" onclick="updatePrice('{{ r.fi }}', this)">Update price</button></div>
         {% if r.next_comp %}
         {# we are the cheapest: the cheapest IN-STOCK competitor (closest to our price), at the right of the box #}
         <div class="second"><div class="plabel">Second least</div>
