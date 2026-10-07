@@ -324,6 +324,28 @@ def filter_sql(conds):
     return where, params
 
 
+def add_next_cheapest(rows, shops):
+    """When WE are the cheapest: find the cheapest IN-STOCK competitor (the one closest to our price)
+    and put it in row['next_comp'] = {'label', 'price', 'url', 'gap'} for the card."""
+    found = 0
+    for r in rows:
+        r["next_comp"] = None
+        if "Fragrant Souq" not in (r.get("least_site") or ""):      # we are not the cheapest -> nothing to show
+            continue
+        offers = [(float(r[f"{k}_price"]), label, r.get(f"{k}_url"))
+                  for label, k in shops
+                  if r.get(f"{k}_stock") and r.get(f"{k}_url") and r.get(f"{k}_price") and r[f"{k}_price"] > 0]
+        if not offers:
+            continue
+        price, label, url = min(offers)
+        ours = float(r["uae_price"]) if r.get("uae_price") else None
+        r["next_comp"] = {"label": label, "price": price, "url": url,
+                          "gap": round(price - ours, 2) if ours is not None else None}
+        found += 1
+    print(f"[NEXT-CHEAPEST] We are cheapest on {found} of {len(rows)} products on this page "
+          f"-> showing the next cheapest competitor next to Update price", flush=True)
+
+
 def db_conn():
     url = os.environ.get("FF_DATABASE_URL")
     if not url:
@@ -429,6 +451,7 @@ HTML = """
  .sugg-in{width:110px;background:var(--card);color:#f2d675;border:1px solid var(--line);border-radius:10px;
           padding:8px 10px;font-size:20px;font-weight:600}
  .upd-btn{background:#f2d675;color:#1c1b19;border:0;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
+ .nextc{color:var(--gold);font-size:15px}
  .upd-btn:disabled{opacity:.6;cursor:wait}
  .upd-msg{font-size:13px;margin-top:6px;min-height:16px}
  .sitelink{color:inherit;text-decoration:underline;text-underline-offset:3px}
@@ -550,6 +573,11 @@ HTML = """
                       value="{{ '%g' % r.suggested_price if r.suggested_price is not none else '' }}"
                       placeholder="{{ 'No competitor in stock' if r.suggested_price is none else '' }}">
                <button type="button" class="upd-btn" onclick="updatePrice('{{ r.fi }}', this)">Update price</button>
+               {% if r.next_comp %}
+               {# we are the cheapest: show the cheapest in-stock competitor (closest to our price) #}
+               <a class="nextc" href="{{ r.next_comp.url }}" target="_blank"
+                  title="Next cheapest competitor (AED {{ '%.2f' % r.next_comp.price }})">{{ r.next_comp.label }}</a>
+               {% endif %}
              </div>
              <div class="upd-msg" id="msg-{{ r.fi }}"></div></div>
       {% else %}<span class="gtin">No price to compare</span>{% endif %}
@@ -868,6 +896,8 @@ def competitors():
             )
             rows = cur.fetchall()
             print(f"[competitors] {total} matching rows, showing {len(rows)} on page {page}/{pages}", flush=True)
+            if src.get("kind") == "competitor":
+                add_next_cheapest(rows, src["shops"])
     finally:
         cur.close()
         conn.close()
@@ -1042,7 +1072,8 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 {% elif option and option[0] == 'discount' %}
 <a class="back" href="/settings">&larr; All settings</a>
 {# Auto discount rate: admin writes the % (e.g. 2 or 5). Saved in table app_settings, key 'discount_rate'. #}
-<form class="dform" method="post" action="/settings/discount">
+<form class="dform" method="post" action="/settings/discount"
+      onsubmit="console.log('[DISCOUNT] Save clicked: ' + this.rate.value + '%')">
   <label for="rate">Discount below the cheapest in-stock competitor</label>
   <div class="drow">
     <input id="rate" name="rate" type="number" min="0" max="50" step="0.1" required
@@ -1056,6 +1087,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
   {% if error %}<p class="err">{{ error }}</p>{% endif %}
   {% if rate_info %}<p class="hint">Last changed by <b>{{ rate_info.updated_by or '-' }}</b> on {{ rate_info.updated_at.strftime('%d %b %Y, %H:%M') }}.</p>{% endif %}
   {% if rate is none %}<p class="err">No rate saved yet: suggested prices are not being calculated. Write a rate and Save.</p>{% endif %}
+  <script>console.log("[DISCOUNT] Page: saved rate = {{ rate if rate is not none else 'NOT SET' }}{% if saved %}, just saved{% endif %}{% if recalc %}, recalc = {{ recalc }}{% endif %}");</script>
   {% if recalc == '1' %}<p class="ok">All suggested prices are being recalculated with the new rate (about 1 minute).
      Automatic brands are then updated in Airtable.</p>{% elif recalc == 'busy' %}<p class="hint">Another run is in progress -
      it will use the new rate when it reaches the price step.</p>{% endif %}
@@ -1167,7 +1199,10 @@ def discount_save():
         cur.close()
         conn.close()
     print(f"[DISCOUNT] Saved discount rate {rate}% by {user}", flush=True)
+    if not ON_DISCOUNT_CHANGE:
+        print("[DISCOUNT] No recalculation hook set (app.py not loaded?) -> prices update at the next run", flush=True)
     started = ON_DISCOUNT_CHANGE() if ON_DISCOUNT_CHANGE else False    # app.py: recalculate suggested prices now
+    print(f"[DISCOUNT] Recalculation {'started now' if started else 'not started now (another run busy)'}", flush=True)
     return redirect("/settings/discount?saved=1&recalc=" + ("1" if started else "busy"))
 
 
@@ -1178,6 +1213,7 @@ ON_DISCOUNT_CHANGE = None
 def get_discount_rate(cur):
     """Auto discount rate in percent (e.g. 2.5), or None when the admin never saved one.
     Works with any cursor (app.py uses plain tuples, this page uses dict rows)."""
+    print("[DISCOUNT] get_discount_rate(): reading 'discount_rate' from app_settings", flush=True)
     cur.execute(SETTINGS_CREATE)
     cur.execute("SELECT value FROM app_settings WHERE key = 'discount_rate'")
     row = cur.fetchone()
@@ -1185,6 +1221,7 @@ def get_discount_rate(cur):
     try:
         rate = float(value) if value not in (None, "") else None
     except ValueError:
+        print(f"[DISCOUNT] Saved value {value!r} is not a number -> treated as NOT SET", flush=True)
         rate = None
     print(f"[DISCOUNT] Using Auto discount rate: {rate if rate is not None else 'NOT SET'}", flush=True)
     return rate
