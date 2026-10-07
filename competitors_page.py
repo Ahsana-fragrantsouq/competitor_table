@@ -261,6 +261,26 @@ def read_filters(args):
     return out
 
 
+def describe_filters(conds):
+    """Filter rows -> readable text for the Filter button, e.g.
+    'Price status is Low price · SKU contains 123 · Brand has any of Armaf, Afnan'."""
+    parts = []
+    for f, o, v in conds:
+        fd = FILTER_FIELDS[f]
+        field = fd["label"].split(" (")[0]                          # "Price status (High / Low ...)" -> "Price status"
+        op = dict(FILTER_OPS[fd["type"]]).get(o, o).replace("...", "")
+        if o in ("empty", "notempty"):
+            value = ""
+        elif fd["type"] == "choice":
+            value = fd["choices"].get(v, v).split(" (")[0]           # "Low price (we're cheapest)" -> "Low price"
+        else:
+            value = ", ".join(x for x in v.split("||") if x)         # chips "Armaf||Afnan" -> "Armaf, Afnan"
+        parts.append(f"{field} {op} {value}".strip())
+    text = " · ".join(parts)
+    print(f"[FILTER] Button text: {text!r}", flush=True)
+    return text
+
+
 def filter_sql(conds):
     """(field, op, value) list -> (list of SQL pieces, params). Unknown values are skipped."""
     print(f"[FILTER] Turning {len(conds)} filter condition(s) into SQL: {conds}", flush=True)
@@ -507,7 +527,7 @@ HTML = """
     </select>{% endif %}
     {% if src.kind == 'competitor' %}
     <button type="button" class="fbtn {% if conds %}on{% endif %}" onclick="toggleFilter()">
-      &#9776; {% if conds %}Filtered by {{ filt_labels }}{% else %}Filter{% endif %}
+      &#9776; {% if conds %}{{ filt_labels }}{% else %}Filter{% endif %}
     </button>
     {% endif %}
     <button type="submit">Go</button>
@@ -919,7 +939,7 @@ def competitors():
                                   total=total, page=page, pages=pages, q=q, stock=stock, exists=exists,
                                   brands=brands, competitors=list(COMPETITORS), conds=conds,
                                   field_list=list(FILTER_FIELDS.items()), ops=FILTER_OPS,
-                                  filt_labels=", ".join(dict.fromkeys(FILTER_FIELDS[f]["label"] for f, _, _ in conds)),
+                                  filt_labels=describe_filters(conds),
                                   filt_qs=urlencode([(k, x) for f, o, v in conds
                                                      for k, x in (("ff", f), ("fo", o), ("fv", v))]))
 
