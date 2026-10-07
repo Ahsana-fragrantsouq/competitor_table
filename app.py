@@ -51,6 +51,7 @@ import re
 import time
 import difflib
 import threading
+from decimal import Decimal, ROUND_HALF_UP
 import traceback
 import unicodedata
 from urllib.parse import urlparse
@@ -62,6 +63,7 @@ from flask import Flask, request, jsonify, g
 from ff_catalog_page import ff_catalog_bp          # /ff-catalog
 from samawa_catalog import samawa_catalog_bp       # /samawa-catalog, /samawa-catalog/run, /samawa-catalog/status
 from competitors_page import competitors_bp        # /competitors
+import competitors_page                            # Auto discount rate: get_discount_rate() + "saved" hook
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
 from vperfumes import vperfumes_bp                 # /vperfumes/test, /vperfumes/run, /vperfumes/status
@@ -748,8 +750,8 @@ def run_match(brands, rematch=False, fi_groups=None):
 #   <shop>_rejected        link refused with "Not OK" -> never suggested again for this product
 #   least_price            lowest price: ours (always) + every shop that has it IN STOCK, VAT included
 #   least_priced_website   who has that price; ties are all listed, e.g. "Fragrant Souq, Samawa"
-#   suggested_price        lowest IN-STOCK COMPETITOR price (ours not included) minus 5%, e.g. 83 -> 78.85
-#                          (HARDCODED DISCOUNT 5% - see SUGGEST_BELOW)
+#   suggested_price        lowest IN-STOCK COMPETITOR price (ours not included) minus the Auto discount rate
+#                          saved in Settings -> Auto discount rate (e.g. 2.5% : 100 -> 97.5 -> 98)
 import psycopg2
 import psycopg2.extras
 from psycopg2.extras import execute_values
@@ -1459,12 +1461,13 @@ WHERE c.fi_record_id = w.fi_record_id;
 """
 
 
-# Suggested price settings - change here later (e.g. 0.03 = 3% below, 0 decimals = whole AED)
-# HARDCODED DISCOUNT 5% - later replace with Settings -> Auto discount rate (table app_settings, key 'discount_rate')
-SUGGEST_BELOW = 0.05        # 5% below the cheapest in-stock competitor
-SUGGEST_DECIMALS = 0        # 78.85 -> 79 (nearest whole AED; 2 = keep 78.85)
+# Suggested price = cheapest in-stock COMPETITOR price minus the Auto discount rate.
+# The rate is NOT in the code: the admin writes it in Settings -> Auto discount rate
+# (table app_settings, key 'discount_rate'). It is read again every time prices are calculated.
+# No rate saved yet -> suggested prices are left as they are (nothing is guessed).
+SUGGEST_DECIMALS = 0        # rounding: 78.85 -> 79 (nearest whole AED; 2 = keep 78.85)
 
-# suggested_price = cheapest in-stock COMPETITOR (Samawa / FF / Branded Perfume / Essenzi / V Perfumes) minus 5%
+# %(below)s = rate / 100, e.g. 2.5% -> 0.025 (passed in when the SQL runs)
 SUGGEST_SQL = f"""
 UPDATE competitor_table SET suggested_price = NULL;
 
@@ -1489,8 +1492,7 @@ WITH competitor_offers AS (
     SELECT fi_record_id, ng_price FROM competitor_table WHERE ng_stock AND ng_link IS NOT NULL AND ng_price > 0
 )
 UPDATE competitor_table c
--- HARDCODED DISCOUNT 5% (SUGGEST_BELOW) - later use Settings -> Auto discount rate
-SET suggested_price = ROUND(m.min_price * (1 - {SUGGEST_BELOW}), {SUGGEST_DECIMALS})
+SET suggested_price = ROUND(m.min_price * (1 - %(below)s), {SUGGEST_DECIMALS})
 FROM (SELECT fi_record_id, MIN(price) AS min_price FROM competitor_offers GROUP BY fi_record_id) m
 WHERE c.fi_record_id = m.fi_record_id;
 """
@@ -1533,7 +1535,14 @@ def ct_update_least():
             log(f"[CT-LEAST] {label}: {cur.rowcount} products linked through the French Fragrance match")
 
         cur.execute(LEAST_SQL)
-        cur.execute(SUGGEST_SQL)
+        rate = competitors_page.get_discount_rate(cur)        # Settings -> Auto discount rate, e.g. 2.5
+        result["discount_rate"] = rate
+        if rate is None:
+            log("[CT-LEAST] WARNING: no Auto discount rate saved (Settings -> Auto discount rate) "
+                "-> suggested prices NOT recalculated")
+        else:
+            log(f"[CT-LEAST] Suggested price = cheapest in-stock competitor - {rate}%")
+            cur.execute(SUGGEST_SQL, {"below": rate / 100})
         cur.execute("SELECT COUNT(*) FROM competitor_table WHERE suggested_price IS NOT NULL")
         result["with_suggested_price"] = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM competitor_table WHERE least_price IS NOT NULL")
@@ -1656,6 +1665,21 @@ def _ct_start(fn, label):
     return jsonify({"started": True, "step": label, "check_status": "/samawa/status"}), 202
 
 
+def recalc_after_discount_change():
+    """Called by Settings -> Auto discount rate after Save: recalculate every suggested price now
+    (and update the automatic brands in Airtable). Returns False when another run is busy -
+    that run recalculates at its end anyway, with the new rate."""
+    if not run_lock.acquire(blocking=False):
+        log("[DISCOUNT] A run is in progress -> it will use the new rate when it reaches the price step")
+        return False
+    log("[DISCOUNT] New rate saved -> recalculating all suggested prices in the background")
+    threading.Thread(target=_ct_worker, args=(ct_update_least_job,), daemon=True).start()
+    return True
+
+
+competitors_page.ON_DISCOUNT_CHANGE = recalc_after_discount_change
+
+
 @app.get("/competitor/load-fi")
 def ct_load_fi_route():
     # Step 1: /competitor/load-fi?secret=XXX -> all French Inventories products into competitor_table
@@ -1736,11 +1760,20 @@ def least_for(cur, fid):
     least = min((pr for _, pr in offers), default=None)
     sites = ", ".join(s for s, pr in offers if least is not None and abs(pr - least) < 0.005) or None
     best_comp = min((pr for _, pr in comp), default=None)
-    # HARDCODED DISCOUNT 5% - later replace with Settings -> Auto discount rate (table app_settings, key 'discount_rate')
-    suggested = round(best_comp * (1 - SUGGEST_BELOW), SUGGEST_DECIMALS) if best_comp else None
+    rate = competitors_page.get_discount_rate(cur)            # Settings -> Auto discount rate, e.g. 2.5
+    if rate is None:
+        # no rate saved -> update least price only, keep the suggested price as it is
+        cur.execute("UPDATE competitor_table SET least_price = %s, least_priced_website = %s WHERE fi_record_id = %s",
+                    (least, sites, fid))
+        log(f"[SUGGEST] Least for {fid}: {least} ({sites}) | suggested NOT changed (no Auto discount rate saved)")
+        return
+    # same rounding as Postgres ROUND (half away from zero): 97.5 -> 98
+    suggested = (float(Decimal(str(best_comp * (1 - rate / 100))).quantize(Decimal(1).scaleb(-SUGGEST_DECIMALS),
+                                                                          rounding=ROUND_HALF_UP))
+                 if best_comp else None)
     cur.execute("UPDATE competitor_table SET least_price = %s, least_priced_website = %s, suggested_price = %s "
                 "WHERE fi_record_id = %s", (least, sites, suggested, fid))
-    log(f"[SUGGEST] Least for {fid}: {least} ({sites}) | suggested {suggested}")
+    log(f"[SUGGEST] Least for {fid}: {least} ({sites}) | suggested {suggested} ({rate}% below {best_comp})")
 
 
 @app.post("/competitor/suggestion")

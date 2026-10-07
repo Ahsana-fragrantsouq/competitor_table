@@ -1043,20 +1043,24 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 <a class="back" href="/settings">&larr; All settings</a>
 {# Auto discount rate: admin writes the % (e.g. 2 or 5). Saved in table app_settings, key 'discount_rate'. #}
 <form class="dform" method="post" action="/settings/discount">
-  <label for="rate">Auto discount rate</label>
+  <label for="rate">Discount below the cheapest in-stock competitor</label>
   <div class="drow">
     <input id="rate" name="rate" type="number" min="0" max="50" step="0.1" required
            value="{{ '%g' % rate if rate is not none else '' }}" placeholder="e.g. 5">
     <span class="pct">%</span>
     <button type="submit">Save</button>
   </div>
-  <p class="hint">Example: cheapest competitor AED 100 &rarr; with {{ '%g' % (rate if rate is not none else 5) }}% the suggested price is
-     AED {{ '%g' % (100 - (rate if rate is not none else 5)) }}.</p>
+  {% if rate is not none %}<p class="hint">Example: cheapest competitor AED 100 &rarr; with {{ '%g' % rate }}% the suggested price is
+     AED {{ '%g' % (100 - rate) }}.</p>{% endif %}
   {% if saved %}<p class="ok">Saved: {{ '%g' % rate }}%.</p>{% endif %}
   {% if error %}<p class="err">{{ error }}</p>{% endif %}
   {% if rate_info %}<p class="hint">Last changed by <b>{{ rate_info.updated_by or '-' }}</b> on {{ rate_info.updated_at.strftime('%d %b %Y, %H:%M') }}.</p>{% endif %}
-  <p class="note">Not used yet: suggested prices are still calculated with the fixed 5% in the code.
-     This value will be used once that is switched over.</p>
+  {% if rate is none %}<p class="err">No rate saved yet: suggested prices are not being calculated. Write a rate and Save.</p>{% endif %}
+  {% if recalc == '1' %}<p class="ok">All suggested prices are being recalculated with the new rate (about 1 minute).
+     Automatic brands are then updated in Airtable.</p>{% elif recalc == 'busy' %}<p class="hint">Another run is in progress -
+     it will use the new rate when it reaches the price step.</p>{% endif %}
+  <p class="note">This rate is used for every suggested price: on the competitor table, for Update price / Update all,
+     and for the automatic brands. Saving recalculates all suggested prices.</p>
 </form>
 {% elif option %}
 <a class="back" href="/settings">&larr; All settings</a>
@@ -1090,7 +1094,7 @@ def settings_page(key=None):
             if option and option[0] == "discount":
                 rate_info = get_setting(cur, "discount_rate")
                 rate = float(rate_info["value"]) if rate_info else None
-                print(f"[DISCOUNT] Saved discount rate: {rate if rate is not None else 'not set (code uses 5%)'}", flush=True)
+                print(f"[DISCOUNT] Saved discount rate: {rate if rate is not None else 'NOT SET - suggested prices are not calculated'}", flush=True)
             if option and option[0] == "automate":
                 # Automate: every brand of our products with how many products it has (search = brand contains q)
                 sql = ("SELECT brand, COUNT(*) AS n FROM competitor_table WHERE brand IS NOT NULL AND brand <> ''"
@@ -1113,7 +1117,7 @@ def settings_page(key=None):
     return render_template_string(SETTINGS_HTML, nav_html=render_nav("settings", option[0] if option else None, counts),
                                   nav_css=NAV_CSS, option=option, options=SETTINGS_OPTIONS, brands=brands, q=q, auto_set=auto_set,
                                   rate=rate, rate_info=rate_info, saved=request.args.get("saved") == "1",
-                                  error=request.args.get("error"),
+                                  error=request.args.get("error"), recalc=request.args.get("recalc"),
                                   title=option[1] if option else "Settings")
 
 
@@ -1163,4 +1167,24 @@ def discount_save():
         cur.close()
         conn.close()
     print(f"[DISCOUNT] Saved discount rate {rate}% by {user}", flush=True)
-    return redirect("/settings/discount?saved=1")
+    started = ON_DISCOUNT_CHANGE() if ON_DISCOUNT_CHANGE else False    # app.py: recalculate suggested prices now
+    return redirect("/settings/discount?saved=1&recalc=" + ("1" if started else "busy"))
+
+
+# Set by app.py: function that recalculates all suggested prices after a new rate is saved
+ON_DISCOUNT_CHANGE = None
+
+
+def get_discount_rate(cur):
+    """Auto discount rate in percent (e.g. 2.5), or None when the admin never saved one.
+    Works with any cursor (app.py uses plain tuples, this page uses dict rows)."""
+    cur.execute(SETTINGS_CREATE)
+    cur.execute("SELECT value FROM app_settings WHERE key = 'discount_rate'")
+    row = cur.fetchone()
+    value = (row["value"] if isinstance(row, dict) else row[0]) if row else None
+    try:
+        rate = float(value) if value not in (None, "") else None
+    except ValueError:
+        rate = None
+    print(f"[DISCOUNT] Using Auto discount rate: {rate if rate is not None else 'NOT SET'}", flush=True)
+    return rate
