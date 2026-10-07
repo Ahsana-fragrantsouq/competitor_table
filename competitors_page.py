@@ -381,7 +381,7 @@ HTML = """
        --gold:#d8b76e;--goldbtn:#7c6a45;--green:#8cc58c;--red:#e0806c;--grey:#8b877f}
  *{box-sizing:border-box}
  body{margin:0;background:var(--bg);color:var(--text);font-family:Roboto,-apple-system,Segoe UI,Arial,sans-serif}
- .page{max-width:760px;margin:0 auto;padding:22px 18px 40px}
+ .page{max-width:920px;margin:0 auto;padding:22px 18px 40px}
  h1{font-size:26px;margin:4px 0 18px}
 {{ nav_css|safe }}
  .bar{display:flex;gap:8px;margin:14px 0 6px;flex-wrap:wrap}
@@ -456,8 +456,17 @@ HTML = """
  .upd-msg{font-size:13px;margin-top:6px;min-height:16px}
  .sitelink{color:inherit;text-decoration:underline;text-underline-offset:3px}
  .sitelink:hover{color:#f2d675}
- .least{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 28px;margin:10px 0 2px;padding:10px 12px;
+ .least{display:flex;flex-wrap:nowrap;align-items:center;gap:10px 22px;margin:10px 0 2px;padding:10px 14px;
         border:1px solid #f2d675;border-radius:12px}
+ /* one line: least price | least priced website | suggested price + Update price + next cheapest */
+ .least > div{flex:0 0 auto;min-width:0}
+ .least .upd{flex-wrap:nowrap}
+ .least .sugg-in{width:92px}
+ .least .nextc{white-space:nowrap}
+ .least .upd-msg{min-height:0;margin-top:0}
+ .least .upd-msg:not(:empty){margin-top:6px}
+ @media (max-width:860px){ .least{flex-wrap:wrap} .least > div{flex:0 1 auto;max-width:100%}
+                           .least .upd{flex-wrap:wrap} }   /* phones: wrap again */
  .hint{color:var(--muted);font-size:14px;margin:6px 2px 16px}
  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-bottom:12px}
  .title{font-size:18px;font-weight:600;margin-bottom:6px;line-height:1.35}
