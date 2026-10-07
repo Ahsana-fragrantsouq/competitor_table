@@ -448,6 +448,12 @@ HTML = """
  .diff{font-size:14px;margin-top:8px}
  .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
+ /* "Show out of stock (N)" button at the bottom of a card + the hidden list it opens */
+ .outtoggle{margin-top:10px;background:none;border:1px solid var(--line);color:var(--muted);border-radius:8px;
+            padding:7px 12px;font-size:14px;cursor:pointer}
+ .outtoggle:hover{color:var(--text);border-color:var(--muted)}
+ .outlist[hidden]{display:none}
+ .outlist .shop{opacity:.75}
  .sugg{color:#f2d675}
  .prices{align-items:flex-end}
  /* "Out of stock" above OUR product link (shown only when our product is out of stock on fragrantsouq.com).
@@ -588,6 +594,35 @@ HTML = """
   </div>
   {% endif %}
 
+{# ---- one competitor block inside a product card (used for in-stock and for the hidden out-of-stock list) ---- #}
+{% macro shop_block(r, label, k) %}
+      {% set price = r[k ~ '_price'] %}{% set url = r[k ~ '_url'] %}{% set sug = r[k ~ '_suggestion'] %}
+      <div class="shop">
+        <div class="row">
+          <span class="plabel">{{ label }}{% if r[k ~ '_confirmed'] %} <span class="conf">✓ confirmed</span>{% endif %}</span>
+          {% if url %}<span class="{{ 'in' if r[k ~ '_stock'] else 'out' }}">{{ 'In stock' if r[k ~ '_stock'] else 'Out of stock' }}</span>{% endif %}
+        </div>
+        {% if url %}
+          <div class="row">
+            <span class="price">{% if price is not none %}AED {{ '%.2f' % price }}{% else %}No price{% endif %}</span>
+            <a class="link plink" href="{{ url }}" target="_blank" title="Open on {{ label }}">{{ r[k ~ '_title'] or ('View on ' ~ label) }}</a>
+          </div>
+          {% if r.uae_price is not none and price is not none %}
+            {% set d = price - r.uae_price %}
+            <div class="diff {{ 'out' if d < 0 else 'in' }}">{% if d < 0 %}{{ label }} is cheaper by AED {{ '%.2f' % (-d) }}{% elif d > 0 %}We are cheaper by AED {{ '%.2f' % d }}{% else %}Same price{% endif %}</div>
+          {% endif %}
+        {% else %}
+          <div class="row"><span class="gtin">No match</span>
+          {% if sug %}<span class="sugrow">
+            <a class="link" href="{{ sug }}" target="_blank">Suggestion (check)</a>
+            {# OK = make it the real match, Not OK = remove it (both remembered for later match runs) #}
+            <button type="button" class="okbtn" onclick="suggestion('{{ r.fi }}', '{{ k }}', 'ok', this)">OK</button>
+            <button type="button" class="nobtn" onclick="suggestion('{{ r.fi }}', '{{ k }}', 'notok', this)">Not OK</button>
+          </span>{% endif %}</div>
+          <div class="upd-msg" id="sg-{{ k }}-{{ r.fi }}"></div>
+        {% endif %}
+      </div>
+{% endmacro %}
   {% for r in rows %}
   {% if src.kind == 'competitor' %}
   <div class="card">
@@ -648,40 +683,26 @@ HTML = """
         {% if r.our_link %}<a class="link" href="{{ r.our_link }}" target="_blank" title="Open on fragrantsouq.com">{{ r.our_title or r.name }}</a>
         {% else %}<span class="gtin">Not on fragrantsouq.com</span>{% endif %}</div>
     </div>
-    {# only shops that have this product (a match) or a suggestion to check; "No match" shops are hidden #}
-    {% set shown = namespace(n=0) %}
+    {# only shops that have this product (a match) or a suggestion to check; "No match" shops are hidden.
+         IN-STOCK matches + suggestions are shown; OUT-OF-STOCK matches are hidden under "Show out of stock". #}
+    {% set shown = namespace(n=0, out=0) %}
     {% for label, k in src.shops %}
-      {% set price = r[k ~ '_price'] %}{% set url = r[k ~ '_url'] %}{% set sug = r[k ~ '_suggestion'] %}
-      {% if url or sug %}{% set shown.n = shown.n + 1 %}
-      <div class="shop">
-        <div class="row">
-          <span class="plabel">{{ label }}{% if r[k ~ '_confirmed'] %} <span class="conf">✓ confirmed</span>{% endif %}</span>
-          {% if url %}<span class="{{ 'in' if r[k ~ '_stock'] else 'out' }}">{{ 'In stock' if r[k ~ '_stock'] else 'Out of stock' }}</span>{% endif %}
-        </div>
-        {% if url %}
-          <div class="row">
-            <span class="price">{% if price is not none %}AED {{ '%.2f' % price }}{% else %}No price{% endif %}</span>
-            <a class="link plink" href="{{ url }}" target="_blank" title="Open on {{ label }}">{{ r[k ~ '_title'] or ('View on ' ~ label) }}</a>
-          </div>
-          {% if r.uae_price is not none and price is not none %}
-            {% set d = price - r.uae_price %}
-            <div class="diff {{ 'out' if d < 0 else 'in' }}">{% if d < 0 %}{{ label }} is cheaper by AED {{ '%.2f' % (-d) }}{% elif d > 0 %}We are cheaper by AED {{ '%.2f' % d }}{% else %}Same price{% endif %}</div>
-          {% endif %}
-        {% else %}
-          <div class="row"><span class="gtin">No match</span>
-          {% if sug %}<span class="sugrow">
-            <a class="link" href="{{ sug }}" target="_blank">Suggestion (check)</a>
-            {# OK = make it the real match, Not OK = remove it (both remembered for later match runs) #}
-            <button type="button" class="okbtn" onclick="suggestion('{{ r.fi }}', '{{ k }}', 'ok', this)">OK</button>
-            <button type="button" class="nobtn" onclick="suggestion('{{ r.fi }}', '{{ k }}', 'notok', this)">Not OK</button>
-          </span>{% endif %}</div>
-          <div class="upd-msg" id="sg-{{ k }}-{{ r.fi }}"></div>
-        {% endif %}
-      </div>
+      {% set url = r[k ~ '_url'] %}{% set sug = r[k ~ '_suggestion'] %}
+      {% if url and not r[k ~ '_stock'] %}{% set shown.out = shown.out + 1 %}   {# out of stock -> hidden list #}
+      {% elif url or sug %}{% set shown.n = shown.n + 1 %}{{ shop_block(r, label, k) }}
       {% endif %}
     {% endfor %}
-    {% if shown.n == 0 %}<div class="shop"><span class="gtin">No competitor has this product</span></div>{% endif %}
+    {% if shown.n == 0 %}<div class="shop"><span class="gtin">{% if shown.out %}No competitor has this product in stock{% else %}No competitor has this product{% endif %}</span></div>{% endif %}
     <div class="date">Updated {{ r.updated.strftime('%d %b, %H:%M') if r.updated else '' }}</div>
+    {% if shown.out %}
+    {# out-of-stock competitors: hidden until "Show out of stock" is clicked (toggleOut in the script below) #}
+    <button type="button" class="outtoggle" onclick="toggleOut(this)" data-n="{{ shown.out }}">Show out of stock ({{ shown.out }})</button>
+    <div class="outlist" hidden>
+      {% for label, k in src.shops %}
+        {% if r[k ~ '_url'] and not r[k ~ '_stock'] %}{{ shop_block(r, label, k) }}{% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
   {% else %}
   <div class="card">
@@ -861,6 +882,14 @@ HTML = """
   }
 
   // Suggestion "OK" / "Not OK": tell the server, then reload so the card shows the new match / no suggestion
+  // ---- "Show out of stock" / "Hide out of stock" under each product ----
+  function toggleOut(btn) {
+    var list = btn.nextElementSibling, open = list.hidden;
+    list.hidden = !open;
+    btn.textContent = (open ? "Hide out of stock (" : "Show out of stock (") + btn.dataset.n + ")";
+    console.log("[OUT-OF-STOCK] " + (open ? "shown" : "hidden") + ": " + btn.dataset.n + " competitor(s)");
+  }
+
   async function suggestion(fi, shop, action, btn) {
     var msg = document.getElementById("sg-" + shop + "-" + fi);
     btn.disabled = true; msg.className = "upd-msg gtin"; msg.textContent = action === "ok" ? "Saving match..." : "Removing...";
@@ -982,6 +1011,10 @@ def competitors():
                       f"{sum(1 for r in rows if r['missing'])} of {len(rows)} are missing items", flush=True)
             if src.get("kind") == "competitor":
                 add_next_cheapest(rows, src["shops"])
+                # out-of-stock competitors are hidden on the card behind "Show out of stock"
+                hidden = sum(1 for r in rows for _, k in src["shops"] if r.get(f"{k}_url") and not r.get(f"{k}_stock"))
+                print(f"[OUT-OF-STOCK] page {page}: {hidden} out-of-stock competitor(s) hidden "
+                      f"behind 'Show out of stock'", flush=True)
     finally:
         cur.close()
         conn.close()
