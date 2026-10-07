@@ -510,6 +510,9 @@ HTML = """
  .row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px}
  .price{font-size:20px;font-weight:600}
  .gtin{color:var(--muted);font-size:14px}
+ /* GTIN with "Missing item" under it (shop tabs) */
+ .gtinbox{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+ .missing{color:#e0806c;font-size:13px;font-weight:600}
  a.link{color:var(--gold)}
  .in{color:var(--green)} .out{color:var(--red)} .gone{color:var(--grey)}
  .date{color:var(--grey);font-size:13px;margin-top:8px}
@@ -540,6 +543,8 @@ HTML = """
       <option value="In stock" {% if stock=='In stock' %}selected{% endif %}>In stock</option>
       <option value="Out of stock" {% if stock=='Out of stock' %}selected{% endif %}>Out of stock</option>
       <option value="Not on site" {% if stock=='Not on site' %}selected{% endif %}>Not on site</option>
+      {# products not linked to any of our products #}
+      <option value="missing" {% if stock=='missing' %}selected{% endif %}>Missing items</option>
     </select>{% endif %}
     {% if src.kind == 'competitor' %}
     <button type="button" class="fbtn {% if conds %}on{% endif %}" onclick="toggleFilter()">
@@ -688,7 +693,11 @@ HTML = """
     </div>
     <div class="row">
       {% if r.url %}<a class="link" href="{{ r.url }}" target="_blank">View product</a>{% else %}<span></span>{% endif %}
-      <span class="gtin">{% if r.gtin %}GTIN {{ r.gtin }}{% endif %}</span>
+      <span class="gtinbox">
+        <span class="gtin">{% if r.gtin %}GTIN {{ r.gtin }}{% endif %}</span>
+        {# not linked to any of our products (not in Airtable / competitor table) #}
+        {% if r.missing %}<span class="missing">Missing item</span>{% endif %}
+      </span>
     </div>
     <div class="date">{% if r.updated %}Updated {{ r.updated.strftime('%d %b, %H:%M') }}{% else %}Not checked yet{% endif %}</div>
   </div>
@@ -919,7 +928,23 @@ def competitors():
                 search_cols = src.get("search") or [col for col in (c["name"], c["brand"], c["gtin"]) if col]
                 where.append("(" + " OR ".join(f"{col} ILIKE %s" for col in search_cols) + ")")
                 params += [f"%{q}%"] * len(search_cols)
-            if stock and c.get("stock"):
+            # "Missing item" = this competitor product is not linked to any of our products
+            # (its link is not in competitor_table.<tab>_link, e.g. samawa_link, vp_link ...)
+            missing_sql = None
+            if src.get("kind") != "competitor":
+                link_col = f"{src['key']}_link"
+                cur.execute("SELECT 1 FROM information_schema.columns "
+                            "WHERE table_name = 'competitor_table' AND column_name = %s", (link_col,))
+                if cur.fetchone():
+                    missing_sql = (f"NOT EXISTS (SELECT 1 FROM competitor_table ct "
+                                   f"WHERE ct.{link_col} = {src['table']}.{c['url']})")
+                else:
+                    print(f"[MISSING] competitor_table has no {link_col} yet -> 'Missing item' not shown", flush=True)
+            if stock == "missing":                          # dropdown option "Missing items"
+                if missing_sql:
+                    where.append(missing_sql)
+                    print(f"[MISSING] Showing only missing items of {src['label']}", flush=True)
+            elif stock and c.get("stock"):
                 where.append(f"{c['stock']} = %s")
                 params.append(stock)
             if src.get("kind") == "competitor":
@@ -945,12 +970,16 @@ def competitors():
             select = ", ".join(
                 f"{'NULL' if (not expr or (expr.isidentifier() and expr not in existing)) else expr} AS {alias}"
                 for alias, expr in c.items())
+            select += f", {missing_sql or 'FALSE'} AS missing"     # True -> card shows "Missing item"
             cur.execute(
                 f"SELECT {select} FROM {src['table']} {where_sql} ORDER BY id LIMIT %s OFFSET %s",
                 params + [PER_PAGE, (page - 1) * PER_PAGE],
             )
             rows = cur.fetchall()
             print(f"[competitors] {total} matching rows, showing {len(rows)} on page {page}/{pages}", flush=True)
+            if missing_sql:
+                print(f"[MISSING] {src['label']} page {page}: "
+                      f"{sum(1 for r in rows if r['missing'])} of {len(rows)} are missing items", flush=True)
             if src.get("kind") == "competitor":
                 add_next_cheapest(rows, src["shops"])
     finally:
