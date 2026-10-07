@@ -450,7 +450,9 @@ HTML = """
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
  .sugg{color:#f2d675}
  .prices{align-items:flex-end}
- .ourstock{font-size:18px;margin-bottom:6px}
+ /* "Out of stock" above OUR product link (shown only when our product is out of stock on fragrantsouq.com).
+    Small text so it doesn't compete with the prices. Colour comes from .out (red). */
+ .ourstock{font-size:13px;font-weight:500;margin-bottom:3px}
  .ourlink{margin-left:auto;text-align:right;max-width:65%;align-self:flex-end}
  .topbar{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
  .who{color:var(--muted);font-size:14px} .who b{color:var(--text)} .who a{color:var(--gold)}
@@ -633,7 +635,10 @@ HTML = """
       <div><div class="plabel">Our UAE price</div><span class="price" id="our-{{ r.fi }}">{% if r.uae_price is not none %}AED {{ '%.2f' % r.uae_price }}{% else %}-{% endif %}</span></div>
       {# our own product page on fragrantsouq.com (matched by SKU), like the competitors' links #}
       <div class="ourlink">
-        {# only shown when OUR product is out of stock on fragrantsouq.com (nothing shown when in stock) #}
+        {# OUR stock on fragrantsouq.com (column our_stock, saved by /competitor/load-our-links from Shopify "available"):
+             our_stock = false -> "Out of stock" (small, red)
+             our_stock = true  -> nothing shown (in stock is normal)
+             our_stock = none  -> nothing shown (not on fragrantsouq.com / links not loaded yet) #}
         {% if r.our_link and r.our_stock == false %}<div class="out ourstock">Out of stock</div>{% endif %}
         {% if r.our_link %}<a class="link" href="{{ r.our_link }}" target="_blank" title="Open on fragrantsouq.com">{{ r.our_title or r.name }}</a>
         {% else %}<span class="gtin">Not on fragrantsouq.com</span>{% endif %}</div>
