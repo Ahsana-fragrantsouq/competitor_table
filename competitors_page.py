@@ -53,7 +53,7 @@ SOURCES = [
               "es_title": "es_title", "vp_title": "vp_title",
               "samawa_confirmed": "samawa_confirmed", "ff_confirmed": "ff_confirmed", "vp_confirmed": "vp_confirmed",
               "bp_confirmed": None, "es_confirmed": None,
-              "our_link": "our_link", "our_title": "our_title",
+              "our_link": "our_link", "our_title": "our_title", "our_stock": "our_stock",
               "least_price": "least_price", "least_site": "least_priced_website",
               "suggested_price": "suggested_price", "fi": "fi_record_id",
               "stock": None, "updated": "updated_at"}},
@@ -450,6 +450,7 @@ HTML = """
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
  .sugg{color:#f2d675}
  .prices{align-items:flex-end}
+ .ourstock{font-size:18px;margin-bottom:6px}
  .ourlink{margin-left:auto;text-align:right;max-width:65%;align-self:flex-end}
  .topbar{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
  .who{color:var(--muted);font-size:14px} .who b{color:var(--text)} .who a{color:var(--gold)}
@@ -631,7 +632,10 @@ HTML = """
     <div class="prices">
       <div><div class="plabel">Our UAE price</div><span class="price" id="our-{{ r.fi }}">{% if r.uae_price is not none %}AED {{ '%.2f' % r.uae_price }}{% else %}-{% endif %}</span></div>
       {# our own product page on fragrantsouq.com (matched by SKU), like the competitors' links #}
-      <div class="ourlink">{% if r.our_link %}<a class="link" href="{{ r.our_link }}" target="_blank" title="Open on fragrantsouq.com">{{ r.our_title or r.name }}</a>
+      <div class="ourlink">
+        {# only shown when OUR product is out of stock on fragrantsouq.com (nothing shown when in stock) #}
+        {% if r.our_link and r.our_stock == false %}<div class="out ourstock">Out of stock</div>{% endif %}
+        {% if r.our_link %}<a class="link" href="{{ r.our_link }}" target="_blank" title="Open on fragrantsouq.com">{{ r.our_title or r.name }}</a>
         {% else %}<span class="gtin">Not on fragrantsouq.com</span>{% endif %}</div>
     </div>
     {# only shops that have this product (a match) or a suggestion to check; "No match" shops are hidden #}

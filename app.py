@@ -847,6 +847,7 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ng_confirmed BOOLEAN DEFAU
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ng_rejected TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_link TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_title TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_stock BOOLEAN;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_price NUMERIC(10,2);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_priced_website TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS suggested_price NUMERIC(10,2);
@@ -1543,6 +1544,8 @@ def ct_update_least():
         else:
             log(f"[CT-LEAST] Suggested price = cheapest in-stock competitor - {rate}%")
             cur.execute(SUGGEST_SQL, {"below": rate / 100})
+            log(f"[CT-LEAST] Suggested price written for {cur.rowcount} products "
+                f"(products with no in-stock competitor get no suggested price)")
         cur.execute("SELECT COUNT(*) FROM competitor_table WHERE suggested_price IS NOT NULL")
         result["with_suggested_price"] = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM competitor_table WHERE least_price IS NOT NULL")
@@ -1669,6 +1672,7 @@ def recalc_after_discount_change():
     """Called by Settings -> Auto discount rate after Save: recalculate every suggested price now
     (and update the automatic brands in Airtable). Returns False when another run is busy -
     that run recalculates at its end anyway, with the new rate."""
+    log("[DISCOUNT] recalc_after_discount_change() called by Settings -> Auto discount rate")
     if not run_lock.acquire(blocking=False):
         log("[DISCOUNT] A run is in progress -> it will use the new rate when it reaches the price step")
         return False
@@ -1678,6 +1682,7 @@ def recalc_after_discount_change():
 
 
 competitors_page.ON_DISCOUNT_CHANGE = recalc_after_discount_change
+log("[DISCOUNT] Settings page linked: saving a new rate will recalculate suggested prices")
 
 
 @app.get("/competitor/load-fi")
@@ -1768,6 +1773,7 @@ def least_for(cur, fid):
         log(f"[SUGGEST] Least for {fid}: {least} ({sites}) | suggested NOT changed (no Auto discount rate saved)")
         return
     # same rounding as Postgres ROUND (half away from zero): 97.5 -> 98
+    log(f"[SUGGEST] {fid}: cheapest in-stock competitor {best_comp} - {rate}% (rounded to {SUGGEST_DECIMALS} decimals)")
     suggested = (float(Decimal(str(best_comp * (1 - rate / 100))).quantize(Decimal(1).scaleb(-SUGGEST_DECIMALS),
                                                                           rounding=ROUND_HALF_UP))
                  if best_comp else None)
@@ -2012,7 +2018,8 @@ def ct_load_our_links():
                 url = f"{OUR_SITE}/products/{p.get('handle')}"
                 if len(variants) > 1:
                     url += f"?variant={v.get('id')}"   # open the right size directly
-                by_sku[sku] = (url, (p.get("title") or "").strip())
+                # (link, name, in stock on fragrantsouq.com?) - Shopify "available" = can be bought now
+                by_sku[sku] = (url, (p.get("title") or "").strip(), bool(v.get("available")))
         summary["shopify_products"] += len(products)
         log(f"[OUR] page {page}: {len(products)} products (total {summary['shopify_products']}, {len(by_sku)} SKUs)")
         if len(products) < 250:
@@ -2025,12 +2032,15 @@ def ct_load_our_links():
     cur = conn.cursor()
     try:
         cur.execute(CT_CREATE)
-        cur.execute("UPDATE competitor_table SET our_link = NULL, our_title = NULL")
+        cur.execute("UPDATE competitor_table SET our_link = NULL, our_title = NULL, our_stock = NULL")
         if by_sku:
             execute_values(cur, """
-                UPDATE competitor_table c SET our_link = v.url, our_title = v.title
-                FROM (VALUES %s) AS v(sku, url, title)
-                WHERE UPPER(TRIM(c.sku)) = v.sku""", [(k, u, t) for k, (u, t) in by_sku.items()], page_size=1000)
+                UPDATE competitor_table c SET our_link = v.url, our_title = v.title, our_stock = v.stock
+                FROM (VALUES %s) AS v(sku, url, title, stock)
+                WHERE UPPER(TRIM(c.sku)) = v.sku""", [(k, u, t, st) for k, (u, t, st) in by_sku.items()],
+                page_size=1000)
+            out = sum(1 for _, _, st in by_sku.values() if not st)
+            log(f"[OUR] {out} of {len(by_sku)} SKUs are OUT OF STOCK on fragrantsouq.com")
         cur.execute("SELECT COUNT(*), COUNT(our_link) FROM competitor_table")
         total, linked = cur.fetchone()
         conn.commit()
