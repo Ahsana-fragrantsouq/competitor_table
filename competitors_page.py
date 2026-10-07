@@ -221,6 +221,10 @@ PRICE_FILTERS = {
 FILTER_FIELDS = {
     "price":     {"label": "Price status (High / Low / No competitor)", "type": "choice",
                   "choices": {k: v[0] for k, v in PRICE_FILTERS.items()}},
+    # our own website: is the product on fragrantsouq.com? (our_link is filled by /competitor/load-our-links)
+    "website":   {"label": "Fragrantsouq.com", "type": "choice", "order": ["no", "yes"],
+                  "choices": {"no": "Not on fragrantsouq.com", "yes": "On fragrantsouq.com"},
+                  "sql": {"no": "(our_link IS NULL OR our_link = '')", "yes": "(our_link IS NOT NULL AND our_link <> '')"}},
     "brand":     {"label": "Brand", "col": "brand", "type": "multi"},      # pick several brands (chips)
     "comp":      {"label": "Competitor", "type": "comp"},                  # pick competitor shops (chips)
     "name":      {"label": "Product name", "col": "product_name", "type": "text"},
@@ -275,6 +279,10 @@ def describe_filters(conds):
             value = fd["choices"].get(v, v).split(" (")[0]           # "Low price (we're cheapest)" -> "Low price"
         else:
             value = ", ".join(x for x in v.split("||") if x)         # chips "Armaf||Afnan" -> "Armaf, Afnan"
+        if f == "website":
+            value = fd["choices"].get(v, v)
+            parts.append(value if o == "is" else f"not '{value}'")
+            continue
         parts.append(f"{field} {op} {value}".strip())
     text = " · ".join(parts)
     print(f"[FILTER] Button text: {text!r}", flush=True)
@@ -287,10 +295,11 @@ def filter_sql(conds):
     where, params = [], []
     for f, o, v in conds:
         fd = FILTER_FIELDS[f]
-        if fd["type"] == "choice":                     # Price status: Low / High / No competitor price
-            if v not in PRICE_FILTERS:
+        if fd["type"] == "choice":                     # Price status / Fragrantsouq.com: fixed choices
+            sql_map = fd.get("sql") or {k: c for k, (_, c) in PRICE_FILTERS.items()}
+            if v not in sql_map:
                 continue
-            cond = PRICE_FILTERS[v][1]
+            cond = sql_map[v]
             where.append(f"({cond})" if o == "is" else f"NOT ({cond})")
             continue
         if fd["type"] == "comp":                       # Competitor: which shops have the product
@@ -483,6 +492,8 @@ HTML = """
  .least .upd{flex-wrap:nowrap}
  .least .sugg-in{width:92px}
  .least .nextc{white-space:nowrap}
+ .least .second{margin-left:auto;text-align:right}          /* pushed to the right end of the box */
+ .least .second .plabel{font-size:12px}
  .least .upd-msg{min-height:0;margin-top:0}
  .least .upd-msg:not(:empty){margin-top:6px}
  @media (max-width:860px){ .least{flex-wrap:wrap} .least > div{flex:0 1 auto;max-width:100%}
@@ -541,6 +552,7 @@ HTML = """
         <a href="?tab=competitor&ff=price&fo=is&fv=high">High price</a>
         <a href="?tab=competitor&ff=price&fo=is&fv=low">Low price</a>
         <a href="?tab=competitor&ff=price&fo=is&fv=none">No competitor price</a>
+        <a href="?tab=competitor&ff=website&fo=is&fv=no">Not on fragrantsouq.com</a>
       </div>
       <div class="ftitle">In this view, show records</div>
       <div id="frows"></div>
@@ -602,13 +614,14 @@ HTML = """
                       value="{{ '%g' % r.suggested_price if r.suggested_price is not none else '' }}"
                       placeholder="{{ 'No competitor in stock' if r.suggested_price is none else '' }}">
                <button type="button" class="upd-btn" onclick="updatePrice('{{ r.fi }}', this)">Update price</button>
-               {% if r.next_comp %}
-               {# we are the cheapest: show the cheapest in-stock competitor (closest to our price) #}
-               <a class="nextc" href="{{ r.next_comp.url }}" target="_blank"
-                  title="Next cheapest competitor (AED {{ '%.2f' % r.next_comp.price }})">{{ r.next_comp.label }}</a>
-               {% endif %}
              </div>
              <div class="upd-msg" id="msg-{{ r.fi }}"></div></div>
+        {% if r.next_comp %}
+        {# we are the cheapest: the cheapest IN-STOCK competitor (closest to our price), at the right of the box #}
+        <div class="second"><div class="plabel">Second least</div>
+             <a class="nextc" href="{{ r.next_comp.url }}" target="_blank"
+                title="AED {{ '%.2f' % r.next_comp.price }}">{{ r.next_comp.label }}</a></div>
+        {% endif %}
       {% else %}<span class="gtin">No price to compare</span>{% endif %}
     </div>
     <div class="prices">
@@ -726,7 +739,7 @@ HTML = """
     if (f.type === "multi" && (op === "anyof" || op === "noneof")) return chipBox(value);
     if (f.type === "choice") {
       var sel = document.createElement("select"); sel.name = "fv";
-      ["low", "high", "none"].forEach(function (k) {
+      (f.order || ["low", "high", "none"]).forEach(function (k) {
         var o = new Option(f.choices[k], k); if (k === value) o.selected = true; sel.add(o);
       });
       return sel;
