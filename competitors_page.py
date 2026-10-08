@@ -16,6 +16,7 @@ import psycopg2
 import psycopg2.extras
 from urllib.parse import urlencode
 from flask import Blueprint, request, render_template_string, g, redirect
+from auth import list_users, is_admin, MIN_PASSWORD      # User management (users are saved by auth.py)
 
 competitors_bp = Blueprint("competitors", __name__)
 
@@ -1084,6 +1085,29 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
  .brow:hover{background:var(--bg)}
  .blist{margin-bottom:90px}
  .brow .n{color:var(--muted);font-variant-numeric:tabular-nums}
+ /* ---- User management ---- */
+ .urow{display:flex;gap:8px;flex-wrap:wrap}
+ .urow input,.urow select,.inl input{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:10px;
+            padding:10px 12px;font-size:15px}
+ .urow input[name=username]{width:170px}
+ .urow button[type=submit]{background:#f2d675;color:#1c1b19;border:0;border-radius:10px;padding:10px 18px;font-size:15px;font-weight:700;cursor:pointer}
+ .pwwrap{position:relative;display:inline-block}
+ .pwwrap input{padding-right:40px;width:180px}
+ .eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:0;font-size:17px;cursor:pointer;color:var(--muted)}
+ .ulist{background:var(--card);border:1px solid var(--line);border-radius:16px;margin-top:16px;overflow:hidden}
+ .urow2{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 18px;border-top:1px solid var(--line)}
+ .urow2:first-child{border-top:0}
+ .urow2.off .uname b{color:var(--muted);text-decoration:line-through}
+ .umeta{color:var(--muted);font-size:13px;margin-top:4px}
+ .role{border-radius:999px;padding:2px 9px;font-size:12px;font-weight:700;margin-left:6px}
+ .role.admin{background:#f2d675;color:#1c1b19} .role.user{background:var(--line);color:var(--text)}
+ .you{color:var(--gold);font-size:12px} .dis{color:#e0806c;font-size:12px;font-weight:700}
+ .uact{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+ .inl{display:inline-flex;gap:6px;margin:0}
+ .inl input{padding:8px 10px;font-size:14px}
+ .inl .pwwrap input{width:150px;padding-right:36px}
+ .sbtn{background:none;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 12px;font-size:14px;cursor:pointer}
+ .sbtn:hover{border-color:var(--muted)} .sbtn.red{color:#e0806c}
 {{ nav_css|safe }}
 </style></head><body><div class="page">
 <div class="topbar"><h1>{{ title }}</h1>
@@ -1186,6 +1210,79 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
   <button type="button" class="bulkupdate" id="asave" onclick="saveAuto()">Update all</button>
   <span class="bulkmsg" id="amsg"></span>
 </div>
+{% elif option and option[0] == 'users' %}
+<a class="back" href="/settings">&larr; All settings</a>
+{# User management: admins add users, change password / role, disable or remove them (actions are in auth.py) #}
+{% if msg %}<p class="ok">{{ msg }}</p>{% endif %}
+{% if error %}<p class="err">{{ error }}</p>{% endif %}
+{% if not admin %}
+<div class="empty"><b>Only admins can manage users.</b><br>Ask an admin to add or change users.</div>
+{% else %}
+<form class="dform" method="post" action="/settings/users/add"
+      onsubmit="console.log('[USERS] Add user: ' + this.username.value + ' (' + this.role.value + ')')">
+  <label>Add a user</label>
+  <div class="urow">
+    <input name="username" placeholder="Username" required pattern="[A-Za-z0-9._-]{2,30}" autocomplete="off"
+           title="2-30 characters: letters, numbers, . _ -">
+    <span class="pwwrap"><input name="password" type="password" placeholder="Password" required minlength="{{ min_pw }}"
+           autocomplete="new-password"><button type="button" class="eye" onclick="eye(this)" title="Show password">&#128065;</button></span>
+    <select name="role"><option value="user">User</option><option value="admin">Admin</option></select>
+    <button type="submit">Add user</button>
+  </div>
+  <p class="hint"><b>Admin</b> = everything + User management. <b>User</b> = everything except User management.</p>
+</form>
+<div class="ulist">
+  {% for u in users %}
+  <div class="urow2 {{ 'off' if not u.active else '' }}">
+    <div class="uname"><b>{{ u.username }}</b>{% if u.username == me %} <span class="you">you</span>{% endif %}
+      <span class="role {{ u.role }}">{{ u.role|capitalize }}</span>{% if not u.active %} <span class="dis">Disabled</span>{% endif %}
+      <div class="umeta">{% if u.fixed %}Set in Render (USERS) - change it there
+        {% else %}Added by {{ u.created_by or '-' }}{% if u.created_at %} on {{ u.created_at.strftime('%d %b %Y') }}{% endif %}
+        · Last login {{ u.last_login.strftime('%d %b %Y, %H:%M') if u.last_login else 'never' }}{% endif %}</div>
+    </div>
+    {% if not u.fixed %}
+    <div class="uact">
+      {# new password #}
+      <form method="post" action="/settings/users/{{ u.username|urlencode }}/password" class="inl"
+            onsubmit="console.log('[USERS] New password for {{ u.username }}')">
+        <span class="pwwrap"><input name="password" type="password" placeholder="New password" required minlength="{{ min_pw }}"
+               autocomplete="new-password"><button type="button" class="eye" onclick="eye(this)" title="Show password">&#128065;</button></span>
+        <button type="submit" class="sbtn">Change</button>
+      </form>
+      {% if u.username != me %}
+      {# role: admin <-> user #}
+      <form method="post" action="/settings/users/{{ u.username|urlencode }}/role" class="inl"
+            onsubmit="console.log('[USERS] Role of {{ u.username }} -> ' + this.role.value)">
+        <input type="hidden" name="role" value="{{ 'user' if u.role == 'admin' else 'admin' }}">
+        <button type="submit" class="sbtn">Make {{ 'user' if u.role == 'admin' else 'admin' }}</button>
+      </form>
+      {# disable / enable #}
+      <form method="post" action="/settings/users/{{ u.username|urlencode }}/active" class="inl"
+            onsubmit="console.log('[USERS] {{ 'Disable' if u.active else 'Enable' }} {{ u.username }}')">
+        <input type="hidden" name="active" value="{{ '0' if u.active else '1' }}">
+        <button type="submit" class="sbtn">{{ 'Disable' if u.active else 'Enable' }}</button>
+      </form>
+      {# remove for good #}
+      <form method="post" action="/settings/users/{{ u.username|urlencode }}/delete" class="inl"
+            onsubmit="if (!confirm('Remove user {{ u.username }}? They cannot log in any more.')) return false; console.log('[USERS] Remove {{ u.username }}')">
+        <button type="submit" class="sbtn red">Remove</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+<script>
+  // eye button: show / hide the password in the box next to it
+  function eye(b) {
+    var i = b.previousElementSibling, show = i.type === "password";
+    i.type = show ? "text" : "password";
+    b.innerHTML = show ? "&#128584;" : "&#128065;";
+  }
+  console.log("[USERS] Page: {{ users|length }} users");
+</script>
+{% endif %}
 {% elif option and option[0] == 'discount' %}
 <a class="back" href="/settings">&larr; All settings</a>
 {# Auto discount rate: admin writes the % (e.g. 2 or 5). Saved in table app_settings, key 'discount_rate'. #}
@@ -1234,6 +1331,7 @@ def settings_page(key=None):
     print(f"[SETTINGS] Opened: {option[1] if option else 'all settings'}", flush=True)
     counts, brands, auto_set = {}, [], set()
     rate, rate_info = None, None
+    users = []
     q = request.args.get("q", "").strip()
     try:
         conn = db_conn()
@@ -1244,6 +1342,9 @@ def settings_page(key=None):
                 rate_info = get_setting(cur, "discount_rate")
                 rate = float(rate_info["value"]) if rate_info else None
                 print(f"[DISCOUNT] Saved discount rate: {rate if rate is not None else 'NOT SET - suggested prices are not calculated'}", flush=True)
+            if option and option[0] == "users":
+                print(f"[USERS] User management opened by {g.get('user')} (admin: {is_admin()})", flush=True)
+                users = list_users() if is_admin() else []
             if option and option[0] == "automate":
                 # Automate: every brand of our products with how many products it has (search = brand contains q)
                 sql = ("SELECT brand, COUNT(*) AS n FROM competitor_table WHERE brand IS NOT NULL AND brand <> ''"
@@ -1267,7 +1368,8 @@ def settings_page(key=None):
                                   nav_css=NAV_CSS, option=option, options=SETTINGS_OPTIONS, brands=brands, q=q, auto_set=auto_set,
                                   rate=rate, rate_info=rate_info, saved=request.args.get("saved") == "1",
                                   error=request.args.get("error"), recalc=request.args.get("recalc"),
-                                  title=option[1] if option else "Settings")
+                                  users=users, admin=is_admin(), me=g.get("user"), msg=request.args.get("msg"),
+                                  min_pw=MIN_PASSWORD, title=option[1] if option else "Settings")
 
 
 # ---------------------------------------------------------------- app settings (values the admin changes on the page)

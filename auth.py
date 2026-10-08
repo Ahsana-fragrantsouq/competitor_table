@@ -1,9 +1,14 @@
 """
 Login for the Competitor Table app (several users, each with a username + password).
 
-Users are set in Render -> Environment (no database needed):
-  USERS       = ashref:Password1;ahsana:Password2;rayhaan:Password3
-                (username:password, users separated by ;  -  usernames are not case-sensitive)
+Two kinds of users:
+  1. Render -> Environment USERS (fixed ADMINS, cannot be changed on the page - so nobody is ever locked out):
+       USERS       = ashref:Password1;ahsana:Password2
+                     (username:password, users separated by ;  -  usernames are not case-sensitive)
+  2. Users created on the page Settings -> User management (table app_users in french_fragrance_db).
+     Passwords are saved hashed (never readable). Role = admin or user.
+       admin -> everything + User management
+       user  -> everything except User management
   SECRET_KEY  = any long random text (keeps people logged in after a deploy; without it everyone must log in again)
 
 What is protected: every page and button (/competitors, Update price, OK / Not OK, Update all ...).
@@ -19,13 +24,17 @@ Plugged into app.py:
 """
 
 import os
+import re
 import hmac
 import time
 import secrets
 from datetime import timedelta
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
+import psycopg2
+import psycopg2.extras
 from flask import Blueprint, request, session, redirect, jsonify, render_template_string, g
+from werkzeug.security import generate_password_hash, check_password_hash
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -47,10 +56,109 @@ def load_users():
     return users
 
 
+# ---------------------------------------------------------------- users saved in the database (User management)
+USERS_CREATE = """
+CREATE TABLE IF NOT EXISTS app_users (
+    username       TEXT PRIMARY KEY,            -- lower case, e.g. 'rayhaan'
+    password_hash  TEXT NOT NULL,               -- hashed password (the real password is never saved)
+    role           TEXT NOT NULL DEFAULT 'user',-- 'admin' or 'user'
+    active         BOOLEAN NOT NULL DEFAULT TRUE,  -- FALSE = disabled, cannot log in
+    created_by     TEXT,
+    created_at     TIMESTAMP DEFAULT NOW(),
+    last_login     TIMESTAMP
+);
+"""
+ROLES = ("admin", "user")
+NAME_RE = re.compile(r"^[a-z0-9._-]{2,30}$")      # allowed usernames
+MIN_PASSWORD = 6
+
+
+def users_db():
+    url = os.environ.get("FF_DATABASE_URL")
+    if not url:
+        raise RuntimeError("FF_DATABASE_URL is not set")
+    conn = psycopg2.connect(url, sslmode="require")
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(USERS_CREATE)
+    return conn, cur
+
+
+def db_user(username):
+    """One user from app_users (dict) or None."""
+    try:
+        conn, cur = users_db()
+        try:
+            cur.execute("SELECT * FROM app_users WHERE username = %s", (username,))
+            row = cur.fetchone()
+            conn.commit()
+            return row
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as ex:
+        auth_log(f"[USERS] Could not read user '{username}' from the database: {ex}")
+        return None
+
+
 def check_login(username, password):
-    """True when the username exists and the password is right (compared safely)."""
-    stored = load_users().get((username or "").strip().lower())
-    return stored is not None and hmac.compare_digest(stored.encode(), (password or "").encode())
+    """Role ('admin' / 'user') when the username + password are right, else None.
+    Render USERS are checked first (always admin), then the database users (only active ones)."""
+    username = (username or "").strip().lower()
+    stored = load_users().get(username)
+    if stored is not None:
+        ok = hmac.compare_digest(stored.encode(), (password or "").encode())
+        auth_log(f"[AUTH] '{username}' is a Render USERS admin -> password {'OK' if ok else 'wrong'}")
+        return "admin" if ok else None
+    row = db_user(username)
+    if not row:
+        auth_log(f"[AUTH] '{username}' not found (not in USERS, not in app_users)")
+        return None
+    if not row["active"]:
+        auth_log(f"[AUTH] '{username}' is disabled -> login refused")
+        return None
+    if not check_password_hash(row["password_hash"], password or ""):
+        return None
+    try:
+        conn, cur = users_db()
+        cur.execute("UPDATE app_users SET last_login = NOW() WHERE username = %s", (username,))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as ex:
+        auth_log(f"[USERS] last_login not saved: {ex}")
+    return row["role"]
+
+
+def current_role(username):
+    """Role of a logged-in user right now (so a disabled / removed user is logged out at once).
+    None = no longer allowed."""
+    if username in load_users():
+        return "admin"
+    row = db_user(username)
+    return row["role"] if row and row["active"] else None
+
+
+def is_admin():
+    return g.get("role") == "admin"
+
+
+def list_users():
+    """All users for the User management page: Render USERS first (fixed), then the database users."""
+    out = [{"username": u, "role": "admin", "active": True, "fixed": True, "created_by": "Render USERS",
+            "created_at": None, "last_login": None} for u in sorted(load_users())]
+    try:
+        conn, cur = users_db()
+        try:
+            cur.execute("SELECT * FROM app_users ORDER BY username")
+            out += [{**r, "fixed": False} for r in cur.fetchall()]
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as ex:
+        auth_log(f"[USERS] Could not list users: {ex}")
+    auth_log(f"[USERS] {len(out)} users ({len(load_users())} from Render USERS)")
+    return out
 
 
 def init_auth(app):
@@ -59,7 +167,8 @@ def init_auth(app):
     if not os.environ.get("SECRET_KEY"):
         auth_log("[AUTH] SECRET_KEY not set -> everyone has to log in again after each deploy")
     if not load_users():
-        auth_log("[AUTH] WARNING: USERS is not set -> nobody can log in. Add USERS in Render -> Environment")
+        auth_log("[AUTH] WARNING: USERS is not set -> only users from User management can log in. "
+                 "Keep at least one admin in Render -> Environment USERS")
     app.permanent_session_lifetime = timedelta(days=30)      # stay logged in for 30 days
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -68,6 +177,15 @@ def init_auth(app):
     @app.before_request
     def require_login():
         g.user = session.get("user")
+        g.role = None
+        if g.user:
+            g.role = current_role(g.user)            # checked every time: disabled/removed users are logged out
+            if g.role is None:
+                auth_log(f"[AUTH] '{g.user}' is disabled or removed -> logged out")
+                session.clear()
+                g.user = None
+            elif session.get("role") != g.role:
+                session["role"] = g.role
         if request.path in OPEN_PATHS:
             return None
         # run / status URLs opened with the right ?secret= still work without logging in
@@ -147,11 +265,13 @@ def login():
     error = None
     if request.method == "POST":
         user = (request.form.get("username") or "").strip().lower()
-        if check_login(user, request.form.get("password")):
+        role = check_login(user, request.form.get("password"))
+        if role:
             session.clear()
             session.permanent = True
             session["user"] = user
-            auth_log(f"[AUTH] Login OK: {user}")
+            session["role"] = role
+            auth_log(f"[AUTH] Login OK: {user} ({role})")
             return redirect(nxt)
         time.sleep(1)                                         # slows down password guessing
         auth_log(f"[AUTH] Login FAILED for '{user}' from {request.headers.get('X-Forwarded-For', request.remote_addr)}")
@@ -164,3 +284,124 @@ def logout():
     auth_log(f"[AUTH] Logout: {session.get('user')}")
     session.clear()
     return redirect("/login")
+
+
+# ---------------------------------------------------------------- User management actions (admins only)
+# The page itself is Settings -> User management (/settings/users in competitors_page.py).
+# Every action goes back to that page with ?msg=... or ?error=...
+def back(msg=None, error=None):
+    q = "msg=" + quote(msg) if msg else "error=" + quote(error or "")
+    return redirect("/settings/users?" + q)
+
+
+def admin_only():
+    if not is_admin():
+        auth_log(f"[USERS] '{g.user}' tried to manage users but is not an admin")
+        return back(error="Only admins can manage users.")
+    return None
+
+
+def editable(name):
+    """Error text when this user cannot be changed on the page, else None."""
+    if name in load_users():
+        return f"'{name}' is set in Render (USERS) - change it there."
+    if not db_user(name):
+        return f"User '{name}' not found."
+    return None
+
+
+@auth_bp.route("/settings/users/add", methods=["POST"])
+def users_add():
+    if (r := admin_only()):
+        return r
+    name = (request.form.get("username") or "").strip().lower()
+    pw = request.form.get("password") or ""
+    role = request.form.get("role") if request.form.get("role") in ROLES else "user"
+    auth_log(f"[USERS] {g.user} -> add '{name}' ({role})")
+    if not NAME_RE.match(name):
+        return back(error="Username: 2-30 characters, only letters, numbers, . _ -")
+    if len(pw) < MIN_PASSWORD:
+        return back(error=f"Password must have at least {MIN_PASSWORD} characters.")
+    if name in load_users() or db_user(name):
+        return back(error=f"User '{name}' already exists.")
+    conn, cur = users_db()
+    cur.execute("INSERT INTO app_users (username, password_hash, role, created_by) VALUES (%s, %s, %s, %s)",
+                (name, generate_password_hash(pw), role, g.user))
+    conn.commit()
+    cur.close()
+    conn.close()
+    auth_log(f"[USERS] Added '{name}' as {role}")
+    return back(msg=f"User '{name}' added ({role}).")
+
+
+@auth_bp.route("/settings/users/<name>/password", methods=["POST"])
+def users_password(name):
+    if (r := admin_only()):
+        return r
+    if (err := editable(name)):
+        return back(error=err)
+    pw = request.form.get("password") or ""
+    if len(pw) < MIN_PASSWORD:
+        return back(error=f"Password must have at least {MIN_PASSWORD} characters.")
+    conn, cur = users_db()
+    cur.execute("UPDATE app_users SET password_hash = %s WHERE username = %s", (generate_password_hash(pw), name))
+    conn.commit()
+    cur.close()
+    conn.close()
+    auth_log(f"[USERS] {g.user} changed the password of '{name}'")
+    return back(msg=f"Password of '{name}' changed.")
+
+
+@auth_bp.route("/settings/users/<name>/role", methods=["POST"])
+def users_role(name):
+    if (r := admin_only()):
+        return r
+    if (err := editable(name)):
+        return back(error=err)
+    role = request.form.get("role")
+    if role not in ROLES:
+        return back(error="Unknown role.")
+    if name == g.user and role != "admin":
+        return back(error="You cannot remove your own admin role.")
+    conn, cur = users_db()
+    cur.execute("UPDATE app_users SET role = %s WHERE username = %s", (role, name))
+    conn.commit()
+    cur.close()
+    conn.close()
+    auth_log(f"[USERS] {g.user} set '{name}' role -> {role}")
+    return back(msg=f"'{name}' is now {role}.")
+
+
+@auth_bp.route("/settings/users/<name>/active", methods=["POST"])
+def users_active(name):
+    if (r := admin_only()):
+        return r
+    if (err := editable(name)):
+        return back(error=err)
+    active = request.form.get("active") == "1"
+    if name == g.user and not active:
+        return back(error="You cannot disable yourself.")
+    conn, cur = users_db()
+    cur.execute("UPDATE app_users SET active = %s WHERE username = %s", (active, name))
+    conn.commit()
+    cur.close()
+    conn.close()
+    auth_log(f"[USERS] {g.user} {'enabled' if active else 'disabled'} '{name}'")
+    return back(msg=f"'{name}' {'enabled' if active else 'disabled (cannot log in)'}.")
+
+
+@auth_bp.route("/settings/users/<name>/delete", methods=["POST"])
+def users_delete(name):
+    if (r := admin_only()):
+        return r
+    if (err := editable(name)):
+        return back(error=err)
+    if name == g.user:
+        return back(error="You cannot remove yourself.")
+    conn, cur = users_db()
+    cur.execute("DELETE FROM app_users WHERE username = %s", (name,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    auth_log(f"[USERS] {g.user} removed '{name}'")
+    return back(msg=f"User '{name}' removed.")
