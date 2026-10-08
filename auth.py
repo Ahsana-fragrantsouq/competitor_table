@@ -83,6 +83,9 @@ ALTER TABLE app_users ADD COLUMN IF NOT EXISTS locked_until  TIMESTAMP;         
 """
 ROLES = ("admin", "user")
 NAME_RE = re.compile(r"^[a-z0-9._-]{2,30}$")      # allowed usernames
+# MAIN ADMIN (owner): always an active admin. Other admins cannot change its password, make it a user,
+# disable it or remove it - only the main admin can change its own password. Change the name here if needed.
+MAIN_ADMIN = "ashref"
 MIN_PASSWORD = 8                                  # for new / changed passwords (old ones keep working)
 MAX_TRIES = 5                                     # wrong passwords in a row ...
 LOCK_MINUTES = 15                                 # ... -> username locked for this long
@@ -94,13 +97,22 @@ RUN_PATH = re.compile(r"^/([a-z-]+/(run|status|test|load)"
                       r"|competitor/(load-fi|load-our-links|update-least|match-[a-z]+))$")
 
 
+_table_ready = False          # set to True after the table was created / updated once
+
+
 def users_db():
     url = os.environ.get("FF_DATABASE_URL")
     if not url:
         raise RuntimeError("FF_DATABASE_URL is not set")
     conn = psycopg2.connect(url, sslmode="require")
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(USERS_CREATE)
+    global _table_ready
+    if not _table_ready:
+        # create / update the table ONCE (ALTER TABLE locks the table, so it must not run on every connection)
+        cur.execute(USERS_CREATE)
+        conn.commit()
+        _table_ready = True
+        auth_log("[USERS] Table app_users ready")
     return conn, cur
 
 
@@ -248,7 +260,8 @@ def list_users():
         conn, cur = users_db()
         try:
             cur.execute("SELECT *, GREATEST(0, CEIL(EXTRACT(EPOCH FROM (locked_until - LOCALTIMESTAMP)) / 60))::int AS lock_left FROM app_users ORDER BY username")
-            out += [{**r, "fixed": False, "locked": lock_minutes_left(r)} for r in cur.fetchall()]
+            out += [{**r, "fixed": False, "locked": lock_minutes_left(r), "main": r["username"] == MAIN_ADMIN}
+                    for r in cur.fetchall()]
             conn.commit()
         finally:
             cur.close()
@@ -265,6 +278,7 @@ def init_auth(app):
     if not os.environ.get("SECRET_KEY"):
         auth_log("[AUTH] SECRET_KEY not set -> everyone has to log in again after each deploy")
     import_env_users()                                        # one-time move of old Render USERS
+    auth_log(f"[USERS] Main admin: '{MAIN_ADMIN}' (protected - other admins cannot change it)")
     reset_admin_from_env()                                    # emergency reset (only when RESET_ADMIN is set)
     app.permanent_session_lifetime = timedelta(days=30)      # stay logged in for 30 days
     app.config["SESSION_COOKIE_HTTPONLY"] = True
@@ -405,8 +419,12 @@ def admin_only():
     return None
 
 
-def editable(name):
-    """Error text when this user cannot be changed on the page, else None."""
+def editable(name, action="change"):
+    """Error text when this user cannot be changed on the page, else None.
+    The main admin can only change its own password - nothing else, by nobody."""
+    if name == MAIN_ADMIN and not (action == "password" and g.user == MAIN_ADMIN):
+        auth_log(f"[USERS] Refused: {g.user} tried to {action} the main admin '{MAIN_ADMIN}'")
+        return f"'{name}' is the main admin and cannot be changed by other users."
     if not db_user(name):
         return f"User '{name}' not found."
     return None
@@ -440,7 +458,7 @@ def users_add():
 def users_password(name):
     if (r := admin_only()):
         return r
-    if (err := editable(name)):
+    if (err := editable(name, "password")):
         return back(error=err)
     pw = request.form.get("password") or ""
     if len(pw) < MIN_PASSWORD:
