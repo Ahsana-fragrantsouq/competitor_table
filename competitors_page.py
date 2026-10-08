@@ -443,6 +443,7 @@ HTML = """
  .bar input,.bar select{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;
        padding:13px 14px;font-size:16px}
  .bar input{flex:1;min-width:0}
+ .bar input.brandbox{flex:0 1 220px}        /* Brand filter box on the shop tabs */
  .bar > button[type=submit]{background:#f2d675;color:#1c1b19;border:0;border-radius:12px;padding:0 18px;font-size:16px;font-weight:600;cursor:pointer}
  .prices{display:flex;gap:22px;flex-wrap:wrap;margin-top:8px}
  .plabel{color:var(--muted);font-size:13px}
@@ -545,7 +546,12 @@ HTML = """
   <form class="bar" method="get">
     <input type="hidden" name="tab" value="{{ src.key }}">
     <input type="text" name="q" value="{{ q }}" placeholder="{% if src.kind == 'competitor' %}Filter by code, SKU, name, brand, barcode{% else %}Filter by {% if src.cols.brand %}brand, {% endif %}name, GTIN{% endif %}">
-    {% if src.kind != 'competitor' %}<select name="stock">
+    {% if src.kind != 'competitor' %}
+    {# Brand filter: type or pick a brand (suggestions = brands of this shop / of our products) #}
+    <input type="text" name="brand" class="brandbox" value="{{ brand }}" list="shopbrands" placeholder="Brand"
+           autocomplete="off" onchange="console.log('[BRAND] Picked: ' + this.value)">
+    <datalist id="shopbrands">{% for b in shop_brands %}<option value="{{ b }}">{% endfor %}</datalist>
+    <select name="stock">
       <option value="" {% if not stock %}selected{% endif %}>All</option>
       <option value="In stock" {% if stock=='In stock' %}selected{% endif %}>In stock</option>
       <option value="Out of stock" {% if stock=='Out of stock' %}selected{% endif %}>Out of stock</option>
@@ -559,7 +565,7 @@ HTML = """
     </button>
     {% endif %}
     <button type="submit">Go</button>
-    {% if q or stock or conds %}<a class="clear" href="?tab={{ src.key }}">Clear</a>{% endif %}
+    {% if q or stock or conds or brand %}<a class="clear" href="?tab={{ src.key }}">Clear</a>{% endif %}
 
     {% if src.kind == 'competitor' %}
     {# Airtable-style filter panel: each row = Where <field> <operator> <value>; all rows must match (AND) #}
@@ -583,7 +589,7 @@ HTML = """
     <datalist id="complist">{% for c in competitors %}<option value="{{ c }}">{% endfor %}</datalist>
     {% endif %}
   </form>
-  <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock or conds %} match this filter{% endif %}.</p>
+  <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock or conds or brand %} match this filter{% endif %}.</p>
   {% if src.kind == 'competitor' and rows %}
   <div class="pickallrow"><label class="pickall">Select all on this page <input type="checkbox" id="pickAll" onchange="pickAll(this.checked)"></label></div>
   {# bottom bar (like Amazon "Save all"): appears when 2 or more products are ticked #}
@@ -729,9 +735,9 @@ HTML = """
   {% endfor %}
 
   <div class="pager">
-    <a class="pbtn {% if page <= 1 %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&{{ filt_qs }}&page={{ page-1 }}">Previous</a>
+    <a class="pbtn {% if page <= 1 %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&brand={{ brand|urlencode }}&{{ filt_qs }}&page={{ page-1 }}">Previous</a>
     <span class="gtin">Page {{ page }} of {{ pages }}</span>
-    <a class="pbtn {% if page >= pages %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&{{ filt_qs }}&page={{ page+1 }}">Next</a>
+    <a class="pbtn {% if page >= pages %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&brand={{ brand|urlencode }}&{{ filt_qs }}&page={{ page+1 }}">Next</a>
   </div>
 {% endif %}
 
@@ -936,12 +942,14 @@ def competitors():
     src = SOURCE_BY_KEY.get(tab, SOURCES[1])
     q = request.args.get("q", "").strip()
     stock = request.args.get("stock", "").strip()
+    brand = request.args.get("brand", "").strip()           # Brand filter (shop tabs)
+    shop_brands = []
     conds = read_filters(request.args)                     # Competitor table: Airtable-style conditions
     try:
         page = max(int(request.args.get("page", 1)), 1)
     except ValueError:
         page = 1
-    print(f"[competitors] tab={src['key']} q={q!r} stock={stock!r} filters={conds} page={page}", flush=True)
+    print(f"[competitors] tab={src['key']} q={q!r} brand={brand!r} stock={stock!r} filters={conds} page={page}", flush=True)
     brands = []
 
     conn = db_conn()
@@ -970,6 +978,27 @@ def competitors():
                                    f"WHERE ct.{link_col} = {src['table']}.{c['url']})")
                 else:
                     print(f"[MISSING] competitor_table has no {link_col} yet -> 'Missing item' not shown", flush=True)
+            if src.get("kind") != "competitor":
+                # ---- Brand filter ----
+                # shops WITH a brand column (Samawa, Ounass, Amberiya): exact brand (any capitals)
+                # shops WITHOUT one (French Fragrance, V Perfumes, Al Injaz ...): product name contains the brand
+                if c.get("brand"):
+                    cur.execute(f"SELECT DISTINCT {c['brand']} AS b FROM {src['table']} "
+                                f"WHERE {c['brand']} IS NOT NULL AND {c['brand']} <> '' ORDER BY 1")
+                else:
+                    cur.execute("SELECT DISTINCT brand AS b FROM competitor_table "
+                                "WHERE brand IS NOT NULL AND brand <> '' ORDER BY 1")
+                shop_brands = [r["b"] for r in cur.fetchall()]
+                print(f"[BRAND] {len(shop_brands)} brand suggestions for {src['label']} "
+                      f"({'its brand column' if c.get('brand') else 'our brands - matched in the product name'})", flush=True)
+                if brand:
+                    if c.get("brand"):
+                        where.append(f"LOWER({c['brand']}) = LOWER(%s)")
+                        params.append(brand)
+                    else:
+                        where.append(f"{c['name']} ILIKE %s")
+                        params.append(f"%{brand}%")
+                    print(f"[BRAND] Filter {src['label']} by brand {brand!r}", flush=True)
             if stock == "missing":                          # dropdown option "Missing items"
                 if missing_sql:
                     where.append(missing_sql)
@@ -1027,6 +1056,7 @@ def competitors():
                                   nav_html=render_nav(active, src["key"], counts), nav_css=NAV_CSS,
                                   total=total, page=page, pages=pages, q=q, stock=stock, exists=exists,
                                   brands=brands, competitors=list(COMPETITORS), conds=conds,
+                                  brand=brand, shop_brands=shop_brands,
                                   field_list=list(FILTER_FIELDS.items()), ops=FILTER_OPS,
                                   filt_labels=describe_filters(conds),
                                   filt_qs=urlencode([(k, x) for f, o, v in conds
