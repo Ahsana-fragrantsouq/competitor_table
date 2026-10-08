@@ -443,7 +443,8 @@ HTML = """
  .bar input,.bar select{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;
        padding:13px 14px;font-size:16px}
  .bar input{flex:1;min-width:0}
- .bar input.brandbox{flex:0 1 220px}        /* Brand filter box on the shop tabs */
+ .bar .brandchips{flex:1 1 260px;min-height:50px;background:var(--card)}   /* Brand chips on the shop tabs */
+ .bar .brandchips .chip-add{flex:1;font-size:16px;color:var(--text)}
  .bar > button[type=submit]{background:#f2d675;color:#1c1b19;border:0;border-radius:12px;padding:0 18px;font-size:16px;font-weight:600;cursor:pointer}
  .prices{display:flex;gap:22px;flex-wrap:wrap;margin-top:8px}
  .plabel{color:var(--muted);font-size:13px}
@@ -547,10 +548,39 @@ HTML = """
     <input type="hidden" name="tab" value="{{ src.key }}">
     <input type="text" name="q" value="{{ q }}" placeholder="{% if src.kind == 'competitor' %}Filter by code, SKU, name, brand, barcode{% else %}Filter by {% if src.cols.brand %}brand, {% endif %}name, GTIN{% endif %}">
     {% if src.kind != 'competitor' %}
-    {# Brand filter: type or pick a brand (suggestions = brands of this shop / of our products) #}
-    <input type="text" name="brand" class="brandbox" value="{{ brand }}" list="shopbrands" placeholder="Brand"
-           autocomplete="off" onchange="console.log('[BRAND] Picked: ' + this.value)">
+    {# Brand filter like the competitor table: pick several brands as chips (x removes one).
+         Sent as one value "Armaf||Afnan" in ?brand=. Suggestions = brands of this shop / of our products. #}
+    <span class="chips brandchips" id="brandchips">
+      <input type="hidden" name="brand" id="brandval" value="{{ brand }}">
+      <input type="text" class="chip-add" id="brandadd" list="shopbrands" placeholder="+ add brand" autocomplete="off">
+    </span>
     <datalist id="shopbrands">{% for b in shop_brands %}<option value="{{ b }}">{% endfor %}</datalist>
+    <script>
+      (function () {
+        var wrap = document.getElementById("brandchips"), hidden = document.getElementById("brandval"),
+            add = document.getElementById("brandadd");
+        var list = hidden.value.split("||").filter(Boolean);
+        function draw() {
+          wrap.querySelectorAll(".chip").forEach(function (c) { c.remove(); });
+          list.forEach(function (b, i) {
+            var c = document.createElement("span"); c.className = "chip"; c.textContent = b + " ";
+            var x = document.createElement("b"); x.textContent = "\u00d7"; x.title = "Remove";
+            x.onclick = function () { console.log("[BRAND] Removed: " + b); list.splice(i, 1); draw(); };
+            c.appendChild(x); wrap.insertBefore(c, add);
+          });
+          hidden.value = list.join("||");
+        }
+        function addCurrent() {
+          var b = add.value.trim();
+          if (b && list.indexOf(b) < 0) { list.push(b); console.log("[BRAND] Added: " + b + " -> " + list.join(", ")); }
+          add.value = ""; draw();
+        }
+        add.onchange = addCurrent;                                             // picked from the suggestions
+        add.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); addCurrent(); } };
+        add.form.addEventListener("submit", function () { if (add.value.trim()) addCurrent(); });  // typed, then Go
+        draw();
+      })();
+    </script>
     <select name="stock">
       <option value="" {% if not stock %}selected{% endif %}>All</option>
       <option value="In stock" {% if stock=='In stock' %}selected{% endif %}>In stock</option>
@@ -991,14 +1021,15 @@ def competitors():
                 shop_brands = [r["b"] for r in cur.fetchall()]
                 print(f"[BRAND] {len(shop_brands)} brand suggestions for {src['label']} "
                       f"({'its brand column' if c.get('brand') else 'our brands - matched in the product name'})", flush=True)
-                if brand:
-                    if c.get("brand"):
-                        where.append(f"LOWER({c['brand']}) = LOWER(%s)")
-                        params.append(brand)
-                    else:
-                        where.append(f"{c['name']} ILIKE %s")
-                        params.append(f"%{brand}%")
-                    print(f"[BRAND] Filter {src['label']} by brand {brand!r}", flush=True)
+                picked = [b.strip() for b in brand.split("||") if b.strip()]   # chips "Armaf||Afnan"
+                if picked:
+                    if c.get("brand"):                         # any of the picked brands (exact, any capitals)
+                        where.append(f"LOWER({c['brand']}) = ANY(%s)")
+                        params.append([b.lower() for b in picked])
+                    else:                                      # name contains any of the picked brands
+                        where.append("(" + " OR ".join(f"{c['name']} ILIKE %s" for _ in picked) + ")")
+                        params += [f"%{b}%" for b in picked]
+                    print(f"[BRAND] Filter {src['label']} by {len(picked)} brand(s): {', '.join(picked)}", flush=True)
             if stock == "missing":                          # dropdown option "Missing items"
                 if missing_sql:
                     where.append(missing_sql)
