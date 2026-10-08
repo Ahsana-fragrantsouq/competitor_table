@@ -1235,7 +1235,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
   {% for u in users %}
   <div class="urow2 {{ 'off' if not u.active else '' }}">
     <div class="uname"><b>{{ u.username }}</b>{% if u.username == me %} <span class="you">you</span>{% endif %}
-      <span class="role {{ u.role }}">{{ u.role|capitalize }}</span>{% if not u.active %} <span class="dis">Disabled</span>{% endif %}
+      <span class="role {{ u.role }}">{{ u.role|capitalize }}</span>{% if not u.active %} <span class="dis">Disabled</span>{% endif %}{% if u.locked %} <span class="dis" title="Too many wrong passwords. Change password or wait to unlock.">Locked {{ u.locked }} min</span>{% endif %}
       <div class="umeta">{% if u.fixed %}Set in Render (USERS) - change it there
         {% else %}Added by {{ u.created_by or '-' }}{% if u.created_at %} on {{ u.created_at.strftime('%d %b %Y') }}{% endif %}
         · Last login {{ u.last_login.strftime('%d %b %Y, %H:%M') if u.last_login else 'never' }}{% endif %}</div>
