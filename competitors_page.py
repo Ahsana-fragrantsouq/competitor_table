@@ -1146,6 +1146,14 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
  .brow:hover{background:var(--bg)}
  .blist{margin-bottom:90px}
  .brow .n{color:var(--muted);font-variant-numeric:tabular-nums}
+ /* ---- Daily competitor update box (Automate) ---- */
+ .daily .drow{flex-wrap:wrap}
+ .daily .drow input{font-size:16px;padding:9px 10px}
+ .daily .drow button{padding:9px 16px;font-size:15px}
+ .daily .drow select{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:9px 10px;font-size:15px}
+ .dshops{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--muted);margin:4px 2px}
+ .dshops > span{white-space:nowrap}
+ .okc{color:#8cc58c} .errc{color:#e0806c}
  /* ---- User management ---- */
  .urow{display:flex;gap:8px;flex-wrap:wrap}
  .urow input,.urow select,.inl input{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:10px;
@@ -1176,6 +1184,39 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 {{ nav_html|safe }}
 {% if option and option[0] == 'automate' %}
 <a class="back" href="/settings">&larr; All settings</a>
+{# ---- Daily + weekly competitor update (daily_update.py on the PC, every day at 1 PM) ---- #}
+<div class="dform daily">
+  {% set st = daily.state %}
+  <form method="post" action="/settings/daily" class="drow" onsubmit="console.log('[DAILY] Save: ' + this.per_day.value + ' brands/day, weekly day ' + this.weekly_day.value)">
+    <label for="perday" style="margin:0">Daily update:</label>
+    <input id="perday" name="per_day" type="number" min="1" max="100" step="1" value="{{ daily.per_day }}" style="width:80px">
+    <span class="pct">brands a day &middot; full lists every</span>
+    <select name="weekly_day">{% for d in daily.days_list %}<option value="{{ loop.index0 }}" {% if loop.index0 == daily.weekly_day %}selected{% endif %}>{{ d }}</option>{% endfor %}</select>
+    <button type="submit">Save</button>
+  </form>
+  <p class="hint"><b>Monday-Friday 1 PM</b> (no update on Saturday / Sunday): French Fragrance, Branded Perfume, Essenzi &mdash; price + stock of ALL products of the
+     next {{ daily.per_day }} brands of their own brand list{% if st and st.total_brands %} ({{ st.total_brands }} brands &rarr; one round every
+     {{ (st.total_brands / daily.per_day)|round(0, 'ceil')|int }} working days){% endif %}, then again from A.<br>
+     <b>Every {{ daily.days_list[daily.weekly_day] }}:</b> Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass &mdash; whole
+     product list (all brands), then matching.</p>
+  {% if daily.saved %}<p class="ok">Saved (used from the next run).</p>{% endif %}
+  {% if st and st.date %}
+  <p class="hint"><b>Last daily run {{ st.date }}</b> &middot;
+     {% if st.daily_status == 'done' %}<span class="okc">done{% if st.finished %} at {{ st.finished[11:16] }}{% endif %}</span>
+     {% else %}<span class="errc">{{ st.daily_status or 'running' }}</span>{% endif %}<br>
+     Brands: {{ (st.brands or [])|join(', ') }}</p>
+  {% if st.shops %}<div class="dshops">
+    {% for shop, r in st.shops.items() %}
+    <span>{{ shop }}: {% if r.error %}<span class="errc">failed</span>{% else %}{{ r.checked }} checked, {{ r.changed }} changed{% if r.gone %}, {{ r.gone }} gone{% endif %}{% if r.errors %}, <span class="errc">{{ r.errors }} errors</span>{% endif %}{% endif %}</span>
+    {% endfor %}</div>{% endif %}
+  {% if st.next %}<p class="hint">Next: {{ st.next|join(', ') }}</p>{% endif %}
+  {% else %}<p class="hint">Not run yet - the first daily run starts at brand A.</p>{% endif %}
+  <p class="hint"><b>Last full lists:</b> {% if st and st.weekly_date %}{{ st.weekly_date }}
+     {% elif st and st.weekly_status == 'running' %}<span class="errc">running now</span>{% else %}not run yet{% endif %}
+  {% if st and st.weekly_results %}</p><div class="dshops">
+    {% for shop, r in st.weekly_results.items() %}<span>{{ shop }}: {% if r.error %}<span class="errc">{{ r.error }}</span>{% else %}<span class="okc">done</span>{% endif %}</span>{% endfor %}
+  </div>{% else %}</p>{% endif %}
+</div>
 {# Automate: search brands at the top, all brands with their product count below #}
 <form class="bsearch" method="get" onsubmit="return true">
   <input type="search" name="q" id="bq" value="{{ q }}" placeholder="Search brands" autocomplete="off">
@@ -1395,6 +1436,7 @@ def settings_page(key=None):
     counts, brands, auto_set = {}, [], set()
     rate, rate_info = None, None
     users = []
+    daily = {}
     q = request.args.get("q", "").strip()
     try:
         conn = db_conn()
@@ -1409,6 +1451,8 @@ def settings_page(key=None):
                 print(f"[USERS] User management opened by {g.get('user')} (admin: {is_admin()})", flush=True)
                 users = list_users() if is_admin() else []
             if option and option[0] == "automate":
+                daily = daily_info(cur)                           # Daily competitor update box
+                daily["saved"] = request.args.get("daily_saved") == "1"
                 # Automate: every brand of our products with how many products it has (search = brand contains q)
                 sql = ("SELECT brand, COUNT(*) AS n FROM competitor_table WHERE brand IS NOT NULL AND brand <> ''"
                        + (" AND brand ILIKE %s" if q else "") + " GROUP BY brand ORDER BY LOWER(brand)")
@@ -1431,7 +1475,7 @@ def settings_page(key=None):
                                   nav_css=NAV_CSS, option=option, options=SETTINGS_OPTIONS, brands=brands, q=q, auto_set=auto_set,
                                   rate=rate, rate_info=rate_info, saved=request.args.get("saved") == "1",
                                   error=request.args.get("error"), recalc=request.args.get("recalc"),
-                                  users=users, admin=is_admin(), me=g.get("user"), msg=request.args.get("msg"),
+                                  daily=daily, users=users, admin=is_admin(), me=g.get("user"), msg=request.args.get("msg"),
                                   min_pw=MIN_PASSWORD, title=option[1] if option else "Settings")
 
 
@@ -1444,6 +1488,60 @@ CREATE TABLE IF NOT EXISTS app_settings (
     updated_at  TIMESTAMP DEFAULT NOW()
 );
 """
+
+
+DAILY_DEFAULT = 10      # brands per day when nothing is saved (same as daily_update.py)
+WEEKLY_DEFAULT = 4      # full lists day: 0 = Monday ... 4 = Friday (same as daily_update.py; PC is off at weekends)
+DAYS_LIST = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]          # working days only
+
+
+def daily_info(cur):
+    """Daily / weekly update box: settings + what daily_update.py saved (last run, results, next brands)."""
+    import json
+    def number(key, default, lo, hi):
+        row = get_setting(cur, key)
+        try:
+            v = int(float(row["value"])) if row else default
+        except ValueError:
+            v = default
+        return v if lo <= v <= hi else default
+    row = get_setting(cur, "daily_update")
+    state = json.loads(row["value"]) if row and row["value"] else None
+    info = {"per_day": number("daily_brands_per_day", DAILY_DEFAULT, 1, 100),
+            "weekly_day": number("daily_weekly_day", WEEKLY_DEFAULT, 0, 4), "days_list": DAYS_LIST, "state": state}
+    print(f"[DAILY] Box: {info['per_day']} brands/day, full lists every {DAYS_LIST[info['weekly_day']]}, last daily "
+          f"{(state or {}).get('date', 'never')} ({(state or {}).get('daily_status', '-')}), last full lists "
+          f"{(state or {}).get('weekly_date', 'never')}", flush=True)
+    return info
+
+
+@competitors_bp.route("/settings/daily", methods=["POST"])
+def daily_save():
+    """Save brands per day (1 - 100) and the weekly full-list day (0 = Monday ... 4 = Friday)."""
+    user = g.get("user") or "unknown"
+    try:
+        n = int(float(request.form.get("per_day") or ""))
+        day = int(request.form.get("weekly_day") or WEEKLY_DEFAULT)
+    except ValueError:
+        n, day = 0, -1
+    if not 1 <= n <= 100 or not 0 <= day <= 4:
+        print(f"[DAILY] {user}: per_day={request.form.get('per_day')!r} weekly_day={request.form.get('weekly_day')!r} "
+              f"not valid -> not saved", flush=True)
+        return redirect("/settings/automate")
+    conn = db_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(SETTINGS_CREATE)
+        for key, value in (("daily_brands_per_day", n), ("daily_weekly_day", day)):
+            cur.execute("""INSERT INTO app_settings (key, value, updated_by) VALUES (%s, %s, %s)
+                           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by,
+                                                           updated_at = NOW()""", (key, str(value), user))
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    print(f"[DAILY] {user} saved: {n} brands a day, full lists every {DAYS_LIST[day]}", flush=True)
+    return redirect("/settings/automate?daily_saved=1")
 
 
 def get_setting(cur, key):
