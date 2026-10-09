@@ -3,3 +3,8 @@ __pycache__/
 .env
 venv/
 .venv/
+daily_update.bat
+ff_scraper.py
+ff_chrome_profile/
+daily_update.log
+daily_update_console.txt
