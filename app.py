@@ -17,6 +17,8 @@ Files in this project
   ounass.py           -> downloads ounass.ae women + men fragrance pages into ounass_catalog
   amberiya.py         -> downloads amberiya.ae (Shopify products.json) into amberiya_catalog
   nichegallerie.py    -> downloads nichegallerie.com (WooCommerce product list) into nichegallerie_catalog
+  price_check.py      -> DAILY: re-checks price + stock at the EXISTING competitor links of 50 products
+                         (Render Cron Job "python price_check.py"; never changes our price or Airtable)
 
 Normal order to run things (open these URLs in the browser)
   1. /samawa-catalog/run?secret=XXX        download Samawa website into Postgres (samawa_catalog)
@@ -71,6 +73,7 @@ from alinjaz import alinjaz_bp                     # /alinjaz/test, /alinjaz/run
 from ounass import ounass_bp                       # /ounass/test, /ounass/run, /ounass/status
 from amberiya import amberiya_bp                   # /amberiya/test, /amberiya/run, /amberiya/status
 from nichegallerie import nichegallerie_bp         # /nichegallerie/test, /nichegallerie/run, /nichegallerie/status
+from price_check import price_check_bp             # /price-check/run, /price-check/status (daily price check)
 from auth import auth_bp, init_auth                # /login, /logout + login check on every page
 
 app = Flask(__name__)
@@ -84,6 +87,8 @@ app.register_blueprint(alinjaz_bp)
 app.register_blueprint(ounass_bp)
 app.register_blueprint(amberiya_bp)
 app.register_blueprint(nichegallerie_bp)
+app.register_blueprint(price_check_bp)
+print("[PC] Daily price check routes registered: /price-check/run, /price-check/status", flush=True)
 app.register_blueprint(auth_bp)
 init_auth(app)                                     # users from Render env var USERS (see auth.py)
 

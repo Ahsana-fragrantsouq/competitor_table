@@ -255,6 +255,45 @@ def todo_for(cur, key, ids):
     return rows
 
 
+def old_values(cur, key, rid):
+    """(price shown incl. VAT, stock) saved before for this row - used for the price check and the log."""
+    if key == "ff":
+        cur.execute("SELECT price_inc_tax, stock FROM french_fragrance_catalog WHERE id = %s", (rid,))
+    else:
+        t = DAILY_SHOPS[key]["table"]
+        cur.execute(f"SELECT {key}_price_inc_tax, {key}_stock FROM {t} WHERE id = %s", (rid,))
+    row = cur.fetchone()
+    return (float(row[0]) if row and row[0] is not None else None), (row[1] if row else None)
+
+
+def check_price(key, url, r, old_price):
+    """Price safety check, so a wrongly read price is never saved.
+    French Fragrance writes some prices like '150,00' -> read as 15000 (100x too big). So:
+      new price ~100x the saved one        -> divided by 100 (logged as PRICE-FIX)
+      new price > 5x or < 1/5 of saved one -> NOT saved, the saved price is kept (logged as PRICE-CHECK)
+      no saved price yet and new >= 10,000 -> same 100x check is not possible, but a perfume never costs that
+                                              much on these shops -> divided by 100 when that gives >= 10 AED"""
+    new = r.get("price_inc_tax")
+    if new is None:
+        return r
+    new = float(new)
+    if old_price:
+        ratio = new / old_price
+        if 80 <= ratio <= 120:                                   # exactly the 100x mistake
+            log(f"[{key.upper()}-PRICE-FIX] {url}: read AED {new}, saved AED {old_price} -> using AED {round(new / 100, 2)}")
+            return {**r, "price_inc_tax": round(new / 100, 2),
+                    "price": round(float(r["price"]) / 100, 2) if r.get("price") else None}
+        if ratio > 5 or ratio < 0.2:
+            log(f"[{key.upper()}-PRICE-CHECK] {url}: read AED {new}, saved AED {old_price} - too different, "
+                f"price NOT changed (stock is still updated)")
+            return {**r, "price_inc_tax": None, "price": None}
+    elif new >= 10000 and new / 100 >= 10:
+        log(f"[{key.upper()}-PRICE-FIX] {url}: read AED {new} (no saved price) -> using AED {round(new / 100, 2)}")
+        return {**r, "price_inc_tax": round(new / 100, 2),
+                "price": round(float(r["price"]) / 100, 2) if r.get("price") else None}
+    return r
+
+
 def save_one(cur, key, rid, url, r):
     """New price / stock -> the shop's own table (+ competitor_table for French Fragrance). True = something changed.
     Branded Perfume / Essenzi prices reach competitor_table through update-least at the end."""
@@ -270,7 +309,9 @@ def save_one(cur, key, rid, url, r):
     else:
         cur.execute(f"SELECT {key}_price_inc_tax, {key}_stock FROM {t} WHERE id = %s", (rid,))
         old = cur.fetchone()
-        cur.execute(f"""UPDATE {t} SET {key}_price = %s, {key}_price_inc_tax = %s, {key}_stock = %s, {key}_status = %s,
+        # COALESCE: an empty price (not read / refused by the price check) keeps the saved price
+        cur.execute(f"""UPDATE {t} SET {key}_price = COALESCE(%s, {key}_price),
+                               {key}_price_inc_tax = COALESCE(%s, {key}_price_inc_tax), {key}_stock = %s, {key}_status = %s,
                                {key}_title = COALESCE(%s, {key}_title), {key}_size = COALESCE(%s, {key}_size),
                                checked_at = NOW(), updated_at = NOW() WHERE id = %s""",
                     (r.get("price"), r.get("price_inc_tax"), r["stock"], r["status"], r.get("title"), r.get("size"), rid))
@@ -324,9 +365,11 @@ def run_daily_shop(key, ids, test, get_page):
                 continue
             st["checked"] += 1
             st["gone"] += r["status"] != "ok"             # page gone from the shop -> saved as "Not on site"
+            old_price, old_stock = old_values(cur, key, rid)
+            r = check_price(key, url, r, old_price)          # wrongly read price -> fixed or not saved
             if test:
                 log(f"[TEST] {i}/{len(todo)} {(r.get('title') or url)[:60]} -> AED {r.get('price_inc_tax')} | "
-                    f"{r['stock']}  (not saved)")
+                    f"{r['stock']}  (saved now: AED {old_price} | {old_stock}) (not saved)")
             else:
                 changed = save_one(cur, key, rid, url, r)
                 conn.commit()                            # saved one by one: a stop never loses checked products
