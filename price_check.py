@@ -59,7 +59,7 @@ from urllib.parse import urlparse, parse_qs
 
 import requests
 import psycopg2
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 
 from branded_perfume import bp_parse          # CS-Cart page reader (French Fragrance / Branded Perfume / Essenzi)
 import alinjaz                                # aj_item() + AJ_API (WooCommerce)
@@ -648,9 +648,11 @@ def pc_worker(limit, dry_run, product):
 def pc_run_route():
     """/price-check/run?secret=XXX&dry=1&limit=3&product=recXXX  (dry=1 -> nothing saved)"""
     secret = os.environ.get("RUN_SECRET", "")
-    if secret and request.args.get("secret") != secret:
-        log("[PC-RUN] Unauthorized attempt")
+    logged_in = g.get("user")                       # logged in on the site (auth.py) -> no secret needed
+    if secret and not logged_in and request.args.get("secret") != secret:
+        log("[PC-RUN] Unauthorized attempt (not logged in and wrong / missing secret)")
         return jsonify({"error": "unauthorized"}), 401
+    log(f"[PC-RUN] Allowed: {'user ' + logged_in if logged_in else 'run secret'}")
     try:
         limit = max(1, min(int(request.args.get("limit", PC_LIMIT)), 500))
     except ValueError:
