@@ -28,8 +28,13 @@ Tables created on the first LIVE run (dry run creates nothing):
   price_check_progress   one row per product: when it was last checked -> rotation / resume
   price_check_log        one row per link checked: status, old -> new price / stock, error (kept 90 days)
 
+DAILY TIME: set in THIS file -> AUTO_RUN_TIME_IST below (India time, 24-hour). No Render Cron Job needed.
+  The web service checks the clock every minute and starts the run once a day at that time.
+  If the service was restarted / deployed after that time, it runs as soon as it is back (once per day).
+
 Run it:
-  Render Cron Job :  python price_check.py                      (daily, 50 products)
+  Automatic       :  every day at AUTO_RUN_TIME_IST (inside the web service)
+  By hand         :  python price_check.py                      (50 products)
   Test (no writes):  python price_check.py --dry-run --limit 3
   One product    :  python price_check.py --product recXXXX
   In the browser :  /price-check/run?secret=XXX&dry=1&limit=3   (also &product=recXXX)
@@ -49,6 +54,7 @@ import argparse
 import threading
 import traceback
 from decimal import Decimal, ROUND_HALF_UP
+from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, parse_qs
 
 import requests
@@ -60,6 +66,14 @@ import alinjaz                                # aj_item() + AJ_API (WooCommerce)
 import nichegallerie                          # ng_item() + NG_API + NG_CURRENCY (WooCommerce, AED)
 
 price_check_bp = Blueprint("price_check", __name__)
+
+# ================================================================ DAILY TIME  <- change here
+AUTO_RUN_TIME_IST = "17:00"       # India time, 24-hour: "17:00" = 5:00 PM, "08:30" = 8:30 AM, "21:00" = 9:00 PM
+AUTO_RUN_ENABLED = False          # True = run automatically every day. Keep False until the dry run test is OK
+
+AUTO_RUN_DAYS = [0, 1, 2, 3, 4, 5, 6]   # 0 = Monday ... 6 = Sunday. Monday-Friday only: [0, 1, 2, 3, 4]
+# ================================================================
+IST = timezone(timedelta(hours=5, minutes=30))
 
 PC_LIMIT = int(os.environ.get("PRICE_CHECK_LIMIT", "50"))
 PC_DELAY = float(os.environ.get("PRICE_CHECK_DELAY", "1.5"))
@@ -672,12 +686,75 @@ def pc_status_route():
     return jsonify({"running": pc_state["running"], "last": pc_state["last"], "saved_runs": runs})
 
 
-# ---------------------------------------------------------------- Render Cron Job / command line
+# ---------------------------------------------------------------- daily timer inside the web service
+CLAIM_SQL = """
+CREATE TABLE IF NOT EXISTS app_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT,
+    updated_by  TEXT,
+    updated_at  TIMESTAMP DEFAULT NOW()
+);
+INSERT INTO app_settings (key, value, updated_by) VALUES ('price_check_last_day', %(day)s, 'timer')
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = 'timer', updated_at = NOW()
+WHERE app_settings.value IS DISTINCT FROM EXCLUDED.value
+RETURNING key;
+"""
+
+
+def claim_today(day):
+    """Mark today's automatic run as taken. True only for the FIRST caller of the day
+    (several gunicorn workers / a restart can never start it twice)."""
+    conn = pc_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(CLAIM_SQL, {"day": day})
+        got = cur.fetchone() is not None
+        conn.commit()
+        return got
+    finally:
+        cur.close()
+        conn.close()
+
+
+def timer_loop():
+    hh, mm = (int(x) for x in AUTO_RUN_TIME_IST.split(":"))
+    log(f"[PC-TIMER] Started: daily price check at {AUTO_RUN_TIME_IST} IST on days {AUTO_RUN_DAYS} (0 = Monday)")
+    while True:
+        try:
+            now = datetime.now(IST)
+            due = now.weekday() in AUTO_RUN_DAYS and (now.hour, now.minute) >= (hh, mm)
+            if due and pc_lock.acquire(blocking=False):
+                try:
+                    day = now.strftime("%Y-%m-%d")
+                    if claim_today(day):
+                        log(f"[PC-TIMER] {now:%Y-%m-%d %H:%M} IST -> starting today's price check")
+                        pc_state["running"] = True
+                        pc_run(PC_LIMIT, False, None, trigger="timer")
+                    # else: already done today (by this or another worker) -> wait for tomorrow
+                finally:
+                    pc_state["running"] = False
+                    pc_lock.release()
+        except Exception as ex:
+            log(f"[PC-TIMER] Error (will try again in 1 minute): {ex}")
+        time.sleep(60)
+
+
+@price_check_bp.record_once
+def start_timer(state):
+    """Runs once when app.py registers this blueprint -> starts the daily timer in the web service only
+    (python price_check.py by hand does NOT start it)."""
+    if not AUTO_RUN_ENABLED:
+        log("[PC-TIMER] AUTO_RUN_ENABLED = False -> no automatic daily run")
+        return
+    threading.Thread(target=timer_loop, daemon=True, name="price-check-timer").start()
+
+
+# ---------------------------------------------------------------- command line (by hand)
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Daily competitor price check")
     ap.add_argument("--dry-run", action="store_true", help="read pages and print, save nothing")
     ap.add_argument("--limit", type=int, default=PC_LIMIT, help="number of products (default 50)")
     ap.add_argument("--product", default="", help="check one product (fi_record_id, e.g. recXXXX)")
     a = ap.parse_args()
-    result = pc_run(a.limit, a.dry_run, a.product.strip() or None, trigger="cron" if os.environ.get("RENDER") else "manual")
+    result = pc_run(a.limit, a.dry_run, a.product.strip() or None, trigger="manual")
     raise SystemExit(0 if result["status"] in ("done", "busy") else 1)
