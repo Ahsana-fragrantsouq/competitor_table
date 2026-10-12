@@ -68,7 +68,7 @@ import nichegallerie                          # ng_item() + NG_API + NG_CURRENCY
 price_check_bp = Blueprint("price_check", __name__)
 
 # ================================================================ DAILY TIME  <- change here
-AUTO_RUN_TIME_IST = "17:00"       # India time, 24-hour: "17:00" = 5:00 PM, "08:30" = 8:30 AM, "21:00" = 9:00 PM
+AUTO_RUN_TIME_IST = "17:30"       # India time, 24-hour: "17:00" = 5:00 PM, "08:30" = 8:30 AM, "21:00" = 9:00 PM
 AUTO_RUN_ENABLED = False          # True = run automatically every day. Keep False until the dry run test is OK
 
 AUTO_RUN_DAYS = [0, 1, 2, 3, 4, 5, 6]   # 0 = Monday ... 6 = Sunday. Monday-Friday only: [0, 1, 2, 3, 4]
@@ -231,9 +231,14 @@ def read_shopify(session, url, size_hint):
     u = urlparse(url)
     handle = u.path.rstrip("/").split("/products/")[-1]
     vid = parse_qs(u.query).get("variant", [None])[0]
-    r, st, err = pc_get(session, f"{u.scheme}://{u.netloc}/products/{handle}.js")
+    # Shopify answers stock for the VISITOR'S country. Render is in the USA -> products not sold to the USA
+    # show "available": false. So we ask for the UAE store explicitly (cookie + ?country=AE).
+    session.cookies.set("localization", "AE", domain=u.netloc)
+    session.cookies.set("cart_currency", "AED", domain=u.netloc)
+    r, st, err = pc_get(session, f"{u.scheme}://{u.netloc}/products/{handle}.js", params={"country": "AE"})
     if st != "ok":
         return fail(st, err)
+    log(f"      [PC-SHOPIFY] answer from {r.url[:110]}")
     try:
         p = r.json()
     except ValueError:
@@ -256,6 +261,9 @@ def read_shopify(session, url, size_hint):
     price = round(int(v["price"]) / 100, 2)               # Shopify .js price is in fils / cents
     if v.get("available") is None:
         return fail("no_stock", "variant has no 'available' value")
+    if not v["available"] and p.get("available") is not False and len(variants) == 1:
+        # product says available but its only size says not -> answers don't agree, don't trust it
+        return fail("unclear_stock", "Shopify answer is not consistent (product vs variant stock)")
     return {"status": "ok", "price": price, "price_ex": round(price / 1.05, 2), "stock": bool(v["available"])}
 
 
