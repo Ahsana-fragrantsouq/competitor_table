@@ -2,3 +2,4 @@ flask
 requests
 gunicorn
 psycopg2-binary
+curl_cffi

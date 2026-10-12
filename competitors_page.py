@@ -1184,7 +1184,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 {{ nav_html|safe }}
 {% if option and option[0] == 'automate' %}
 <a class="back" href="/settings">&larr; All settings</a>
-{# ---- Daily + weekly competitor update (daily_update.py on the PC, every day at 1 PM) ---- #}
+{# ---- Daily + weekly competitor update (daily_update.py on the PC, Monday-Friday at 11:30 AM) ---- #}
 <div class="dform daily">
   {% set st = daily.state %}
   <form method="post" action="/settings/daily" class="drow" onsubmit="console.log('[DAILY] Save: ' + this.per_day.value + ' brands/day, weekly day ' + this.weekly_day.value)">
@@ -1194,7 +1194,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
     <select name="weekly_day">{% for d in daily.days_list %}<option value="{{ loop.index0 }}" {% if loop.index0 == daily.weekly_day %}selected{% endif %}>{{ d }}</option>{% endfor %}</select>
     <button type="submit">Save</button>
   </form>
-  <p class="hint"><b>Monday-Friday 1 PM</b> (no update on Saturday / Sunday): French Fragrance, Branded Perfume, Essenzi &mdash; price + stock of ALL products of the
+  <p class="hint"><b>Monday-Friday 11:30 AM</b> (no update on Saturday / Sunday): French Fragrance, Branded Perfume, Essenzi &mdash; price + stock of ALL products of the
      next {{ daily.per_day }} brands of their own brand list{% if st and st.total_brands %} ({{ st.total_brands }} brands &rarr; one round every
      {{ (st.total_brands / daily.per_day)|round(0, 'ceil')|int }} working days){% endif %}, then again from A.<br>
      <b>Every {{ daily.days_list[daily.weekly_day] }}:</b> Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass &mdash; whole

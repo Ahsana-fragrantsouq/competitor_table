@@ -59,6 +59,12 @@ from urllib.parse import urlparse, parse_qs
 
 import requests
 import psycopg2
+try:
+    # free Python library that sends requests exactly like Chrome (same "fingerprint"), so Cloudflare / Ounass
+    # treat Render like a normal browser more often. requirements.txt: curl_cffi
+    from curl_cffi import requests as chrome_requests
+except ImportError:
+    chrome_requests = None
 from flask import Blueprint, request, jsonify, g
 
 from branded_perfume import bp_parse          # CS-Cart page reader (French Fragrance / Branded Perfume / Essenzi)
@@ -68,8 +74,8 @@ import nichegallerie                          # ng_item() + NG_API + NG_CURRENCY
 price_check_bp = Blueprint("price_check", __name__)
 
 # ================================================================ DAILY TIME  <- change here
-AUTO_RUN_TIME_IST = "17:30"       # India time, 24-hour: "17:00" = 5:00 PM, "08:30" = 8:30 AM, "21:00" = 9:00 PM
-AUTO_RUN_ENABLED = False          # True = run automatically every day. Keep False until the dry run test is OK
+AUTO_RUN_TIME_IST = "17:55"       # India time, 24-hour: "17:00" = 5:00 PM, "08:30" = 8:30 AM, "21:00" = 9:00 PM
+AUTO_RUN_ENABLED = True           # True = run automatically every day. False = only by hand / browser link
 
 AUTO_RUN_DAYS = [0, 1, 2, 3, 4, 5, 6]   # 0 = Monday ... 6 = Sunday. Monday-Friday only: [0, 1, 2, 3, 4]
 # ================================================================
@@ -83,6 +89,13 @@ PC_LOCK_KEY = 2026101201          # Postgres lock: only ONE price check at a tim
 PC_RETRY_WAITS = [10, 30]         # waits when a site answers "busy" (429 / 5xx)
 PC_MAX_PRICE = 100000             # a price this high is a wrong number -> not saved
 SUGGEST_DECIMALS = 0              # same rounding as app.py (97.5 -> 98)
+# Shops opened "like Chrome" (curl_cffi): Cloudflare shops + Ounass
+CHROME_SHOPS = {"ff", "bp", "es", "on"}
+# Extra wait between two pages of the SAME shop (seconds). Ounass refuses fast visitors (HTTP 429).
+SHOP_GAP = {"on": 20}
+# Longer retry waits for Ounass when it says "too many" (429)
+SHOP_RETRY_WAITS = {"on": [60, 120]}
+PC_STATE_RETRY = {"waits": None}     # retry waits of the shop being read right now
 PC_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
@@ -193,17 +206,20 @@ def fail(status, error):
     return {"status": status, "error": error}
 
 
-def pc_get(session, url, params=None):
+def pc_get(session, url, params=None, retry_waits=None):
     """GET with retries on 429 / 5xx. Returns (response, status, error).
     status: ok / not_found / blocked / http_error / network_error"""
     last = None
-    for attempt, wait in enumerate([0] + PC_RETRY_WAITS):
+    chrome_like = bool(getattr(session, "impersonate", None))     # curl_cffi session -> sends real Chrome headers itself
+    waits = retry_waits or PC_STATE_RETRY["waits"] or PC_RETRY_WAITS   # Ounass: longer waits (SHOP_RETRY_WAITS)
+    for attempt, wait in enumerate([0] + waits):
         if wait:
-            log(f"   [PC-HTTP] busy ({last}) -> retry {attempt}/{len(PC_RETRY_WAITS)} in {wait}s")
+            log(f"   [PC-HTTP] busy ({last}) -> retry {attempt}/{len(waits)} in {wait}s")
             time.sleep(wait)
         try:
-            r = session.get(url, params=params, headers=PC_HEADERS, timeout=40, allow_redirects=True)
-        except requests.RequestException as ex:
+            r = session.get(url, params=params, headers=None if chrome_like else PC_HEADERS,
+                            timeout=40, allow_redirects=True)
+        except Exception as ex:                                   # requests or curl_cffi network error
             last = f"network: {str(ex)[:120]}"
             continue
         if r.status_code == 429 or r.status_code >= 500:
@@ -529,6 +545,13 @@ def pc_run(limit=PC_LIMIT, dry_run=False, product=None, trigger="manual"):
         conn.commit()
 
         session = requests.Session()
+        chrome_session = None
+        if chrome_requests:
+            chrome_session = chrome_requests.Session(impersonate="chrome")
+            log(f"[PC] Chrome-like requests ON for: {', '.join(LABEL[p] for p in sorted(CHROME_SHOPS))}")
+        else:
+            log("[PC] curl_cffi not installed -> Chrome-like requests OFF (add curl_cffi to requirements.txt)")
+        last_hit = {}                                         # shop -> time of its last page (for SHOP_GAP)
         blocked_in_row = {}
         for n, prod in enumerate(products, 1):
             fid = prod["fi"]
@@ -542,7 +565,14 @@ def pc_run(limit=PC_LIMIT, dry_run=False, product=None, trigger="manual"):
                 if blocked_in_row.get(p, 0) >= PC_BLOCK_SKIP:
                     res = fail("skipped_blocked", f"{LABEL[p]} blocked {PC_BLOCK_SKIP}x in a row in this run")
                 else:
-                    res = read_link(session, ln["kind"], url, parse_size(ln["title"]) or size_hint)
+                    gap = SHOP_GAP.get(p, 0) - (time.time() - last_hit.get(p, 0))
+                    if gap > 0:
+                        log(f"   [PC-WAIT] {LABEL[p]}: waiting {gap:.0f}s (site refuses fast visitors)")
+                        time.sleep(gap)
+                    use = chrome_session if (p in CHROME_SHOPS and chrome_session) else session
+                    PC_STATE_RETRY["waits"] = SHOP_RETRY_WAITS.get(p)
+                    res = read_link(use, ln["kind"], url, parse_size(ln["title"]) or size_hint)
+                    last_hit[p] = time.time()
                     time.sleep(PC_DELAY)
                 if res["status"] == "ok" and res["price"] is not None and not (0 < res["price"] < PC_MAX_PRICE):
                     res = fail("bad_price", f"price {res['price']} is not a real price")
