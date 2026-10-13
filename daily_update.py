@@ -22,6 +22,13 @@ Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass give their WHOLE 
        Al Injaz / Niche Gallerie / Ounass -> aj_scraper.py / ng_scraper.py / on_scraper.py on this PC (Chrome)
        then /competitor/match-samawa, match-am, match-vp, match-aj, match-ng, match-on on Render (one after another)
 
+EVERY WORKING DAY as well - NEW French Fragrance products (FF_NEW_PRODUCTS = True): French Fragrance's sitemap is
+compared with our table; new products are opened and saved, their Branded Perfume + Essenzi links added and opened,
+then matched to our products (/competitor/match-ff). Shop pages show "N new products added".
+
+RUN 2 WITHOUT THE PC: Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass run on Render every working day
+(Render Cron Job "python daily_update.py --full-lists", see RENDER CRON JOB below). The PC does no full lists.
+
 At the end Render recalculates least price + suggested price and updates the automatic brands in Airtable.
 Settings -> Automate shows: brands per day, weekly day, last run, today's brands, results per shop, next brands.
 Progress is saved in table app_settings (key 'daily_update'), so a stopped run continues with the same brands.
@@ -95,14 +102,25 @@ WEEKLY_ONLY_PRICE_STOCK = True
 WEEKLY_UPDATE_COLUMNS = {"price", "price_inc_tax", "stock", "updated_at"}
 WEEKLY_TABLES = {"samawa": "samawa_catalog", "am": "amberiya_catalog", "vp": "vperfumes_catalog",
                  "aj": "alinjaz_catalog", "ng": "nichegallerie_catalog", "on": "ounass_catalog"}
+# RUN 2 WITHOUT THE PC: Render Cron Job "python daily_update.py --full-lists" (Mon-Fri, see RENDER CRON JOB below)
+# downloads ALL 6 shops on Render. If a shop ever blocks Render (Settings -> Automate shows an error for it), move its
+# key to PC_FULL_LISTS: the PC run then downloads it in your Chrome (aj_scraper.py / ng_scraper.py / on_scraper.py).
+RENDER_FULL_LISTS = ["samawa", "am", "vp", "aj", "ng", "on"]   # Run 2 on Render (no PC)
+PC_FULL_LISTS = []                                             # empty = the PC does no full lists at all
+RENDER_STATE_KEY = "full_lists"                     # app_settings key for the Render run (separate from the PC run)
+# RENDER CRON JOB (Render dashboard -> New -> Cron Job, same GitHub repo as the website):
+#   Build command : pip install -r requirements.txt
+#   Command       : python daily_update.py --full-lists
+#   Schedule      : 30 1 * * 1-5      (UTC = 7:00 AM India, Monday-Friday) <- change the time HERE
+#   Environment   : FF_DATABASE_URL, RUN_SECRET (same values as the website service)
 WEEKLY_SHOPS = [
     # (key, label, Render download link or None, PC scraper or None, Render status link, match link)
     ("samawa", "Samawa", "/samawa-catalog/run", None, "/samawa-catalog/status", "/competitor/match-samawa"),
     ("am", "Amberiya", "/amberiya/run", None, "/amberiya/status", "/competitor/match-am"),
     ("vp", "V Perfumes", "/vperfumes/run", None, "/vperfumes/status", "/competitor/match-vp"),
-    ("aj", "Al Injaz", None, "aj_scraper.py", None, "/competitor/match-aj"),
-    ("ng", "Niche Gallerie", None, "ng_scraper.py", None, "/competitor/match-ng"),
-    ("on", "Ounass", None, "on_scraper.py", None, "/competitor/match-on"),
+    ("aj", "Al Injaz", "/alinjaz/run", None, "/alinjaz/status", "/competitor/match-aj"),             # Render
+    ("ng", "Niche Gallerie", "/nichegallerie/run", None, "/nichegallerie/status", "/competitor/match-ng"),   # Render
+    ("on", "Ounass", "/ounass/run", None, "/ounass/status", "/competitor/match-on"),                 # Render
 ]
 
 
@@ -173,7 +191,7 @@ def _write_state(state):
     cur = conn.cursor()
     cur.execute("""INSERT INTO app_settings (key, value, updated_by) VALUES (%s, %s, 'daily_update.py')
                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by,
-                                                   updated_at = NOW()""", (STATE_KEY, json.dumps(state)))
+                                                   updated_at = NOW()""", (STATE_KEY, json.dumps(state)))   # PC or Render key
     conn.commit()
     cur.close()
     conn.close()
@@ -629,12 +647,14 @@ def keep_details(table, label):
         conn.close()
 
 
-def run_weekly(state):
+def run_weekly(state, only=None):
     """Whole product list of the 6 shops, then matching on Render (one shop after another).
     New products are saved (WEEKLY_SAVE_NEW); products already saved only get new price + stock (WEEKLY_ONLY_PRICE_STOCK)."""
-    results = {}
+    results = dict(state.get("weekly_results") or {})   # keeps French Fragrance / BP / Essenzi "new products" info
     env = dict(os.environ)
     for key, label, dl, scraper, status, match in WEEKLY_SHOPS:
+        if only is not None and key not in only:        # Render run: samawa/am/vp/ng | PC run: aj/on
+            continue
         log(f"\n[WEEKLY] ===== {label}: full product list =====")
         table = WEEKLY_TABLES[key]
         before_id = max_row_id(table)                    # everything above this after the download = new products
@@ -676,6 +696,192 @@ def run_weekly(state):
     return results
 
 
+# ---------------------------------------------------------------- NEW French Fragrance products (every working day)
+# French Fragrance's sitemap = the list of ALL its product links. Links not in french_fragrance_catalog yet are NEW:
+#   1. open each new page (same reading as the daily run) -> name, GTIN, price, stock, size -> saved in our table
+#   2. the same product on Branded Perfume + Essenzi = same link on their domain -> rows added + their pages opened
+#   3. /competitor/match-ff on Render -> new French Fragrance products are matched to our products
+# The shop pages then show "N new products added" (French Fragrance, Branded Perfume, Essenzi).
+FF_NEW_PRODUCTS = True          # False = never look for new French Fragrance products
+FF_SITE = "https://frenchfragrance.com"
+FF_CATEGORIES = ["perfumes", "gift-sets"]      # same folders as ff_scraper.py (perfumes + gift sets only)
+FF_NEW_MAX_PER_DAY = 300        # at most this many new products a day (the rest come the next day)
+SISTERS = {"bp": ("branded_perfume_catalog", "brandedperfume.com", "Branded Perfume"),
+           "es": ("essenzi_catalog", "essenzi.com", "Essenzi")}
+
+
+def url_key(u):
+    """Link compared without http(s), www, capitals or the last '/'."""
+    return re.sub(r"^https?://(www\.)?", "", (u or "").strip().lower()).rstrip("/")
+
+
+def ff_sitemap_urls(page):
+    """All French Fragrance product links from sitemap.xml (+ its product sitemaps), English pages, chosen folders."""
+    import bp_scraper
+    todo, seen, urls = [f"{FF_SITE}/sitemap.xml"], set(), set()
+    while todo:
+        sm = todo.pop()
+        if sm in seen:
+            continue
+        seen.add(sm)
+        try:
+            page.goto(sm, wait_until="domcontentloaded", timeout=90000)
+        except Exception as ex:
+            raise ConnectionError(f"sitemap {sm}: {str(ex).splitlines()[0][:100]}")
+        if not bp_scraper.wait_cloudflare(page):
+            raise RuntimeError("Cloudflare block on the sitemap")
+        locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", page.content())
+        if not locs:                                     # Chrome sometimes shows the XML as plain text
+            locs = re.findall(r"https?://frenchfragrance\.com/[^\s<\"']+", page.inner_text("body"))
+        for u in locs:
+            u = u.replace("&amp;", "&")
+            if u.endswith(".xml"):
+                if re.search(r"/products\d*\.xml$", u):  # only product sitemaps (no images / blog / categories)
+                    todo.append(u)
+            else:
+                urls.add(u)
+        log(f"[FF-NEW] Sitemap {sm}: {len(locs)} links (total pages so far {len(urls)})")
+    products = sorted(u for u in urls
+                      if not re.search(r"frenchfragrance\.com/[a-z]{2}/", u)          # no /ar/ copies
+                      and any(f"frenchfragrance.com/{c}/" in u for c in FF_CATEGORIES))
+    log(f"[FF-NEW] {len(products)} products on French Fragrance (folders {', '.join(FF_CATEGORIES)})")
+    return products
+
+
+def ff_gtin(page):
+    """Barcode of the open French Fragrance page: JSON-LD gtin13/gtin..., else a barcode-like SKU, else 'GTIN: ...'."""
+    import bp_scraper
+    try:
+        blocks = page.eval_on_selector_all('script[type="application/ld+json"]', "els => els.map(e => e.textContent)")
+        jd = bp_scraper.find_product_jsonld(blocks) or {}
+        for k in ("gtin13", "gtin", "gtin14", "gtin12", "gtin8"):
+            if jd.get(k):
+                return str(jd[k]).strip()
+        if re.fullmatch(r"\d{8,14}", str(jd.get("sku", ""))):
+            return str(jd["sku"])
+        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", page.content()))
+        m = re.search(r"(?:GTIN|EAN|Barcode)[^0-9]{0,40}(\d{8,14})", text, re.I)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def run_ff_new(get_page, state, test):
+    """Find + save new French Fragrance products (and their Branded Perfume / Essenzi rows). Returns a result dict."""
+    import bp_scraper
+    res = {"new_found": 0, "added": 0, "errors": 0}
+    log("\n[FF-NEW] ===== New French Fragrance products =====")
+    page = get_page(FF_SITE, bp_scraper)
+    urls = ff_sitemap_urls(page)
+    if not urls:
+        log("[FF-NEW] No products in the sitemap - nothing done (check FF_CATEGORIES)")
+        return {**res, "error": "sitemap empty"}
+    conn = db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT product_url FROM french_fragrance_catalog WHERE product_url IS NOT NULL")
+        have = {url_key(u) for (u,) in cur.fetchall()}
+    finally:
+        cur.close()
+        conn.close()
+    new = [u for u in urls if url_key(u) not in have]
+    res["new_found"] = len(new)
+    log(f"[FF-NEW] {len(have)} products already saved -> {len(new)} NEW on French Fragrance")
+    if len(new) > max(500, len(urls) * 0.5):            # safety: links written differently -> do not add thousands
+        log(f"[FF-NEW] STOP: more than half of the sitemap looks new - the links are probably written differently "
+            f"than the saved ones (example new: {new[0]}). Nothing added - send this log to Claude.")
+        return {**res, "error": "too many new - link format?"}
+    if not new:
+        return res
+    todo = new[:3] if test else new[:FF_NEW_MAX_PER_DAY]
+    if len(new) > len(todo) and not test:
+        log(f"[FF-NEW] {len(todo)} today (FF_NEW_MAX_PER_DAY), the other {len(new) - len(todo)} on the next days")
+    before = {"ff": max_row_id("french_fragrance_catalog")}
+    for k, (t, _, _) in SISTERS.items():
+        before[k] = max_row_id(t)
+    added_ids, errors_in_row = [], 0
+    conn = db()
+    cur = conn.cursor()
+    try:
+        for i, url in enumerate(todo, 1):
+            try:
+                r = bp_scraper.scrape_product(page, url)
+                errors_in_row = 0
+            except Exception as ex:
+                res["errors"] += 1
+                errors_in_row += 1
+                log(f"[FF-NEW] {i}/{len(todo)} ERROR {url}: {str(ex).splitlines()[0][:150]}")
+                if errors_in_row >= 10:
+                    log("[FF-NEW] 10 errors in a row - probably blocked. Stopping for today.")
+                    break
+                time.sleep(DELAY)
+                continue
+            if r.get("status") != "ok":
+                log(f"[FF-NEW] {i}/{len(todo)} {url}: page does not open a product - skipped")
+                time.sleep(DELAY)
+                continue
+            gtin = ff_gtin(page)
+            r = check_price("ff", url, r, None)          # same 100x price check as the daily run
+            if test:
+                log(f"[TEST] NEW {i}/{len(todo)} {(r.get('title') or url)[:60]} | GTIN {gtin} | "
+                    f"AED {r.get('price_inc_tax')} | {r['stock']} | {r.get('size')} (not saved)")
+            else:
+                cur.execute("""INSERT INTO french_fragrance_catalog
+                                   (airtable_record_id, product_url, gtin, name, price_inc_tax, price, stock, volume, updated_at)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                               ON CONFLICT (airtable_record_id) DO NOTHING RETURNING id""",
+                            (f"new:{url}", url, gtin, r.get("title"), r.get("price_inc_tax"), r.get("price"),
+                             r["stock"], r.get("size")))
+                row = cur.fetchone()
+                conn.commit()
+                if row:
+                    added_ids.append(row[0])
+                    log(f"[FF-NEW] {i}/{len(todo)} ADDED {(r.get('title') or url)[:60]} | GTIN {gtin or '-'} | "
+                        f"AED {r.get('price_inc_tax') or '-'} | {r['stock']}")
+            time.sleep(DELAY)
+        # Branded Perfume + Essenzi: the same product = the same link on their domain
+        for k, (t, domain, label) in SISTERS.items():
+            if test or not added_ids or not table_exists(cur, t):
+                continue
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s", (t,))
+            cols = {c for (c,) in cur.fetchall()}
+            extra = [c for c in ("ff_url", "gtin", "name", "volume") if c in cols]
+            src = {"ff_url": "f.product_url", "gtin": "f.gtin", "name": "f.name", "volume": "f.volume"}
+            cur.execute(f"""INSERT INTO {t} (ff_id, {k}_url{''.join(', ' + c for c in extra)})
+                            SELECT f.id, REPLACE(f.product_url, 'frenchfragrance.com', %s){''.join(', ' + src[c] for c in extra)}
+                            FROM french_fragrance_catalog f
+                            WHERE f.id = ANY(%s) AND NOT EXISTS (SELECT 1 FROM {t} s WHERE s.ff_id = f.id)""",
+                        (domain, added_ids))
+            log(f"[FF-NEW] {label}: {cur.rowcount} new links added ({domain})")
+            conn.commit()
+    finally:
+        try:
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+    res["added"] = len(added_ids)
+    log(f"[FF-NEW] {len(added_ids)} new French Fragrance products saved")
+    if test or not added_ids:
+        return res
+    # open the new Branded Perfume / Essenzi pages now (price + stock), same as the daily brands
+    for k in SISTERS:
+        try:
+            res[k] = run_daily_shop(k, added_ids, False, get_page)
+        except Exception as ex:
+            log(f"[FF-NEW] {SISTERS[k][2]} pages FAILED: {ex}")
+    # shown on the shop pages: "N new products added" (+ Show = rows above the old highest row number)
+    today = date.today().isoformat()
+    wr = state.setdefault("weekly_results", {})
+    wr["French Fragrance"] = {"new_added": len(added_ids), "new_after_id": before["ff"], "date": today}
+    for k, (t, _, label) in SISTERS.items():
+        wr[label] = {"new_added": len(added_ids), "new_after_id": before[k], "date": today}
+    write_state(state)
+    # match the new French Fragrance products to our products (Render)
+    res["match"] = start_and_wait("/competitor/match-ff", "/samawa/status", "French Fragrance match")
+    return res
+
+
 # ---------------------------------------------------------------- Chrome
 def chrome(pw):
     """Connect to your Chrome on port 9222; start it (same profile as the scrapers) when it is not open."""
@@ -698,6 +904,37 @@ def chrome(pw):
     raise RuntimeError("could not start / connect to Chrome on port 9222")
 
 
+# ---------------------------------------------------------------- RUN 2 on Render (no PC)
+def render_full_lists(args):
+    """Render Cron Job: full lists of RENDER_FULL_LISTS (new products saved, saved products only price + stock),
+    matching, then least / suggested price. Progress in app_settings 'full_lists' (shown on the website)."""
+    global STATE_KEY
+    STATE_KEY = RENDER_STATE_KEY                         # never touches the PC run's progress ('daily_update')
+    log("=" * 70)
+    log(f"[RENDER-RUN] Started {datetime.now():%d %b %Y %H:%M} (server time) - full lists of "
+        f"{', '.join(RENDER_FULL_LISTS)} on Render, no PC")
+    if date.today().weekday() not in WORK_DAYS and not args.force:
+        log(f"[RENDER-RUN] Today is {DAYS[date.today().weekday()]} - nothing on Saturday / Sunday (--force to run)")
+        return
+    conn = db()
+    cur = conn.cursor()
+    state = json.loads(read_setting(cur, STATE_KEY) or "{}")
+    cur.close()
+    conn.close()
+    if state.get("weekly_date") == date.today().isoformat() and not args.force:
+        log("[RENDER-RUN] Full lists already done today (--force to run again)")
+        return
+    state.update({"weekly_status": "running", "weekly_started": datetime.now().isoformat(timespec="minutes")})
+    write_state(state)
+    run_weekly(state, only=RENDER_FULL_LISTS)            # download -> new products saved -> details kept -> match
+    state.update({"weekly_status": "done", "weekly_date": date.today().isoformat(),
+                  "weekly_finished": datetime.now().isoformat(timespec="minutes")})
+    r = render_get("/competitor/update-least")           # least price + suggested price + automatic brands
+    state["recalc"] = f"HTTP {r.status_code}" if r is not None else "not started"
+    write_state(state)
+    log(f"[RENDER-RUN] Finished {datetime.now():%H:%M} | update-least {state['recalc']}")
+
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
@@ -707,7 +944,11 @@ def main():
     ap.add_argument("--no-weekly", action="store_true", help="daily part only")
     ap.add_argument("--brands", default="", help='only these brands, e.g. "Dior,Chanel" (daily position unchanged)')
     ap.add_argument("--shop", default="", choices=[""] + list(DAILY_SHOPS), help="daily part for one shop only")
+    ap.add_argument("--full-lists", action="store_true",
+                    help="RUN 2 ON RENDER (Render Cron Job): full lists of " + ", ".join(RENDER_FULL_LISTS) + " - no PC, no Chrome")
     args = ap.parse_args()
+    if args.full_lists:
+        return render_full_lists(args)
     # where the page readers (bp_scraper.py, es_scraper.py) and PC scrapers are: the folder of this file
     sys.path.insert(0, HERE)                             # bp_scraper.py, es_scraper.py ... next to this file
     log("=" * 70)
@@ -735,26 +976,33 @@ def main():
         log(f"[DAILY] Brands from --brands: {', '.join(brands) or 'none found'} (daily position not changed)")
     else:
         brands = todays_brands(cur, groups, state, per_day, args.force or args.shop or args.test)
-    weekly = (not args.no_weekly and not args.brands and not args.shop and not args.test
+    weekly = (bool(PC_FULL_LISTS) and not args.no_weekly and not args.brands and not args.shop and not args.test
               and weekly_due(cur, state, args.weekly))
     conn.commit()
     cur.close()
     conn.close()
 
     # ---------------- daily part: French Fragrance, Branded Perfume, Essenzi
-    if brands:
+    today = date.today().isoformat()
+    ff_new_due = (FF_NEW_PRODUCTS and not args.brands and not args.shop
+                  and (args.test or args.force or state.get("ff_new_date") != today))   # once a working day
+    log(f"[FF-NEW] New French Fragrance products: {'check today' if ff_new_due else 'already checked today / off'}")
+    ff_new_added = 0
+    results = {}
+    if brands or ff_new_due:
+        ids = []
         # brand names matched without caring about capitals / spaces ("Acqua di Parma" = "Acqua Di Parma")
         by_key = {}
         for g, g_ids in groups.items():
             by_key.setdefault(norm(g), []).extend(g_ids)
-        ids = []
-        for b in brands:
+        for b in (brands or []):
             found = by_key.get(norm(b), [])
             if not found:
                 log(f"[DAILY] Brand '{b}' has no French Fragrance products now - skipped")
             ids += found
-        log(f"[DAILY] Today's {len(brands)} brands ({len(ids)} French Fragrance products): {', '.join(brands)}")
-        if not by_hand:
+        if brands:
+            log(f"[DAILY] Today's {len(brands)} brands ({len(ids)} French Fragrance products): {', '.join(brands)}")
+        if brands and not by_hand:
             state["started"] = datetime.now().isoformat(timespec="minutes")
             write_state(state)
         from playwright.sync_api import sync_playwright
@@ -773,8 +1021,7 @@ def main():
                     holder["opened"].add(site)
                 return holder["page"]
 
-            results = {}
-            for key in ([args.shop] if args.shop else list(DAILY_SHOPS)):
+            for key in (([args.shop] if args.shop else list(DAILY_SHOPS)) if brands else []):
                 try:
                     results[DAILY_SHOPS[key]["label"]] = run_daily_shop(key, ids, args.test, get_page)
                 except Exception as ex:                  # one shop failing must not stop the others
@@ -783,12 +1030,23 @@ def main():
                 if not by_hand:
                     state["shops"] = results
                     write_state(state)                   # progress visible in Settings -> Automate
+            # NEW French Fragrance products (+ Branded Perfume / Essenzi rows), once a working day
+            if ff_new_due:
+                try:
+                    r_new = run_ff_new(get_page, state, args.test)
+                    ff_new_added = r_new.get("added", 0)
+                    log(f"[FF-NEW] Result: {json.dumps(r_new)[:300]}")
+                except Exception as ex:
+                    log(f"[FF-NEW] FAILED: {ex}")
+                if not args.test:
+                    state["ff_new_date"] = today
+                    write_state(state)
             if holder["page"] is not None:
                 try:
                     holder["page"].close()
                 except Exception:
                     pass
-        if not by_hand:
+        if brands and not by_hand:
             nxt, _ = pick_next(sorted(groups, key=str.lower), brands[-1], per_day)
             state.update({"daily_status": "done", "last_brand": brands[-1], "next": nxt,
                           "finished": datetime.now().isoformat(timespec="minutes")})
@@ -805,15 +1063,15 @@ def main():
         state["weekly_status"] = "running"
         state["weekly_started"] = datetime.now().isoformat(timespec="minutes")
         write_state(state)
-        run_weekly(state)                                # each match also recalculates least / suggested prices
+        run_weekly(state, only=PC_FULL_LISTS)            # only shops moved back to the PC (normally none)
         state.update({"weekly_status": "done", "weekly_date": date.today().isoformat(),
                       "weekly_finished": datetime.now().isoformat(timespec="minutes")})
         write_state(state)
 
     # ---------------- least price + suggested price + automatic brands (Branded Perfume / Essenzi prices too)
-    if not brands:
-        log("[RUN] No daily brands today (already done) -> update-least not needed")
-    if brands and not args.test:
+    if not brands and not ff_new_added:
+        log("[RUN] No daily brands / new products today -> update-least not needed")
+    if (brands or ff_new_added) and not args.test:
         r = render_get("/competitor/update-least")
         state["recalc"] = (f"HTTP {r.status_code}" if r is not None else "not started")
         log(f"[RENDER] update-least -> {state['recalc']}")

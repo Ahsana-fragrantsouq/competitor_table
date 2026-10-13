@@ -974,24 +974,32 @@ HTML = """
 
 
 def last_new_products(cur, label):
-    """New products saved for this shop by the last full list (daily_update.py on the PC writes them into
-    app_settings 'daily_update' -> weekly_results -> {label: {new_added, new_after_id, date}}). None = nothing to show."""
+    """New products saved for this shop by the last full list. Two writers: the PC run (app_settings 'daily_update':
+    French Fragrance / Branded Perfume / Essenzi / Al Injaz / Ounass) and the Render Cron Job ('full_lists': Samawa,
+    Amberiya, V Perfumes, Niche Gallerie). Each has weekly_results -> {label: {new_added, new_after_id, date}};
+    the newest one for this shop is shown. None = nothing to show."""
     import json
-    try:
-        cur.execute("SELECT value FROM app_settings WHERE key = 'daily_update'")
-        row = cur.fetchone()
-    except Exception as ex:                                # app_settings not created yet
-        cur.connection.rollback()
-        print(f"[NEW] could not read daily_update state: {ex}", flush=True)
-        return None
-    if not row or not row["value"]:
-        return None
-    res = (json.loads(row["value"]).get("weekly_results") or {}).get(label) or {}
-    if "new_added" not in res:
-        return None
-    info = {"n": int(res["new_added"] or 0), "after_id": int(res.get("new_after_id") or 0), "date": res.get("date")}
-    print(f"[NEW] {label}: {info['n']} new products added on {info['date']}", flush=True)
-    return info
+    best = None
+    for key in ("daily_update", "full_lists"):
+        try:
+            cur.execute("SELECT value FROM app_settings WHERE key = %s", (key,))
+            row = cur.fetchone()
+        except Exception as ex:                            # app_settings not created yet
+            cur.connection.rollback()
+            print(f"[NEW] could not read {key}: {ex}", flush=True)
+            continue
+        if not row or not row["value"]:
+            continue
+        res = (json.loads(row["value"]).get("weekly_results") or {}).get(label) or {}
+        if "new_added" not in res:
+            continue
+        info = {"n": int(res["new_added"] or 0), "after_id": int(res.get("new_after_id") or 0),
+                "date": res.get("date"), "source": key}
+        if best is None or (info["date"] or "") > (best["date"] or ""):
+            best = info
+    if best:
+        print(f"[NEW] {label}: {best['n']} new products added on {best['date']} (from {best['source']})", flush=True)
+    return best
 
 @competitors_bp.route("/competitors")
 def competitors():
@@ -1235,8 +1243,10 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
   <p class="hint"><b>Monday-Friday 11:30 AM</b> (no update on Saturday / Sunday): French Fragrance, Branded Perfume, Essenzi &mdash; price + stock of ALL products of the
      next {{ daily.per_day }} brands of their own brand list{% if st and st.total_brands %} ({{ st.total_brands }} brands &rarr; one round every
      {{ (st.total_brands / daily.per_day)|round(0, 'ceil')|int }} working days){% endif %}, then again from A.<br>
-     <b>Every working day, after that:</b> Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass &mdash; whole
-     product list (all brands): <b>new products are saved</b>, products already saved get the new price + stock, then matching.</p>
+     New French Fragrance products are saved too (+ their Branded Perfume / Essenzi links).<br>
+     {# RUN 2 time: Render Cron Job schedule (UTC) - "30 1 * * 1-5" = 7:00 AM India. Change it in Render, then this text #}
+     <b>Every working day 7:00 AM on Render (no PC):</b> Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass &mdash;
+     whole product list: <b>new products are saved</b>, products already saved get the new price + stock, then matching.</p>
   {% if daily.saved %}<p class="ok">Saved (used from the next run).</p>{% endif %}
   {% if st and st.date %}
   <p class="hint"><b>Last daily run {{ st.date }}</b> &middot;
@@ -1249,7 +1259,15 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
     {% endfor %}</div>{% endif %}
   {% if st.next %}<p class="hint">Next: {{ st.next|join(', ') }}</p>{% endif %}
   {% else %}<p class="hint">Not run yet - the first daily run starts at brand A.</p>{% endif %}
-  <p class="hint"><b>Last full lists:</b> {% if st and st.weekly_date %}{{ st.weekly_date }}
+  {% set rs = daily.render_state %}
+  <p class="hint"><b>Last full lists on Render:</b> {% if rs and rs.weekly_status == 'running' %}<span class="errc">running now</span>
+     {% elif rs and rs.weekly_date %}{{ rs.weekly_date }}{% if rs.weekly_finished %} (done at {{ rs.weekly_finished[11:16] }} server time){% endif %}
+     {% else %}not run yet{% endif %}
+  {% if rs and rs.weekly_results %}</p><div class="dshops">
+    {% for shop, r in rs.weekly_results.items() %}<span>{{ shop }}: {% if r.error %}<span class="errc">{{ r.error }}</span>{% else %}<span class="okc">done</span>{% if r.new_added is defined %} &middot; {{ r.new_added }} new{% endif %}{% endif %}</span>{% endfor %}
+  </div>{% else %}</p>{% endif %}
+  {# old PC full lists (only shown if a shop was moved back to the PC in daily_update.py PC_FULL_LISTS) #}
+  <p class="hint"><b>Last full lists on the PC:</b> {% if st and st.weekly_date %}{{ st.weekly_date }}
      {% elif st and st.weekly_status == 'running' %}<span class="errc">running now</span>{% else %}not run yet{% endif %}
   {% if st and st.weekly_results %}</p><div class="dshops">
     {% for shop, r in st.weekly_results.items() %}<span>{{ shop }}: {% if r.error %}<span class="errc">{{ r.error }}</span>{% else %}<span class="okc">done</span>{% endif %}</span>{% endfor %}
@@ -1547,6 +1565,8 @@ def daily_info(cur):
     state = json.loads(row["value"]) if row and row["value"] else None
     info = {"per_day": number("daily_brands_per_day", DAILY_DEFAULT, 1, 100),
             "weekly_day": number("daily_weekly_day", WEEKLY_DEFAULT, 0, 4), "days_list": DAYS_LIST, "state": state}
+    row = get_setting(cur, "full_lists")                  # RUN 2 on Render (Render Cron Job, daily_update.py --full-lists)
+    info["render_state"] = json.loads(row["value"]) if row and row["value"] else None
     print(f"[DAILY] Box: {info['per_day']} brands/day, full lists every {DAYS_LIST[info['weekly_day']]}, last daily "
           f"{(state or {}).get('date', 'never')} ({(state or {}).get('daily_status', '-')}), last full lists "
           f"{(state or {}).get('weekly_date', 'never')}", flush=True)
