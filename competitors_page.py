@@ -1244,7 +1244,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
      next {{ daily.per_day }} brands of their own brand list{% if st and st.total_brands %} ({{ st.total_brands }} brands &rarr; one round every
      {{ (st.total_brands / daily.per_day)|round(0, 'ceil')|int }} working days){% endif %}, then again from A.<br>
      New French Fragrance products are saved too (+ their Branded Perfume / Essenzi links).<br>
-     {# RUN 2 time: Render Cron Job schedule (UTC) - "30 1 * * 1-5" = 7:00 AM India. Change it in Render, then this text #}
+     {# RUN 2 time: set by RUN2_TIME at the top of daily_update.py (India time). Change it there, then this text #}
      <b>Every working day 7:00 AM on Render (no PC):</b> Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass &mdash;
      whole product list: <b>new products are saved</b>, products already saved get the new price + stock, then matching.</p>
   {% if daily.saved %}<p class="ok">Saved (used from the next run).</p>{% endif %}

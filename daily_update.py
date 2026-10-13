@@ -27,7 +27,7 @@ compared with our table; new products are opened and saved, their Branded Perfum
 then matched to our products (/competitor/match-ff). Shop pages show "N new products added".
 
 RUN 2 WITHOUT THE PC: Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass run on Render every working day
-(Render Cron Job "python daily_update.py --full-lists", see RENDER CRON JOB below). The PC does no full lists.
+at RUN2_TIME (Render Cron Job "python daily_update.py --full-lists", see RENDER CRON JOB below). The PC does no full lists.
 
 At the end Render recalculates least price + suggested price and updates the automatic brands in Airtable.
 Settings -> Automate shows: brands per day, weekly day, last run, today's brands, results per shop, next brands.
@@ -108,10 +108,13 @@ WEEKLY_TABLES = {"samawa": "samawa_catalog", "am": "amberiya_catalog", "vp": "vp
 RENDER_FULL_LISTS = ["samawa", "am", "vp", "aj", "ng", "on"]   # Run 2 on Render (no PC)
 PC_FULL_LISTS = []                                             # empty = the PC does no full lists at all
 RENDER_STATE_KEY = "full_lists"                     # app_settings key for the Render run (separate from the PC run)
-# RENDER CRON JOB (Render dashboard -> New -> Cron Job, same GitHub repo as the website):
+# RUN 2 START TIME (India time, Monday-Friday) - CHANGE IT HERE, then push to GitHub (no Render setting to change):
+RUN2_TIME = "07:00"            # "HH:MM", 24-hour India time. Example: "06:30", "09:00", "14:00"
+# RENDER CRON JOB (Render dashboard -> New -> Cron Job, same GitHub repo as the website) - set ONCE, never changed:
 #   Build command : pip install -r requirements.txt
 #   Command       : python daily_update.py --full-lists
-#   Schedule      : 30 1 * * 1-5      (UTC = 7:00 AM India, Monday-Friday) <- change the time HERE
+#   Schedule      : */15 * * * *      (every 15 minutes: the script itself waits for RUN2_TIME, runs once a day,
+#                                       and exits in a few seconds at all other times)
 #   Environment   : FF_DATABASE_URL, RUN_SECRET (same values as the website service)
 WEEKLY_SHOPS = [
     # (key, label, Render download link or None, PC scraper or None, Render status link, match link)
@@ -910,11 +913,16 @@ def render_full_lists(args):
     matching, then least / suggested price. Progress in app_settings 'full_lists' (shown on the website)."""
     global STATE_KEY
     STATE_KEY = RENDER_STATE_KEY                         # never touches the PC run's progress ('daily_update')
-    log("=" * 70)
-    log(f"[RENDER-RUN] Started {datetime.now():%d %b %Y %H:%M} (server time) - full lists of "
-        f"{', '.join(RENDER_FULL_LISTS)} on Render, no PC")
-    if date.today().weekday() not in WORK_DAYS and not args.force:
-        log(f"[RENDER-RUN] Today is {DAYS[date.today().weekday()]} - nothing on Saturday / Sunday (--force to run)")
+    os.environ["TZ"] = "Asia/Kolkata"                    # Render's clock is UTC -> work in India time
+    if hasattr(time, "tzset"):
+        time.tzset()
+    now = datetime.now()
+    # the cron job starts this every 15 minutes: before RUN2_TIME / weekend / already done today -> exit quietly
+    if now.weekday() not in WORK_DAYS and not args.force:
+        print(f"[RENDER-RUN] {now:%a %H:%M} India - no run on Saturday / Sunday", flush=True)
+        return
+    if now.strftime("%H:%M") < RUN2_TIME and not args.force:
+        print(f"[RENDER-RUN] {now:%H:%M} India - waiting for RUN2_TIME {RUN2_TIME}", flush=True)
         return
     conn = db()
     cur = conn.cursor()
@@ -922,8 +930,16 @@ def render_full_lists(args):
     cur.close()
     conn.close()
     if state.get("weekly_date") == date.today().isoformat() and not args.force:
-        log("[RENDER-RUN] Full lists already done today (--force to run again)")
+        print(f"[RENDER-RUN] {now:%H:%M} India - full lists already done today ({state.get('weekly_finished')})", flush=True)
         return
+    started = state.get("weekly_started") or ""
+    if (state.get("weekly_status") == "running" and started[:10] == date.today().isoformat()
+            and not args.force):
+        print(f"[RENDER-RUN] Still running since {started[11:16]} - not started twice", flush=True)
+        return
+    log("=" * 70)
+    log(f"[RENDER-RUN] Started {now:%d %b %Y %H:%M} India time (RUN2_TIME {RUN2_TIME}) - full lists of "
+        f"{', '.join(RENDER_FULL_LISTS)} on Render, no PC")
     state.update({"weekly_status": "running", "weekly_started": datetime.now().isoformat(timespec="minutes")})
     write_state(state)
     run_weekly(state, only=RENDER_FULL_LISTS)            # download -> new products saved -> details kept -> match
