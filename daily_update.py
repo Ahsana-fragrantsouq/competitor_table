@@ -109,7 +109,7 @@ RENDER_FULL_LISTS = ["samawa", "am", "vp", "aj", "ng", "on"]   # Run 2 on Render
 PC_FULL_LISTS = []                                             # empty = the PC does no full lists at all
 RENDER_STATE_KEY = "full_lists"                     # app_settings key for the Render run (separate from the PC run)
 # RUN 2 START TIME (India time, Monday-Friday) - CHANGE IT HERE, then push to GitHub + deploy:
-RUN2_TIME = "17:35"            # "HH:MM", 24-hour India time. Example: "06:30", "09:00", "14:00"
+RUN2_TIME = "10:30"            # "HH:MM", 24-hour India time. Example: "06:30", "09:00", "14:00"
 # RUN 2 runs INSIDE the website on Render (no cron job, no PC): app.py starts run2_scheduler() below when the
 # website starts; it checks the time every minute and runs the full lists once each working day at RUN2_TIME.
 # By hand (e.g. to test): python daily_update.py --full-lists --force
