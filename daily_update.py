@@ -109,7 +109,7 @@ RENDER_FULL_LISTS = ["samawa", "am", "vp", "aj", "ng", "on"]   # Run 2 on Render
 PC_FULL_LISTS = []                                             # empty = the PC does no full lists at all
 RENDER_STATE_KEY = "full_lists"                     # app_settings key for the Render run (separate from the PC run)
 # RUN 2 START TIME (India time, Monday-Friday) - CHANGE IT HERE, then push to GitHub (no Render setting to change):
-RUN2_TIME = "07:00"            # "HH:MM", 24-hour India time. Example: "06:30", "09:00", "14:00"
+RUN2_TIME = "17:35"            # "HH:MM", 24-hour India time. Example: "06:30", "09:00", "14:00"
 # RENDER CRON JOB (Render dashboard -> New -> Cron Job, same GitHub repo as the website) - set ONCE, never changed:
 #   Build command : pip install -r requirements.txt
 #   Command       : python daily_update.py --full-lists
