@@ -73,7 +73,12 @@ from alinjaz import alinjaz_bp                     # /alinjaz/test, /alinjaz/run
 from ounass import ounass_bp                       # /ounass/test, /ounass/run, /ounass/status
 from amberiya import amberiya_bp                   # /amberiya/test, /amberiya/run, /amberiya/status
 from nichegallerie import nichegallerie_bp         # /nichegallerie/test, /nichegallerie/run, /nichegallerie/status
-from price_check import price_check_bp             # /price-check/run, /price-check/status (daily price check)
+# price_check.py is optional: if the file is not uploaded to GitHub, the app still starts (without /price-check)
+try:
+    from price_check import price_check_bp         # /price-check/run, /price-check/status (daily price check)
+except ImportError as ex:
+    price_check_bp = None
+    print(f"[PC] price_check.py not found ({ex}) -> /price-check routes are switched off", flush=True)
 from auth import auth_bp, init_auth                # /login, /logout + login check on every page
 
 app = Flask(__name__)
@@ -87,8 +92,9 @@ app.register_blueprint(alinjaz_bp)
 app.register_blueprint(ounass_bp)
 app.register_blueprint(amberiya_bp)
 app.register_blueprint(nichegallerie_bp)
-app.register_blueprint(price_check_bp)
-print("[PC] Daily price check routes registered: /price-check/run, /price-check/status", flush=True)
+if price_check_bp is not None:
+    app.register_blueprint(price_check_bp)
+    print("[PC] Daily price check routes registered: /price-check/run, /price-check/status", flush=True)
 app.register_blueprint(auth_bp)
 init_auth(app)                                     # users from Render env var USERS (see auth.py)
 
