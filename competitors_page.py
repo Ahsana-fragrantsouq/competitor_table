@@ -522,6 +522,9 @@ HTML = """
  /* GTIN with "Missing item" under it (shop tabs) */
  .gtinbox{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
  .missing{color:#e0806c;font-size:13px;font-weight:600}
+ /* "N new products added" next to the product count (shop tabs) */
+ .newcount{margin-left:10px;padding:2px 10px;border-radius:12px;background:rgba(108,201,140,.15);color:#6cc98c;font-size:13px;font-weight:600}
+ .newcount a{color:#6cc98c}
  a.link{color:var(--gold)}
  .in{color:var(--green)} .out{color:var(--red)} .gone{color:var(--grey)}
  .date{color:var(--grey);font-size:13px;margin-top:8px}
@@ -588,6 +591,7 @@ HTML = """
       <option value="Not on site" {% if stock=='Not on site' %}selected{% endif %}>Not on site</option>
       {# products not linked to any of our products #}
       <option value="missing" {% if stock=='missing' %}selected{% endif %}>Missing items</option>
+      {% if new_info %}<option value="new" {% if stock=='new' %}selected{% endif %}>New products</option>{% endif %}
     </select>{% endif %}
     {% if src.kind == 'competitor' %}
     <button type="button" class="fbtn {% if conds %}on{% endif %}" onclick="toggleFilter()">
@@ -619,7 +623,9 @@ HTML = """
     <datalist id="complist">{% for c in competitors %}<option value="{{ c }}">{% endfor %}</datalist>
     {% endif %}
   </form>
-  <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock or conds or brand %} match this filter{% endif %}.</p>
+  <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock or conds or brand %} match this filter{% endif %}.
+  {# new products saved by the last full list (daily_update.py) - "Show" lists only them #}
+  {% if new_info %}<span class="newcount">{{ new_info.n }} new {{ 'product' if new_info.n == 1 else 'products' }} added{% if new_info.date %} ({{ new_info.date[8:10] }}-{{ new_info.date[5:7] }}){% endif %}{% if new_info.n and stock != 'new' %} &middot; <a href="?tab={{ src.key }}&stock=new">Show</a>{% endif %}</span>{% endif %}</p>
   {% if src.kind == 'competitor' and rows %}
   <div class="pickallrow"><label class="pickall">Select all on this page <input type="checkbox" id="pickAll" onchange="pickAll(this.checked)"></label></div>
   {# bottom bar (like Amazon "Save all"): appears when 2 or more products are ticked #}
@@ -966,6 +972,27 @@ HTML = """
 """
 
 
+
+def last_new_products(cur, label):
+    """New products saved for this shop by the last full list (daily_update.py on the PC writes them into
+    app_settings 'daily_update' -> weekly_results -> {label: {new_added, new_after_id, date}}). None = nothing to show."""
+    import json
+    try:
+        cur.execute("SELECT value FROM app_settings WHERE key = 'daily_update'")
+        row = cur.fetchone()
+    except Exception as ex:                                # app_settings not created yet
+        cur.connection.rollback()
+        print(f"[NEW] could not read daily_update state: {ex}", flush=True)
+        return None
+    if not row or not row["value"]:
+        return None
+    res = (json.loads(row["value"]).get("weekly_results") or {}).get(label) or {}
+    if "new_added" not in res:
+        return None
+    info = {"n": int(res["new_added"] or 0), "after_id": int(res.get("new_after_id") or 0), "date": res.get("date")}
+    print(f"[NEW] {label}: {info['n']} new products added on {info['date']}", flush=True)
+    return info
+
 @competitors_bp.route("/competitors")
 def competitors():
     tab = request.args.get("tab", "competitor")
@@ -985,8 +1012,11 @@ def competitors():
     conn = db_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     rows, total, pages, exists = [], 0, 1, False
+    new_info = None                                        # "N new products added" for this shop (last full list)
     try:
         counts = tab_counts(cur)
+        if src.get("kind") != "competitor":
+            new_info = last_new_products(cur, src["label"])
         if src["table"]:
             exists = table_exists(cur, src["table"])
         if exists:
@@ -1030,7 +1060,13 @@ def competitors():
                         where.append("(" + " OR ".join(f"{c['name']} ILIKE %s" for _ in picked) + ")")
                         params += [f"%{b}%" for b in picked]
                     print(f"[BRAND] Filter {src['label']} by {len(picked)} brand(s): {', '.join(picked)}", flush=True)
-            if stock == "missing":                          # dropdown option "Missing items"
+            if stock == "new":                              # "N new products added" -> Show / dropdown "New products"
+                if new_info:
+                    where.append(f"{src['table']}.id > %s")
+                    params.append(new_info["after_id"])
+                    print(f"[NEW] Showing the {new_info['n']} new products of {src['label']} "
+                          f"(added {new_info['date']}, row number above {new_info['after_id']})", flush=True)
+            elif stock == "missing":                        # dropdown option "Missing items"
                 if missing_sql:
                     where.append(missing_sql)
                     print(f"[MISSING] Showing only missing items of {src['label']}", flush=True)
@@ -1087,7 +1123,7 @@ def competitors():
                                   nav_html=render_nav(active, src["key"], counts), nav_css=NAV_CSS,
                                   total=total, page=page, pages=pages, q=q, stock=stock, exists=exists,
                                   brands=brands, competitors=list(COMPETITORS), conds=conds,
-                                  brand=brand, shop_brands=shop_brands,
+                                  brand=brand, shop_brands=shop_brands, new_info=new_info,
                                   field_list=list(FILTER_FIELDS.items()), ops=FILTER_OPS,
                                   filt_labels=describe_filters(conds),
                                   filt_qs=urlencode([(k, x) for f, o, v in conds
@@ -1184,21 +1220,23 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 {{ nav_html|safe }}
 {% if option and option[0] == 'automate' %}
 <a class="back" href="/settings">&larr; All settings</a>
-{# ---- Daily + weekly competitor update (daily_update.py on the PC, Monday-Friday at 11:30 AM) ---- #}
+{# ---- Daily competitor update + full lists every working day (daily_update.py on the PC, Monday-Friday 11:30 AM) ---- #}
 <div class="dform daily">
   {% set st = daily.state %}
   <form method="post" action="/settings/daily" class="drow" onsubmit="console.log('[DAILY] Save: ' + this.per_day.value + ' brands/day, weekly day ' + this.weekly_day.value)">
     <label for="perday" style="margin:0">Daily update:</label>
     <input id="perday" name="per_day" type="number" min="1" max="100" step="1" value="{{ daily.per_day }}" style="width:80px">
-    <span class="pct">brands a day &middot; full lists every</span>
-    <select name="weekly_day">{% for d in daily.days_list %}<option value="{{ loop.index0 }}" {% if loop.index0 == daily.weekly_day %}selected{% endif %}>{{ d }}</option>{% endfor %}</select>
+    <span class="pct">brands a day</span>
+    <input type="hidden" name="weekly_day" value="{{ daily.weekly_day }}">
     <button type="submit">Save</button>
   </form>
+  {# START TIME: "11:30 AM" here is only text. The real start time is in Windows Task Scheduler on the PC:
+     schtasks /Change /TN "Competitor daily update" /ST 11:30   (change 11:30, then change this text too) #}
   <p class="hint"><b>Monday-Friday 11:30 AM</b> (no update on Saturday / Sunday): French Fragrance, Branded Perfume, Essenzi &mdash; price + stock of ALL products of the
      next {{ daily.per_day }} brands of their own brand list{% if st and st.total_brands %} ({{ st.total_brands }} brands &rarr; one round every
      {{ (st.total_brands / daily.per_day)|round(0, 'ceil')|int }} working days){% endif %}, then again from A.<br>
-     <b>Every {{ daily.days_list[daily.weekly_day] }}:</b> Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass &mdash; whole
-     product list (all brands), then matching.</p>
+     <b>Every working day, after that:</b> Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass &mdash; whole
+     product list (all brands): <b>new products are saved</b>, products already saved get the new price + stock, then matching.</p>
   {% if daily.saved %}<p class="ok">Saved (used from the next run).</p>{% endif %}
   {% if st and st.date %}
   <p class="hint"><b>Last daily run {{ st.date }}</b> &middot;
