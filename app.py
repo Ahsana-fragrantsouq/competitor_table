@@ -98,6 +98,20 @@ if price_check_bp is not None:
 app.register_blueprint(auth_bp)
 init_auth(app)                                     # users from Render env var USERS (see auth.py)
 
+# RUN 2 (full lists of Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass) runs INSIDE this website:
+# one background thread checks the time every minute and runs it once each working day at RUN2_TIME
+# (the time is set at the top of daily_update.py). Render env var RUN2_SCHEDULER=off switches it off.
+if os.environ.get("RUN2_SCHEDULER", "on").lower() != "off":
+    try:
+        import daily_update
+        threading.Thread(target=daily_update.run2_scheduler, daemon=True, name="run2-scheduler").start()
+        print(f"[RUN2] Background scheduler started: full lists every working day at {daily_update.RUN2_TIME} India time",
+              flush=True)
+    except Exception as ex:                        # the website must start even if daily_update.py is missing
+        print(f"[RUN2] Scheduler NOT started: {ex}", flush=True)
+else:
+    print("[RUN2] Scheduler switched off (RUN2_SCHEDULER=off)", flush=True)
+
 
 # ---------------------------------------------------------------- config
 # Settings. Values in os.environ come from Render -> Environment; the rest are fixed IDs / names.

@@ -1243,7 +1243,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
   <p class="hint"><b>Monday-Friday 11:30 AM</b> (no update on Saturday / Sunday): French Fragrance, Branded Perfume, Essenzi &mdash; price + stock of ALL products of the
      next {{ daily.per_day }} brands of their own brand list{% if st and st.total_brands %} ({{ st.total_brands }} brands &rarr; one round every
      {{ (st.total_brands / daily.per_day)|round(0, 'ceil')|int }} working days){% endif %}, then again from A.<br>
-     New French Fragrance products are saved too (+ their Branded Perfume / Essenzi links).<br>
+     New French Fragrance products are saved too (+ their Branded Perfume / Essenzi links). <i>(on the PC)</i><br>
      {# RUN 2 time: set by RUN2_TIME at the top of daily_update.py (India time). Change it there, then this text #}
      <b>Every working day 7:00 AM on Render (no PC):</b> Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass &mdash;
      whole product list: <b>new products are saved</b>, products already saved get the new price + stock, then matching.</p>
@@ -1266,12 +1266,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
   {% if rs and rs.weekly_results %}</p><div class="dshops">
     {% for shop, r in rs.weekly_results.items() %}<span>{{ shop }}: {% if r.error %}<span class="errc">{{ r.error }}</span>{% else %}<span class="okc">done</span>{% if r.new_added is defined %} &middot; {{ r.new_added }} new{% endif %}{% endif %}</span>{% endfor %}
   </div>{% else %}</p>{% endif %}
-  {# old PC full lists (only shown if a shop was moved back to the PC in daily_update.py PC_FULL_LISTS) #}
-  <p class="hint"><b>Last full lists on the PC:</b> {% if st and st.weekly_date %}{{ st.weekly_date }}
-     {% elif st and st.weekly_status == 'running' %}<span class="errc">running now</span>{% else %}not run yet{% endif %}
-  {% if st and st.weekly_results %}</p><div class="dshops">
-    {% for shop, r in st.weekly_results.items() %}<span>{{ shop }}: {% if r.error %}<span class="errc">{{ r.error }}</span>{% else %}<span class="okc">done</span>{% endif %}</span>{% endfor %}
-  </div>{% else %}</p>{% endif %}
+  {# the PC run does only French Fragrance / Branded Perfume / Essenzi (above); the 6 other shops run on Render (above) #}
 </div>
 {# Automate: search brands at the top, all brands with their product count below #}
 <form class="bsearch" method="get" onsubmit="return true">
