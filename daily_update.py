@@ -26,8 +26,9 @@ EVERY WORKING DAY as well - NEW French Fragrance products (FF_NEW_PRODUCTS = Tru
 compared with our table; new products are opened and saved, their Branded Perfume + Essenzi links added and opened,
 then matched to our products (/competitor/match-ff). Shop pages show "N new products added".
 
-RUN 2 WITHOUT THE PC: Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass run on Render every working day
-at RUN2_TIME, inside the website (app.py starts run2_scheduler(); no cron job). The PC does no full lists.
+RUN 2 WITHOUT THE PC: ONE shop per day (Samawa, Ounass, V Perfumes, Amberiya, Al Injaz, Niche Gallerie - RUN2_ORDER),
+every day incl. weekend at RUN2_TIME, inside the website on Render (app.py starts run2_scheduler(); no cron job).
+After the 6 shops the next round starts 2 weeks after the round began (RUN2_ROUND_DAYS). The PC does no full lists.
 
 At the end Render recalculates least price + suggested price and updates the automatic brands in Airtable.
 Settings -> Automate shows: brands per day, weekly day, last run, today's brands, results per shop, next brands.
@@ -108,8 +109,14 @@ WEEKLY_TABLES = {"samawa": "samawa_catalog", "am": "amberiya_catalog", "vp": "vp
 RENDER_FULL_LISTS = ["samawa", "am", "vp", "aj", "ng", "on"]   # Run 2 on Render (no PC)
 PC_FULL_LISTS = []                                             # empty = the PC does no full lists at all
 RENDER_STATE_KEY = "full_lists"                     # app_settings key for the Render run (separate from the PC run)
-# RUN 2 START TIME (India time, Monday-Friday) - CHANGE IT HERE, then push to GitHub + deploy:
-RUN2_TIME = "10:30"            # "HH:MM", 24-hour India time. Example: "06:30", "09:00", "14:00"
+# RUN 2 START TIME (India time, EVERY day incl. Saturday / Sunday) - CHANGE IT HERE, then push to GitHub + deploy:
+RUN2_TIME = "07:00"            # "HH:MM", 24-hour India time. Example: "06:30", "09:00", "14:00"
+# RUN 2 = ONE SHOP PER DAY in this order (day 1 Samawa, day 2 Ounass, day 3 V Perfumes ...). After the 6th shop the
+# round is complete; the next round starts RUN2_ROUND_DAYS after the start of the last one (6 days of updates, then
+# a pause) -> every shop is updated once every 2 weeks.
+RUN2_ORDER = ["samawa", "on", "vp", "am", "aj", "ng"]
+RUN2_ROUND_DAYS = 14           # a new round every 14 days (7 = every week)
+RUN2_DAYS = range(0, 7)        # 0 = Monday ... 6 = Sunday: Render runs every day (no PC needed)
 # RUN 2 runs INSIDE the website on Render (no cron job, no PC): app.py starts run2_scheduler() below when the
 # website starts; it checks the time every minute and runs the full lists once each working day at RUN2_TIME.
 # By hand (e.g. to test): python daily_update.py --full-lists --force
@@ -910,18 +917,34 @@ def india_now():
     return datetime.utcnow() + timedelta(hours=5, minutes=30)
 
 
+def run2_plan(state, today):
+    """Which shop today? Returns (shop key or None, message). Round = RUN2_ORDER one shop a day; next round starts
+    RUN2_ROUND_DAYS after the start of the previous round."""
+    idx = state.get("next_index", 0)
+    start = state.get("round_start")
+    if start and idx >= len(RUN2_ORDER):                          # round complete -> wait for the next round
+        next_round = date.fromisoformat(start) + timedelta(days=RUN2_ROUND_DAYS)
+        if date.fromisoformat(today) < next_round:
+            return None, f"round of {start} complete - next round starts {next_round.isoformat()}"
+        start, idx = None, 0
+    if not start:                                                  # first run ever / new round
+        state.update({"round_start": today, "next_index": 0})
+        idx = 0
+        log(f"[RUN2] New round starts today {today}: {' -> '.join(RUN2_ORDER)} (one shop a day)")
+    return RUN2_ORDER[idx], f"shop {idx + 1} of {len(RUN2_ORDER)} in the round of {state['round_start']}"
+
+
 def render_full_lists(args, quiet=False, restart_stopped=False):
-    """RUN 2 on Render: full lists of RENDER_FULL_LISTS (new products saved, saved products only price + stock),
-    matching, then least / suggested price. Progress in app_settings 'full_lists' (shown on the website).
+    """RUN 2 on Render: ONE shop per day (RUN2_ORDER) - full list of that shop (new products saved, saved products
+    only price + stock), matching, then least / suggested price. Progress in app_settings 'full_lists'.
     Returns True when it ran. quiet=True (scheduler): no 'waiting' lines every minute."""
     global STATE_KEY
     STATE_KEY = RENDER_STATE_KEY                         # never touches the PC run's progress ('daily_update')
     now = india_now()
     today = now.date().isoformat()
-    # before RUN2_TIME / weekend / already done today -> nothing to do
-    if now.weekday() not in WORK_DAYS and not args.force:
+    if now.weekday() not in RUN2_DAYS and not args.force:
         if not quiet:
-            log(f"[RUN2] {now:%a %H:%M} India - no run on Saturday / Sunday (--force to run)")
+            log(f"[RUN2] {now:%a %H:%M} India - Run 2 is off on this day (RUN2_DAYS)")
         return False
     if now.strftime("%H:%M") < RUN2_TIME and not args.force:
         if not quiet:
@@ -934,36 +957,53 @@ def render_full_lists(args, quiet=False, restart_stopped=False):
     state = json.loads(row[0]) if row and row[0] else {}
     cur.close()
     conn.close()
-    if state.get("weekly_date") == today and not args.force:
-        if not quiet:
-            log(f"[RUN2] Full lists already done today ({state.get('weekly_finished')})")
-        return False
     started = state.get("weekly_started") or ""
-    if state.get("weekly_status") == "running" and started[:10] == today and restart_stopped:
-        log(f"[RUN2] A run started at {started[11:16]} was stopped (website restarted / deployed) -> starting again")
-    elif state.get("weekly_status") == "running" and started[:10] == today and not args.force:
+    cut_off = state.get("weekly_status") == "running" and started[:10] == today
+    if cut_off and restart_stopped:
+        log(f"[RUN2] Today's shop started at {started[11:16]} was stopped (website restarted / deployed) -> again")
+    elif cut_off and not args.force:
         if not quiet:
             log(f"[RUN2] Still running since {started[11:16]} - not started twice")
         return False
+    elif state.get("weekly_date") == today and not args.force:
+        if not quiet:
+            log(f"[RUN2] Today's shop already done ({state.get('weekly_finished')})")
+        return False
+    shop, why = run2_plan(state, today)
+    if shop is None:
+        log(f"[RUN2] {now:%d %b %H:%M} India - no shop today: {why}")
+        state.update({"weekly_date": today, "today_shop": None, "next_info": why})
+        write_state(state)                               # 'checked today' -> not asked again until tomorrow
+        return False
+    label = next(lbl for k, lbl, *_ in WEEKLY_SHOPS if k == shop)
     log("=" * 70)
-    log(f"[RUN2] Started {now:%d %b %Y %H:%M} India time (RUN2_TIME {RUN2_TIME}) - full lists of "
-        f"{', '.join(RENDER_FULL_LISTS)} on Render, no PC")
-    state.update({"weekly_status": "running", "weekly_started": now.isoformat(timespec="minutes")})
+    log(f"[RUN2] Started {now:%d %b %Y %H:%M} India time - today: {label} ({why})")
+    state.update({"weekly_status": "running", "weekly_started": now.isoformat(timespec="minutes"), "today_shop": label})
     write_state(state)
-    run_weekly(state, only=RENDER_FULL_LISTS)            # download -> new products saved -> details kept -> match
-    state.update({"weekly_status": "done", "weekly_date": today,
+    run_weekly(state, only=[shop])                       # download -> new products saved -> details kept -> match
+    res = state.setdefault("weekly_results", {}).setdefault(label, {})
+    res["done_on"] = today                               # shown on the Automate page: last update of this shop
+    idx = RUN2_ORDER.index(shop) + 1
+    if idx < len(RUN2_ORDER):
+        nxt_key = RUN2_ORDER[idx]
+        nxt = next(lbl for k, lbl, *_ in WEEKLY_SHOPS if k == nxt_key)
+        state["next_info"] = f"tomorrow: {nxt}"
+    else:
+        nr = date.fromisoformat(state["round_start"]) + timedelta(days=RUN2_ROUND_DAYS)
+        state["next_info"] = f"round complete - next round ({RUN2_ORDER[0]} first) on {nr.isoformat()}"
+    state.update({"next_index": idx, "weekly_status": "done", "weekly_date": today,
                   "weekly_finished": india_now().isoformat(timespec="minutes")})
     r = render_get("/competitor/update-least")           # least price + suggested price + automatic brands
     state["recalc"] = f"HTTP {r.status_code}" if r is not None else "not started"
     write_state(state)
-    log(f"[RUN2] Finished {india_now():%H:%M} India | update-least {state['recalc']}")
+    log(f"[RUN2] {label} finished {india_now():%H:%M} India | update-least {state['recalc']} | next: {state['next_info']}")
     return True
 
 
 def run2_scheduler(check_every=60):
     """Started by app.py when the website starts (one background thread): every minute -> render_full_lists()."""
-    log(f"[RUN2] Scheduler started inside the website: full lists every working day at {RUN2_TIME} India time "
-        f"({', '.join(RENDER_FULL_LISTS)})")
+    log(f"[RUN2] Scheduler started inside the website: one shop a day at {RUN2_TIME} India time "
+        f"({' -> '.join(RUN2_ORDER)}, a new round every {RUN2_ROUND_DAYS} days)")
     args = argparse.Namespace(force=False)
     done_on = None                                       # remember 'done today' -> no database check every minute
     first = True                                         # website just started: a 'running' run today was cut off

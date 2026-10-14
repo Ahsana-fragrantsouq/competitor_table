@@ -1245,8 +1245,9 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
      {{ (st.total_brands / daily.per_day)|round(0, 'ceil')|int }} working days){% endif %}, then again from A.<br>
      New French Fragrance products are saved too (+ their Branded Perfume / Essenzi links). <i>(on the PC)</i><br>
      {# RUN 2 time: set by RUN2_TIME at the top of daily_update.py (India time). Change it there, then this text #}
-     <b>Every working day 7:00 AM on Render (no PC):</b> Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass &mdash;
-     whole product list: <b>new products are saved</b>, products already saved get the new price + stock, then matching.</p>
+     <b>Every day 7:00 AM on Render (no PC), ONE shop a day:</b> Samawa &rarr; Ounass &rarr; V Perfumes &rarr; Amberiya &rarr;
+     Al Injaz &rarr; Niche Gallerie, then a pause; a new round every 2 weeks (RUN2_ORDER / RUN2_ROUND_DAYS in daily_update.py).
+     Whole product list of that shop: <b>new products are saved</b>, products already saved get the new price + stock, then matching.</p>
   {% if daily.saved %}<p class="ok">Saved (used from the next run).</p>{% endif %}
   {% if st and st.date %}
   <p class="hint"><b>Last daily run {{ st.date }}</b> &middot;
@@ -1260,11 +1261,14 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
   {% if st.next %}<p class="hint">Next: {{ st.next|join(', ') }}</p>{% endif %}
   {% else %}<p class="hint">Not run yet - the first daily run starts at brand A.</p>{% endif %}
   {% set rs = daily.render_state %}
-  <p class="hint"><b>Last full lists on Render:</b> {% if rs and rs.weekly_status == 'running' %}<span class="errc">running now</span>
-     {% elif rs and rs.weekly_date %}{{ rs.weekly_date }}{% if rs.weekly_finished %} (done at {{ rs.weekly_finished[11:16] }} server time){% endif %}
+  <p class="hint"><b>Run 2 (Render, one shop a day):</b>
+     {% if rs and rs.weekly_status == 'running' %}<span class="errc">running now: {{ rs.today_shop }}</span>
+     {% elif rs and rs.weekly_date %}last {{ rs.weekly_date }}{% if rs.today_shop %} &middot; {{ rs.today_shop }}{% if rs.weekly_finished %} done at {{ rs.weekly_finished[11:16] }}{% endif %}{% endif %}
      {% else %}not run yet{% endif %}
+     {% if rs and rs.next_info %}<br>Next: {{ rs.next_info }}{% endif %}
+     {% if rs and rs.round_start %}<br>Round started {{ rs.round_start }}{% endif %}
   {% if rs and rs.weekly_results %}</p><div class="dshops">
-    {% for shop, r in rs.weekly_results.items() %}<span>{{ shop }}: {% if r.error %}<span class="errc">{{ r.error }}</span>{% else %}<span class="okc">done</span>{% if r.new_added is defined %} &middot; {{ r.new_added }} new{% endif %}{% endif %}</span>{% endfor %}
+    {% for shop, r in rs.weekly_results.items() %}<span>{{ shop }}: {% if r.error %}<span class="errc">{{ r.error }}</span>{% else %}<span class="okc">{{ r.done_on or 'done' }}</span>{% if r.new_added is defined %} &middot; {{ r.new_added }} new{% endif %}{% endif %}</span>{% endfor %}
   </div>{% else %}</p>{% endif %}
   {# the PC run does only French Fragrance / Branded Perfume / Essenzi (above); the 6 other shops run on Render (above) #}
 </div>
