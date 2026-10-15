@@ -12,6 +12,7 @@ Files in this project
   competitors_page.py -> the dark tabbed page /competitors (Competitor table | Samawa | French Fragrance | Branded Perfume)
                          + the Settings pages (Automate, User management)
   discount_rate.py    -> Settings -> Auto discount rate: the page box, saving the rate, get_discount_rate()
+  price_limits.py     -> LOP / MOP: lowest / highest allowed suggested price (rule, columns, card boxes, Save)
   daily_update.py     -> RUN 1 on the PC (French Fragrance / Branded Perfume / Essenzi) + RUN 2 inside this website
   branded_perfume.py  -> copies French Fragrance products and reads the same pages on brandedperfume.com
   essenzi.py          -> same for essenzi.com (table essenzi_catalog); page reading = es_scraper.py on the PC
@@ -49,7 +50,7 @@ FILE MAP of app.py (search "SECTION <number>" to jump there)
   SECTION 5   old Samawa reader               SECTION 13  URLs (routes) + discount recalculation hook
   SECTION 6   Airtable                        SECTION 14  suggestion OK / Not OK, one product's least price
   SECTION 7   matching (match_one)            SECTION 15  Automate (automatic brands -> Airtable)
-  SECTION 8   competitor table columns        SECTION 16  our product pages + remaining routes (+ LOP / MOP save)
+  SECTION 8   competitor table columns        SECTION 16  our product pages + remaining routes (+ LOP / MOP link)
 
 Environment variables (Render -> Environment)
   AIRTABLE_TOKEN     Airtable token (only READS Airtable now)
@@ -83,6 +84,8 @@ from competitors_page import competitors_bp        # /competitors
 import competitors_page                            # competitors page helpers
 import discount_rate                               # Auto discount rate: get_discount_rate() + "saved" hook (discount_rate.py)
 from discount_rate import discount_bp              # POST /settings/discount (save the rate)
+import price_limits                                # LOP / MOP: rule, columns, card boxes (price_limits.py)
+from price_limits import limits_bp                 # POST /competitor/limits (save LOP / MOP)
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
 from vperfumes import vperfumes_bp                 # /vperfumes/test, /vperfumes/run, /vperfumes/status
@@ -103,6 +106,7 @@ app.register_blueprint(ff_catalog_bp)
 app.register_blueprint(samawa_catalog_bp)
 app.register_blueprint(competitors_bp)
 app.register_blueprint(discount_bp)                # Settings -> Auto discount rate (discount_rate.py)
+app.register_blueprint(limits_bp)                  # LOP / MOP Save on the product cards (price_limits.py)
 app.register_blueprint(branded_perfume_bp)
 app.register_blueprint(essenzi_bp)
 app.register_blueprint(vperfumes_bp)
@@ -908,14 +912,9 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_stock BOOLEAN;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_price NUMERIC(10,2);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_priced_website TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS suggested_price NUMERIC(10,2);
--- LOP / MOP: lowest / highest allowed suggested price, typed by hand on /competitors (empty = no limit)
-ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS lop NUMERIC(10,2);
-ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS mop NUMERIC(10,2);
-ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS limits_by TEXT;          -- who saved LOP / MOP last
-ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS limits_at TIMESTAMP;     -- when
 CREATE INDEX IF NOT EXISTS idx_ct_sku ON competitor_table (sku);
 CREATE INDEX IF NOT EXISTS idx_ct_brand ON competitor_table (brand);
-"""
+""" + price_limits.LIMITS_CREATE       # LOP / MOP columns (price_limits.py SECTION 2)
 
 # Step 1 save: new product -> insert, existing product (same fi_record_id) -> update its details.
 # Samawa columns are NOT touched here, so re-running step 1 keeps the match results.
@@ -1563,8 +1562,8 @@ WITH competitor_offers AS (
     SELECT fi_record_id, ng_price FROM competitor_table WHERE ng_stock AND ng_link IS NOT NULL AND ng_price > 0
 )
 UPDATE competitor_table c
--- LOP / MOP: below LOP -> LOP, above MOP -> MOP (GREATEST / LEAST skip an empty LOP / MOP = no limit)
-SET suggested_price = LEAST(GREATEST(ROUND(m.min_price * (1 - %(below)s), {SUGGEST_DECIMALS}), c.lop), c.mop)
+-- LOP / MOP (price_limits.py clamp_sql): below LOP -> LOP, above MOP -> MOP, empty = no limit
+SET suggested_price = {price_limits.clamp_sql(f"ROUND(m.min_price * (1 - %(below)s), {SUGGEST_DECIMALS})")}
 FROM (SELECT fi_record_id, MIN(price) AS min_price FROM competitor_offers GROUP BY fi_record_id) m
 WHERE c.fi_record_id = m.fi_record_id;
 """
@@ -1825,23 +1824,6 @@ def link_sisters_for(cur, fid):
         log(f"[SUGGEST] {label} linked for {fid}: {cur.rowcount}")
 
 
-def apply_limits(cur, fid, price):
-    """Keep a suggested price between the product's LOP and MOP (same rule as SUGGEST_SQL).
-    price None (no competitor in stock) stays None - LOP / MOP never invent a price."""
-    if price is None:
-        return None
-    cur.execute("SELECT lop, mop FROM competitor_table WHERE fi_record_id = %s", (fid,))
-    lop, mop = cur.fetchone() or (None, None)
-    final = price
-    if lop is not None and final < float(lop):
-        final = float(lop)
-    if mop is not None and final > float(mop):
-        final = float(mop)
-    log(f"[LIMITS] {fid}: suggested {price} | LOP {lop} | MOP {mop} -> {final}"
-        + (" (raised to LOP)" if final > price else " (lowered to MOP)" if final < price else ""))
-    return final
-
-
 def least_for(cur, fid):
     """Recalculate least price / least priced website / suggested price for ONE product (same rules as LEAST_SQL)."""
     cols = ", ".join(f"{p}_price, {p}_stock, {p}_link" for _, p in LEAST_ORDER)
@@ -1871,7 +1853,7 @@ def least_for(cur, fid):
     suggested = (float(Decimal(str(best_comp * (1 - rate / 100))).quantize(Decimal(1).scaleb(-SUGGEST_DECIMALS),
                                                                           rounding=ROUND_HALF_UP))
                  if best_comp else None)
-    suggested = apply_limits(cur, fid, suggested)            # LOP / MOP of this product
+    suggested = price_limits.apply_limits(cur, fid, suggested)   # LOP / MOP of this product (price_limits.py)
     cur.execute("UPDATE competitor_table SET least_price = %s, least_priced_website = %s, suggested_price = %s "
                 "WHERE fi_record_id = %s", (least, sites, suggested, fid))
     log(f"[SUGGEST] Least for {fid}: {least} ({sites}) | suggested {suggested} ({rate}% below {best_comp})")
@@ -2235,63 +2217,9 @@ def ct_update_price_route():
                     "least_price": float(least) if least is not None else None, "least_site": site})
 
 
-# ---- LOP / MOP: typed on a product card (/competitors) -> saved -> suggested price of that product recalculated now
-@app.post("/competitor/limits")
-def ct_limits_route():
-    """Save LOP / MOP of ONE product and recalculate its suggested price at once.
-    Body (JSON): {"fi_record_id": "recXXX", "lop": 1500 or "", "mop": 1700 or ""}   ("" = no limit)
-    Automatic brand (Settings -> Automate) -> the new suggested price also goes to Airtable UAE Price."""
-    body = request.get_json(silent=True) or {}
-    fid = str(body.get("fi_record_id") or "").strip()
-    user = g.get("user") or "unknown"
-
-    def number(v, name):
-        if v in (None, ""):
-            return None                                  # empty box = no limit
-        try:
-            v = round(float(v), 2)
-        except (TypeError, ValueError):
-            raise ValueError(f"{name} must be a number")
-        if not 0 < v < 100000:
-            raise ValueError(f"{name} must be between 0 and 100,000")
-        return v
-    try:
-        lop, mop = number(body.get("lop"), "LOP"), number(body.get("mop"), "MOP")
-        if not fid.startswith("rec"):
-            raise ValueError("Wrong product")
-        if lop is not None and mop is not None and lop > mop:
-            raise ValueError("LOP cannot be higher than MOP")
-    except ValueError as ex:
-        log(f"[LIMITS] {user}: {fid} LOP={body.get('lop')!r} MOP={body.get('mop')!r} -> not saved: {ex}")
-        return jsonify({"ok": False, "error": str(ex)}), 400
-
-    conn = pg_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute(CT_CREATE)                           # makes sure the lop / mop columns exist
-        cur.execute("""UPDATE competitor_table SET lop = %s, mop = %s, limits_by = %s, limits_at = NOW()
-                       WHERE fi_record_id = %s""", (lop, mop, user, fid))
-        if cur.rowcount == 0:
-            return jsonify({"ok": False, "error": "Product not found"}), 404
-        least_for(cur, fid)                              # least + suggested price of this product, with the new limits
-        cur.execute("SELECT suggested_price, least_price, least_priced_website, LOWER(brand), uae_price "
-                    "FROM competitor_table WHERE fi_record_id = %s", (fid,))
-        sugg, least, site, brand, ours = cur.fetchone()
-        automatic = brand in auto_brands(cur)            # Settings -> Automate: brand ticked?
-        conn.commit()
-    finally:
-        cur.close()
-        conn.close()
-    log(f"[LIMITS] {user} saved {fid}: LOP {lop} | MOP {mop} -> suggested {sugg}"
-        + (" | automatic brand -> Airtable" if automatic and sugg else ""))
-    pushed = False
-    if automatic and sugg and ours != sugg:              # automatic brand: our UAE Price follows the suggested price
-        done, failed = airtable_set_prices({fid: float(sugg)}, tag="LIMITS")
-        pushed = bool(done)
-    return jsonify({"ok": True, "lop": lop, "mop": mop,
-                    "suggested_price": float(sugg) if sugg is not None else None,
-                    "least_price": float(least) if least is not None else None, "least_site": site,
-                    "airtable": pushed})
+# ---- LOP / MOP: Save route + rule live in price_limits.py; here app.py gives it the functions it needs
+price_limits.init(connect=pg_conn, create_sql=CT_CREATE, recalc_one=least_for,
+                  automatic_brands=auto_brands, push_prices=airtable_set_prices)
 
 
 @app.get("/competitor/update-least")
