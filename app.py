@@ -14,6 +14,7 @@ Files in this project
   discount_rate.py    -> Settings -> Auto discount rate: the page box, saving the rate, get_discount_rate()
   price_limits.py     -> LOP / MOP: lowest / highest allowed suggested price (columns, card boxes, Save)
   suggested_price.py  -> THE suggested price rule as plain functions: cheapest - X%, then <= LOP -> LOP, >= MOP -> MOP
+  db_triggers.py      -> Postgres triggers: list price / stock change -> competitor_table -> least + suggested price
   price_triggers.py   -> WHEN one product is recalculated: TRIGGER 1 competitor price / stock changed,
                          TRIGGER 2 admin saved LOP / MOP (recalc_product() = the calculation for one product)
   daily_update.py     -> RUN 1 on the PC (French Fragrance / Branded Perfume / Essenzi) + RUN 2 inside this website
@@ -89,6 +90,7 @@ import discount_rate                               # Auto discount rate: get_dis
 from discount_rate import discount_bp              # POST /settings/discount (save the rate)
 import price_limits                                # LOP / MOP: rule, columns, card boxes (price_limits.py)
 import price_triggers                              # WHEN prices recalc: competitor change / LOP-MOP saved (price_triggers.py)
+import db_triggers                                 # Postgres triggers: competitor lists -> competitor_table -> suggested price
 from price_limits import limits_bp                 # POST /competitor/limits (save LOP / MOP)
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
@@ -2198,6 +2200,30 @@ def ct_update_price_route():
 # ---- LOP / MOP: Save route + rule live in price_limits.py; here app.py gives it the functions it needs
 price_limits.init(connect=pg_conn, create_sql=CT_CREATE,
                   automatic_brands=auto_brands, push_prices=airtable_set_prices)
+
+
+# ---------------------------------------------------------------- database triggers (db_triggers.py)
+# Installed once when the website starts (in the background, so a slow database never blocks the start):
+#   TRIGGER A: price / stock changes in a competitor list (vperfumes_catalog ...) -> copied into competitor_table
+#   TRIGGER B: competitor price / stock / LOP / MOP changes in competitor_table -> least + suggested price at once
+# Works for every change: scrapers, Run 1, Run 2 and queries typed by hand. Off: python db_triggers.py remove
+def install_db_triggers():
+    conn = None
+    try:
+        conn = pg_conn()
+        cur = conn.cursor()
+        cur.execute(CT_CREATE)                       # all competitor_table columns exist before the triggers use them
+        result = db_triggers.install(cur)
+        conn.commit()
+        log(f"[DB-TRIGGERS] {result}")
+    except Exception as ex:
+        log(f"[DB-TRIGGERS] Not installed now ({str(ex).strip()[:200]}) -> prices still update at the end of each run")
+    finally:
+        if conn:
+            conn.close()
+
+
+threading.Thread(target=install_db_triggers, daemon=True).start()
 
 
 @app.get("/competitor/update-least")
