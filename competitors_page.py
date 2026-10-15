@@ -76,6 +76,7 @@ SOURCES = [
               "our_link": "our_link", "our_title": "our_title", "our_stock": "our_stock",
               "least_price": "least_price", "least_site": "least_priced_website",
               "suggested_price": "suggested_price", "fi": "fi_record_id",
+              "lop": "lop", "mop": "mop",           # LOP / MOP typed on the card (empty = no limit)
               "stock": None, "updated": "updated_at"}},
     {"key": "samawa", "label": "Samawa", "table": "samawa_catalog",
      "cols": {"name": "name", "brand": "brand", "gtin": "gtin", "url": "product_url",
@@ -522,18 +523,27 @@ HTML = """
  .upd-btn{background:#f2d675;color:#1c1b19;border:0;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
  .nextc{color:var(--gold);font-size:15px}
  .upd-btn:disabled{opacity:.6;cursor:wait}
+ /* LOP / MOP boxes next to the suggested price */
+ .lim-in{width:84px;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:10px;
+         padding:9px 8px;font-size:15px}
+ .lim-btn{background:transparent;color:var(--gold);border:1px solid var(--gold);border-radius:10px;padding:9px 12px;
+          font-weight:600;cursor:pointer}
+ .lim-btn:disabled{opacity:.6;cursor:wait}
+ .limnote{color:var(--gold);font-size:11px;margin-left:4px}
  .upd-msg{font-size:13px;margin-top:6px;min-height:16px}
  .sitelink{color:inherit;text-decoration:underline;text-underline-offset:3px}
  .sitelink:hover{color:#f2d675}
- .least{display:flex;flex-wrap:nowrap;align-items:center;gap:10px 22px;margin:10px 0 2px;padding:10px 14px;
+ .least{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;margin:10px 0 2px;padding:10px 14px;
         border:1px solid #f2d675;border-radius:12px}
- /* one line: least price | least priced website | suggested price + Update price + next cheapest */
+ /* one line: least price | least priced website | suggested price | LOP / MOP | Update price | Second least
+    (wraps to a 2nd line when the window is too narrow) */
  .least > div{flex:0 0 auto;min-width:0}
  .least .upd{flex-wrap:nowrap}
  .least .sugg-in{width:92px}
+ .least .lim-in{width:72px}                                  /* LOP / MOP boxes: narrow so the line fits */
  .least .nextc{white-space:nowrap}
  .least .updcol{margin-left:auto;align-self:center}        /* Update price pushed to the right ... */
- .least .second{text-align:right;padding-left:18px;border-left:1px solid var(--line)}   /* ... next to Second least */
+ .least .second{text-align:right;margin-left:auto}           /* Second least: right side (own line when it wraps) */
  .least .second .plabel{font-size:12px}
  .least .upd-msg{min-height:0;margin-top:0}
  .least .upd-msg:not(:empty){margin-top:6px}
@@ -733,6 +743,19 @@ HTML = """
                       placeholder="{{ 'No competitor in stock' if r.suggested_price is none else '' }}">
              </div>
              <div class="upd-msg" id="msg-{{ r.fi }}"></div></div>
+        {# LOP / MOP: lowest / highest allowed suggested price for THIS product (empty = no limit).
+           Save -> /competitor/limits (app.py) saves them and recalculates the suggested price at once. #}
+        <div class="limits"><div class="plabel">LOP / MOP
+             {%- if r.suggested_price is not none and r.lop is not none and r.suggested_price == r.lop %} <span class="limnote">at LOP</span>
+             {%- elif r.suggested_price is not none and r.mop is not none and r.suggested_price == r.mop %} <span class="limnote">at MOP</span>{% endif %}</div>
+             <div class="upd">
+               <input class="lim-in" type="number" step="0.01" min="0" id="lop-{{ r.fi }}" placeholder="LOP" title="LOP: lowest allowed price"
+                      value="{{ '%g' % r.lop if r.lop is not none else '' }}">
+               <input class="lim-in" type="number" step="0.01" min="0" id="mop-{{ r.fi }}" placeholder="MOP" title="MOP: highest allowed price"
+                      value="{{ '%g' % r.mop if r.mop is not none else '' }}">
+               <button type="button" class="lim-btn" onclick="saveLimits('{{ r.fi }}', this)">Save</button>
+             </div>
+             <div class="upd-msg" id="limmsg-{{ r.fi }}"></div></div>
         {# right side of the box: Update price button, then Second least #}
         <div class="updcol">
              <button type="button" class="upd-btn" onclick="updatePrice('{{ r.fi }}', this)">Update price</button></div>
@@ -980,6 +1003,31 @@ HTML = """
   }
 
   // "Update price": send the (edited) suggested price to the server -> Airtable UAE Price + competitor table
+  // ---- LOP / MOP Save: check, send to /competitor/limits, show the new suggested price at once ----
+  async function saveLimits(fi, btn) {
+    var lop = document.getElementById("lop-" + fi).value.trim(), mop = document.getElementById("mop-" + fi).value.trim();
+    var msg = document.getElementById("limmsg-" + fi);
+    if (lop !== "" && mop !== "" && parseFloat(lop) > parseFloat(mop)) {
+      msg.className = "upd-msg out"; msg.textContent = "LOP cannot be higher than MOP"; return;
+    }
+    console.log("[LIMITS] Save " + fi + ": LOP=" + (lop || "-") + " MOP=" + (mop || "-"));
+    btn.disabled = true; msg.className = "upd-msg gtin"; msg.textContent = "Saving...";
+    try {
+      var r = await fetch("/competitor/limits", {method: "POST", headers: {"Content-Type": "application/json"},
+                                                 body: JSON.stringify({fi_record_id: fi, lop: lop, mop: mop})});
+      var d = await r.json();
+      if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
+      var sp = document.getElementById("sp-" + fi);
+      if (sp) sp.value = d.suggested_price !== null ? d.suggested_price : "";
+      msg.className = "upd-msg in";
+      msg.textContent = "Saved. Suggested price: " + (d.suggested_price !== null ? "AED " + d.suggested_price : "none (no competitor in stock)")
+                        + (d.airtable ? " | sent to Airtable (automatic brand)" : "");
+      console.log("[LIMITS] Saved " + fi + " -> suggested " + d.suggested_price);
+    } catch (e) {
+      msg.className = "upd-msg out"; msg.textContent = "Not saved: " + e.message;
+    } finally { btn.disabled = false; }
+  }
+
   async function updatePrice(fi, btn) {
     var input = document.getElementById("sp-" + fi), msg = document.getElementById("msg-" + fi);
     var price = parseFloat(input.value);
@@ -1627,3 +1675,4 @@ def get_setting(cur, key):
     return row
 
 
+# Auto discount rate (save route, get_discount_rate, recalculation hook) moved to its own file: discount_rate.py
