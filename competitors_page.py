@@ -8,6 +8,19 @@ Tabs come from SOURCES below. To add a new competitor later:
 
 Env var:
   FF_DATABASE_URL = Postgres URL ending in /french_fragrance_db
+
+FILE MAP (search "SECTION <number>" to jump there)
+  SECTION 1   imports + page size                 -> PER_PAGE (products per page)
+  SECTION 2   tabs / shops                        -> SOURCES (add a new competitor shop here)
+  SECTION 3   menu bar + Settings menu            -> NAV_CSS / NAV_HTML, SETTINGS_OPTIONS (add a Settings page here)
+  SECTION 4   competitor table filters            -> PRICE_FILTERS, FILTER_FIELDS, filter_sql()
+  SECTION 5   helpers (database, counts)          -> db_conn(), table_exists(), tab_counts(), add_next_cheapest()
+  SECTION 6   competitors page HTML               -> HTML (inside: 6a CSS, 6b filter bar, 6c product card, 6d pager, 6e scripts)
+  SECTION 7   competitors page route              -> /competitors (reads the rows, filters, paging)
+  SECTION 8   Settings page HTML                  -> SETTINGS_HTML (8a Automate, 8b Users, 8c Auto discount rate)
+  SECTION 9   Settings page route                 -> /settings, /settings/<key>
+  SECTION 10  saved settings + Daily update box   -> app_settings table, daily_info(), /settings/daily, get_setting()
+  Auto discount rate itself (page box, save, rate) -> its own file discount_rate.py
 """
 
 import os
@@ -17,12 +30,18 @@ import psycopg2.extras
 from urllib.parse import urlencode
 from flask import Blueprint, request, render_template_string, g, redirect
 from auth import list_users, is_admin, MIN_PASSWORD      # User management (users are saved by auth.py)
+import discount_rate                                      # Settings -> Auto discount rate (own file: discount_rate.py)
+from discount_rate import get_discount_rate               # kept here so competitors_page.get_discount_rate() still works
 
 competitors_bp = Blueprint("competitors", __name__)
 
+# ============================================================ SECTION 1: page size
+# Change PER_PAGE to show more / fewer products on one page.
+
 PER_PAGE = 50
 
-# ---------------------------------------------------------------- tabs
+# ============================================================ SECTION 2: tabs / shops (SOURCES)
+# One entry per tab. New competitor shop = new table in the database + ONE entry here (key, label, table, columns).
 # Each "cols" entry is the SQL used for that field (None = column not available for this source)
 SOURCES = [
     # Competitor table: one row per French Inventories product + Samawa match (filled by migrate_competitor_table.py)
@@ -105,7 +124,9 @@ SOURCES = [
 ]
 SOURCE_BY_KEY = {s["key"]: s for s in SOURCES}
 
-# ---------------------------------------------------------------- menu bar (like fragrantsouq.com)
+# ============================================================ SECTION 3: menu bar + Settings menu
+# Menu look = NAV_CSS / NAV_HTML. New Settings page = one line in SETTINGS_OPTIONS + one block in SECTION 8.
+# (menu bar like fragrantsouq.com)
 # Competitor table | Competitors ▾ (every shop's own table) | Settings
 NAV_CSS = """
  .menu{display:flex;gap:6px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line);
@@ -201,6 +222,8 @@ def render_nav(active, cur_key, counts):
     return render_template_string(NAV_HTML, active=active, cur_key=cur_key, counts=counts or {}, sources=SOURCES,
                                   settings_options=SETTINGS_OPTIONS)
 # competitor names for the "Competitor" filter: "Samawa" -> column prefix "samawa" (samawa_link, samawa_stock ...)
+# ============================================================ SECTION 4: competitor table filters
+# Price / stock filters = PRICE_FILTERS, Airtable-style filter fields = FILTER_FIELDS, SQL = filter_sql().
 COMPETITORS = {label: prefix for label, prefix in SOURCES[0]["shops"]}
 
 # Price filters for the Competitor table tab. Only IN-STOCK competitor prices count:
@@ -354,6 +377,8 @@ def filter_sql(conds):
     return where, params
 
 
+# ============================================================ SECTION 5: helpers (second least, database, tab counts)
+# Second least = add_next_cheapest(), database connection = db_conn(), numbers in the menu = tab_counts().
 def add_next_cheapest(rows, shops):
     """When WE are the cheapest: find the cheapest IN-STOCK competitor (the one closest to our price)
     and put it in row['next_comp'] = {'label', 'price', 'url', 'gap'} for the card."""
@@ -403,9 +428,12 @@ def tab_counts(cur):
     return counts
 
 
+# ============================================================ SECTION 6: competitors page HTML (Competitor table + every shop tab)
+# Inside: 6a CSS (colours, sizes) | 6b filter bar | 6c product card | 6d pager | 6e scripts (buttons). Search '6a' ... '6e'.
 HTML = """
 <!doctype html><html><head><title>{{ src.label }} - Competitors</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{# ======== 6a CSS: colours, sizes, card layout ======== #}
 <style>
  :root{--bg:#1c1b19;--card:#252420;--line:#3a3833;--text:#f2efe9;--muted:#a9a397;
        --gold:#d8b76e;--goldbtn:#7c6a45;--green:#8cc58c;--red:#e0806c;--grey:#8b877f}
@@ -547,6 +575,7 @@ HTML = """
   <p class="hint"></p>
   <div class="empty">{% if src.kind == 'competitor' %}The competitor table is empty. Run migrate_competitor_table.py to copy it from Airtable.{% else %}No {{ src.label }} products yet. Run the download for this shop first.{% endif %}</div>
 {% else %}
+{# ======== 6b filter bar: search box, brand chips, stock dropdown, Airtable-style filters ======== #}
   <form class="bar" method="get">
     <input type="hidden" name="tab" value="{{ src.key }}">
     <input type="text" name="q" value="{{ q }}" placeholder="{% if src.kind == 'competitor' %}Filter by code, SKU, name, brand, barcode{% else %}Filter by {% if src.cols.brand %}brand, {% endif %}name, GTIN{% endif %}">
@@ -666,6 +695,7 @@ HTML = """
         {% endif %}
       </div>
 {% endmacro %}
+{# ======== 6c product card: least price box, suggested price + Update price, our price, competitors ======== #}
   {% for r in rows %}
   {% if src.kind == 'competitor' %}
   <div class="card">
@@ -770,6 +800,7 @@ HTML = """
   <div class="empty">No products match this filter. Clear the filter to see everything.</div>
   {% endfor %}
 
+{# ======== 6d pager: Previous / Next pages ======== #}
   <div class="pager">
     <a class="pbtn {% if page <= 1 %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&brand={{ brand|urlencode }}&{{ filt_qs }}&page={{ page-1 }}">Previous</a>
     <span class="gtin">Page {{ page }} of {{ pages }}</span>
@@ -778,6 +809,7 @@ HTML = """
 {% endif %}
 
 {% if src.kind == 'competitor' %}
+{# ======== 6e scripts: Update price, Update all, suggestion OK / Not OK, filters, show out of stock ======== #}
 <script>
   // ---- Airtable-style filter panel ----
   var FIELD_LIST = {{ field_list|tojson }}, OPS = {{ ops|tojson }}, CONDS = {{ conds|tojson }};
@@ -973,6 +1005,8 @@ HTML = """
 
 
 
+# ============================================================ SECTION 7: competitors page route (/competitors)
+# Reads the rows of the open tab, applies search / filters / paging, then fills HTML (SECTION 6).
 def last_new_products(cur, label):
     """New products saved for this shop by the last full list. Two writers: the PC run (app_settings 'daily_update':
     French Fragrance / Branded Perfume / Essenzi / Al Injaz / Ounass) and the Render Cron Job ('full_lists': Samawa,
@@ -1137,7 +1171,8 @@ def competitors():
                                   filt_qs=urlencode([(k, x) for f, o, v in conds
                                                      for k, x in (("ff", f), ("fo", o), ("fv", v))]))
 
-# ---------------------------------------------------------------- Settings (empty for now)
+# ============================================================ SECTION 8: Settings page HTML (SETTINGS_HTML)
+# 8a Automate box | 8b User management | 8c Auto discount rate (box itself in discount_rate.py). Search '8a' / '8b' / '8c'.
 SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
@@ -1226,6 +1261,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 <div class="topbar"><h1>{{ title }}</h1>
   {% if g.user %}<span class="who">Logged in as <b>{{ g.user }}</b> · <a href="/logout">Log out</a></span>{% endif %}</div>
 {{ nav_html|safe }}
+{# ======== 8a Automate: daily update box + brands on automatic ======== #}
 {% if option and option[0] == 'automate' %}
 <a class="back" href="/settings">&larr; All settings</a>
 {# ---- Daily competitor update + full lists every working day (daily_update.py on the PC, Monday-Friday 11:30 AM) ---- #}
@@ -1367,6 +1403,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
   <button type="button" class="bulkupdate" id="asave" onclick="saveAuto()">Update all</button>
   <span class="bulkmsg" id="amsg"></span>
 </div>
+{# ======== 8b User management (actions are in auth.py) ======== #}
 {% elif option and option[0] == 'users' %}
 <a class="back" href="/settings">&larr; All settings</a>
 {# User management: admins add users, change password / role, disable or remove them (actions are in auth.py) #}
@@ -1442,31 +1479,10 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
   console.log("[USERS] Page: {{ users|length }} users");
 </script>
 {% endif %}
+{# ======== 8c Auto discount rate (box = discount_rate.py DISCOUNT_HTML) ======== #}
 {% elif option and option[0] == 'discount' %}
-<a class="back" href="/settings">&larr; All settings</a>
-{# Auto discount rate: admin writes the % (e.g. 2 or 5). Saved in table app_settings, key 'discount_rate'. #}
-<form class="dform" method="post" action="/settings/discount"
-      onsubmit="console.log('[DISCOUNT] Save clicked: ' + this.rate.value + '%')">
-  <label for="rate">Discount below the cheapest in-stock competitor</label>
-  <div class="drow">
-    <input id="rate" name="rate" type="number" min="0" max="50" step="0.1" required
-           value="{{ '%g' % rate if rate is not none else '' }}" placeholder="e.g. 5">
-    <span class="pct">%</span>
-    <button type="submit">Save</button>
-  </div>
-  {% if rate is not none %}<p class="hint">Example: cheapest competitor AED 100 &rarr; with {{ '%g' % rate }}% the suggested price is
-     AED {{ '%g' % (100 - rate) }}.</p>{% endif %}
-  {% if saved %}<p class="ok">Saved: {{ '%g' % rate }}%.</p>{% endif %}
-  {% if error %}<p class="err">{{ error }}</p>{% endif %}
-  {% if rate_info %}<p class="hint">Last changed by <b>{{ rate_info.updated_by or '-' }}</b> on {{ rate_info.updated_at.strftime('%d %b %Y, %H:%M') }}.</p>{% endif %}
-  {% if rate is none %}<p class="err">No rate saved yet: suggested prices are not being calculated. Write a rate and Save.</p>{% endif %}
-  <script>console.log("[DISCOUNT] Page: saved rate = {{ rate if rate is not none else 'NOT SET' }}{% if saved %}, just saved{% endif %}{% if recalc %}, recalc = {{ recalc }}{% endif %}");</script>
-  {% if recalc == '1' %}<p class="ok">All suggested prices are being recalculated with the new rate (about 1 minute).
-     Automatic brands are then updated in Airtable.</p>{% elif recalc == 'busy' %}<p class="hint">Another run is in progress -
-     it will use the new rate when it reaches the price step.</p>{% endif %}
-  <p class="note">This rate is used for every suggested price: on the competitor table, for Update price / Update all,
-     and for the automatic brands. Saving recalculates all suggested prices.</p>
-</form>
+{# Auto discount rate: the whole box comes from discount_rate.py (DISCOUNT_HTML) - change it there #}
+{{ discount_box|safe }}
 {% elif option %}
 <a class="back" href="/settings">&larr; All settings</a>
 <div class="empty"><b>{{ option[1] }}</b><br>{{ option[2] }}<br><br>Coming soon.</div>
@@ -1480,6 +1496,8 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 </div></body></html>"""
 
 
+# ============================================================ SECTION 9: Settings page route (/settings, /settings/<key>)
+# Loads what the open Settings page needs (users, Automate brands, discount box) and fills SETTINGS_HTML.
 @competitors_bp.route("/settings")
 @competitors_bp.route("/settings/<key>")
 def settings_page(key=None):
@@ -1489,7 +1507,7 @@ def settings_page(key=None):
         print(f"[SETTINGS] Unknown option '{key}' -> showing all settings", flush=True)
     print(f"[SETTINGS] Opened: {option[1] if option else 'all settings'}", flush=True)
     counts, brands, auto_set = {}, [], set()
-    rate, rate_info = None, None
+    discount_box = ""                                       # Auto discount rate box (only on /settings/discount)
     users = []
     daily = {}
     q = request.args.get("q", "").strip()
@@ -1499,9 +1517,7 @@ def settings_page(key=None):
         try:
             counts = tab_counts(cur)                 # numbers next to each shop in the Competitors menu
             if option and option[0] == "discount":
-                rate_info = get_setting(cur, "discount_rate")
-                rate = float(rate_info["value"]) if rate_info else None
-                print(f"[DISCOUNT] Saved discount rate: {rate if rate is not None else 'NOT SET - suggested prices are not calculated'}", flush=True)
+                discount_box = discount_rate.render_box(cur)      # Auto discount rate box (discount_rate.py)
             if option and option[0] == "users":
                 print(f"[USERS] User management opened by {g.get('user')} (admin: {is_admin()})", flush=True)
                 users = list_users() if is_admin() else []
@@ -1528,13 +1544,14 @@ def settings_page(key=None):
     print(f"[MENU] Settings page shown to {g.get('user') or 'unknown user'}", flush=True)
     return render_template_string(SETTINGS_HTML, nav_html=render_nav("settings", option[0] if option else None, counts),
                                   nav_css=NAV_CSS, option=option, options=SETTINGS_OPTIONS, brands=brands, q=q, auto_set=auto_set,
-                                  rate=rate, rate_info=rate_info, saved=request.args.get("saved") == "1",
-                                  error=request.args.get("error"), recalc=request.args.get("recalc"),
+                                  discount_box=discount_box, error=request.args.get("error"),   # error = Users page messages
                                   daily=daily, users=users, admin=is_admin(), me=g.get("user"), msg=request.args.get("msg"),
                                   min_pw=MIN_PASSWORD, title=option[1] if option else "Settings")
 
 
-# ---------------------------------------------------------------- app settings (values the admin changes on the page)
+# ============================================================ SECTION 10: saved settings (app_settings) + Daily update box
+# Daily update numbers = DAILY_DEFAULT / WEEKLY_DEFAULT, box data = daily_info(), save = /settings/daily, read any setting = get_setting().
+# (values the admin changes on the page)
 SETTINGS_CREATE = """
 CREATE TABLE IF NOT EXISTS app_settings (
     key         TEXT PRIMARY KEY,             -- e.g. 'discount_rate'
@@ -1610,55 +1627,3 @@ def get_setting(cur, key):
     return row
 
 
-@competitors_bp.route("/settings/discount", methods=["POST"])
-def discount_save():
-    """Save the Auto discount rate written by the admin (0 - 50 %)."""
-    raw = (request.form.get("rate") or "").strip().replace("%", "")
-    user = g.get("user") or "unknown"
-    print(f"[DISCOUNT] {user} wants to save discount rate {raw!r}", flush=True)
-    try:
-        rate = round(float(raw), 2)
-    except ValueError:
-        print("[DISCOUNT] Not a number -> not saved", flush=True)
-        return redirect("/settings/discount?error=Please+write+a+number,+e.g.+5")
-    if not 0 <= rate <= 50:
-        print(f"[DISCOUNT] {rate} is outside 0-50 -> not saved", flush=True)
-        return redirect("/settings/discount?error=The+rate+must+be+between+0+and+50")
-    conn = db_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute(SETTINGS_CREATE)
-        cur.execute("""INSERT INTO app_settings (key, value, updated_by) VALUES ('discount_rate', %s, %s)
-                       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by,
-                                                       updated_at = NOW()""", (str(rate), user))
-        conn.commit()
-    finally:
-        cur.close()
-        conn.close()
-    print(f"[DISCOUNT] Saved discount rate {rate}% by {user}", flush=True)
-    if not ON_DISCOUNT_CHANGE:
-        print("[DISCOUNT] No recalculation hook set (app.py not loaded?) -> prices update at the next run", flush=True)
-    started = ON_DISCOUNT_CHANGE() if ON_DISCOUNT_CHANGE else False    # app.py: recalculate suggested prices now
-    print(f"[DISCOUNT] Recalculation {'started now' if started else 'not started now (another run busy)'}", flush=True)
-    return redirect("/settings/discount?saved=1&recalc=" + ("1" if started else "busy"))
-
-
-# Set by app.py: function that recalculates all suggested prices after a new rate is saved
-ON_DISCOUNT_CHANGE = None
-
-
-def get_discount_rate(cur):
-    """Auto discount rate in percent (e.g. 2.5), or None when the admin never saved one.
-    Works with any cursor (app.py uses plain tuples, this page uses dict rows)."""
-    print("[DISCOUNT] get_discount_rate(): reading 'discount_rate' from app_settings", flush=True)
-    cur.execute(SETTINGS_CREATE)
-    cur.execute("SELECT value FROM app_settings WHERE key = 'discount_rate'")
-    row = cur.fetchone()
-    value = (row["value"] if isinstance(row, dict) else row[0]) if row else None
-    try:
-        rate = float(value) if value not in (None, "") else None
-    except ValueError:
-        print(f"[DISCOUNT] Saved value {value!r} is not a number -> treated as NOT SET", flush=True)
-        rate = None
-    print(f"[DISCOUNT] Using Auto discount rate: {rate if rate is not None else 'NOT SET'}", flush=True)
-    return rate

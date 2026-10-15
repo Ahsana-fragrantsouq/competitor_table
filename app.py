@@ -10,6 +10,9 @@ Files in this project
   samawa_catalog.py   -> downloads the whole Samawa website (products.json) into Postgres table samawa_catalog
   ff_catalog_page.py  -> simple table page for French Fragrance products (Postgres french_fragrance_catalog)
   competitors_page.py -> the dark tabbed page /competitors (Competitor table | Samawa | French Fragrance | Branded Perfume)
+                         + the Settings pages (Automate, User management)
+  discount_rate.py    -> Settings -> Auto discount rate: the page box, saving the rate, get_discount_rate()
+  daily_update.py     -> RUN 1 on the PC (French Fragrance / Branded Perfume / Essenzi) + RUN 2 inside this website
   branded_perfume.py  -> copies French Fragrance products and reads the same pages on brandedperfume.com
   essenzi.py          -> same for essenzi.com (table essenzi_catalog); page reading = es_scraper.py on the PC
   vperfumes.py        -> downloads the vperfumes.com UAE Perfumes category into vperfumes_catalog
@@ -38,6 +41,16 @@ Normal order to run things (open these URLs in the browser)
 Old URL still here (reads Airtable, matches, but saves NOTHING - only writes logs)
   /samawa/run?secret=XXX
 
+FILE MAP of app.py (search "SECTION <number>" to jump there)
+  SECTION 1   imports + blueprints            SECTION 9   load our products (load-fi)
+  SECTION 2   RUN 2 scheduler                 SECTION 10  match to each competitor shop
+  SECTION 3   config                          SECTION 11  PRICES: least + suggested price (LEAST_SQL, SUGGEST_SQL)
+  SECTION 4   text helpers                    SECTION 12  background workers
+  SECTION 5   old Samawa reader               SECTION 13  URLs (routes) + discount recalculation hook
+  SECTION 6   Airtable                        SECTION 14  suggestion OK / Not OK, one product's least price
+  SECTION 7   matching (match_one)            SECTION 15  Automate (automatic brands -> Airtable)
+  SECTION 8   competitor table columns        SECTION 16  our product pages + remaining routes
+
 Environment variables (Render -> Environment)
   AIRTABLE_TOKEN     Airtable token (only READS Airtable now)
   FF_DATABASE_URL    Postgres URL ending in /french_fragrance_db
@@ -61,11 +74,15 @@ from urllib.parse import urlparse
 import requests
 from flask import Flask, request, jsonify, g
 
+# ============================================================ SECTION 1: imports + blueprints (pages in their own files)
+# New page file = import its blueprint here + app.register_blueprint(...) below.
 # Pages / jobs that live in their own files ("blueprints") and are plugged into this app
 from ff_catalog_page import ff_catalog_bp          # /ff-catalog
 from samawa_catalog import samawa_catalog_bp       # /samawa-catalog, /samawa-catalog/run, /samawa-catalog/status
 from competitors_page import competitors_bp        # /competitors
-import competitors_page                            # Auto discount rate: get_discount_rate() + "saved" hook
+import competitors_page                            # competitors page helpers
+import discount_rate                               # Auto discount rate: get_discount_rate() + "saved" hook (discount_rate.py)
+from discount_rate import discount_bp              # POST /settings/discount (save the rate)
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
 from vperfumes import vperfumes_bp                 # /vperfumes/test, /vperfumes/run, /vperfumes/status
@@ -85,6 +102,7 @@ app = Flask(__name__)
 app.register_blueprint(ff_catalog_bp)
 app.register_blueprint(samawa_catalog_bp)
 app.register_blueprint(competitors_bp)
+app.register_blueprint(discount_bp)                # Settings -> Auto discount rate (discount_rate.py)
 app.register_blueprint(branded_perfume_bp)
 app.register_blueprint(essenzi_bp)
 app.register_blueprint(vperfumes_bp)
@@ -98,6 +116,8 @@ if price_check_bp is not None:
 app.register_blueprint(auth_bp)
 init_auth(app)                                     # users from Render env var USERS (see auth.py)
 
+# ============================================================ SECTION 2: RUN 2 scheduler (one shop a day, inside this website)
+# Time / order / round length are set in daily_update.py (RUN2_TIME, RUN2_ORDER, RUN2_ROUND_DAYS).
 # RUN 2 (full lists of Samawa, Ounass, V Perfumes, Amberiya, Al Injaz, Niche Gallerie) runs INSIDE this website:
 # one background thread checks the time every minute and runs ONE shop a day at RUN2_TIME (round every 2 weeks)
 # (the time is set at the top of daily_update.py). Render env var RUN2_SCHEDULER=off switches it off.
@@ -113,6 +133,8 @@ else:
     print("[RUN2] Scheduler switched off (RUN2_SCHEDULER=off)", flush=True)
 
 
+# ============================================================ SECTION 3: config (Render environment, Airtable ids, field names)
+# Change Airtable table / field names and the match threshold here.
 # ---------------------------------------------------------------- config
 # Settings. Values in os.environ come from Render -> Environment; the rest are fixed IDs / names.
 AIRTABLE_TOKEN = os.environ["AIRTABLE_TOKEN"]
@@ -171,6 +193,8 @@ def dlog(*args):
         print(*args, flush=True)
 
 
+# ============================================================ SECTION 4: text helpers (compare product names)
+# Name cleaning: EDP/EDT words, ignored words, size + gender reading.
 # ---------------------------------------------------------------- text helpers
 # Product names are written differently on every site ("Eau de Parfum" vs "EDP", "Pour Homme" vs "Men").
 # These helpers turn names into the same simple form so they can be compared.
@@ -323,6 +347,8 @@ def name_score(fi_tokens, sm_tokens):
     return round(0.6 * coverage + 0.4 * precision, 3)
 
 
+# ============================================================ SECTION 5: old Samawa reader (only for the OLD /samawa/run)
+# Not used by the daily flow.
 # ---------------------------------------------------------------- Samawa (used by the OLD /samawa/run only)
 # The new flow reads Samawa from Postgres (samawa_catalog.py fills it), not from these functions.
 MAX_PAGES = 100  # Shopify storefront hard limit: page 101+ returns 400 (max 25,000 items per list)
@@ -460,6 +486,8 @@ def samawa_fields(e):
     return {C_URL: f"{SAMAWA_BASE}/products/{e['handle']}", C_PRICE: e["price"], C_STOCK: e["available"]}
 
 
+# ============================================================ SECTION 6: Airtable (read French Inventories + brands)
+# Airtable reading helpers.
 # ---------------------------------------------------------------- Airtable
 # Airtable is only READ now (French Inventories + brands). Nothing is written back.
 def at_list(table, params):
@@ -543,6 +571,8 @@ def fetch_all_brand_products():
     return groups
 
 
+# ============================================================ SECTION 7: matching one product to a shop (match_one)
+# Barcode first, then brand + name + size + type + gender score (MATCH_THRESHOLD).
 # ---------------------------------------------------------------- matching
 # match_one() is shared: the old /samawa/run and the new /competitor/match-samawa both use it.
 def pick_by_size(entries, size):
@@ -747,6 +777,8 @@ def run_match(brands, rematch=False, fi_groups=None):
 
 
 
+# ============================================================ SECTION 8: competitor table in Postgres (columns = CT_CREATE)
+# New column = one 'ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ...' line in CT_CREATE.
 # ================================================================ COMPETITOR TABLE (Postgres)  <- NEW FLOW
 # Step 1: /competitor/load-fi       -> all French Inventories products -> competitor_table
 # Step 2: /competitor/match-samawa  -> match every product to samawa_catalog -> link, price, stock, suggestion
@@ -947,6 +979,8 @@ def first_number(v):
         return None
 
 
+# ============================================================ SECTION 9: load our products (French Inventories -> competitor_table)
+# /competitor/load-fi
 # ---------------------------------------------------------------- step 1: French Inventories -> Postgres
 def ct_load_fi():
     """STEP 1 - copy ALL French Inventories products from Airtable into competitor_table.
@@ -1014,6 +1048,8 @@ def ct_load_fi():
     return summary
 
 
+# ============================================================ SECTION 10: match our products to each competitor shop
+# Each shop: *_entries_from_db() reads its table, SHOPS lists them, ct_match_shop() matches + saves price/stock.
 # ---------------------------------------------------------------- step 2 / 3: match to a competitor shop
 def sm_entries_from_db(cur):
     """samawa_catalog rows -> same entry format build_index() makes, so match_one() works unchanged."""
@@ -1424,6 +1460,8 @@ def ct_match_ng():
     return ct_match_shop("ng")
 
 
+# ============================================================ SECTION 11: PRICES: least price + suggested price
+# LEAST_SQL = cheapest of our price + in-stock competitors | SUGGEST_SQL = cheapest in-stock competitor - discount rate (discount_rate.py) | ct_update_least() runs both.
 # ---------------------------------------------------------------- Branded Perfume / Essenzi + least price
 # Branded Perfume and Essenzi sell the SAME products as French Fragrance (same company, same links).
 # So a product matched to French Fragrance (ff_link) is also matched to them:
@@ -1561,7 +1599,7 @@ def ct_update_least():
             log(f"[CT-LEAST] {label}: {cur.rowcount} products linked through the French Fragrance match")
 
         cur.execute(LEAST_SQL)
-        rate = competitors_page.get_discount_rate(cur)        # Settings -> Auto discount rate, e.g. 2.5
+        rate = discount_rate.get_discount_rate(cur)        # Settings -> Auto discount rate, e.g. 2.5
         result["discount_rate"] = rate
         if rate is None:
             log("[CT-LEAST] WARNING: no Auto discount rate saved (Settings -> Auto discount rate) "
@@ -1611,6 +1649,8 @@ def _ct_worker(fn):
         run_lock.release()
 
 
+# ============================================================ SECTION 12: background workers (jobs run in a thread)
+# One job at a time (run_lock); progress at /samawa/status.
 # ---------------------------------------------------------------- routes
 def _worker(brands, rematch=False):
     """Background thread for the OLD /samawa/run (the browser gets an answer immediately, work continues here)."""
@@ -1631,6 +1671,8 @@ def _worker(brands, rematch=False):
         run_lock.release()
 
 
+# ============================================================ SECTION 13: URLs (routes): run / match / status / recalculate
+# All /competitor/... and /samawa/... links. recalc_after_discount_change() = what Save on Auto discount rate starts.
 # ================================================================ URLs (routes)
 # Every long job starts in a background thread and answers the browser immediately with {"started": true}.
 # Watch progress at /samawa/status or in Render -> Logs.
@@ -1706,7 +1748,7 @@ def recalc_after_discount_change():
     return True
 
 
-competitors_page.ON_DISCOUNT_CHANGE = recalc_after_discount_change
+discount_rate.ON_DISCOUNT_CHANGE = recalc_after_discount_change   # discount_rate.py SECTION 6
 log("[DISCOUNT] Settings page linked: saving a new rate will recalculate suggested prices")
 
 
@@ -1731,6 +1773,8 @@ def ct_match_ff_route():
     return _ct_start(ct_match_ff, "CT-FF")
 
 
+# ============================================================ SECTION 14: suggestion OK / Not OK + one product's least price
+# least_for() = recalculates least + suggested price of ONE product (after OK / Not OK).
 # ---------------------------------------------------------------- suggestion OK / Not OK buttons
 # Where each shop's products are, so an accepted suggestion gets its name / price / stock
 SUGGESTION_SHOPS = {
@@ -1790,7 +1834,7 @@ def least_for(cur, fid):
     least = min((pr for _, pr in offers), default=None)
     sites = ", ".join(s for s, pr in offers if least is not None and abs(pr - least) < 0.005) or None
     best_comp = min((pr for _, pr in comp), default=None)
-    rate = competitors_page.get_discount_rate(cur)            # Settings -> Auto discount rate, e.g. 2.5
+    rate = discount_rate.get_discount_rate(cur)            # Settings -> Auto discount rate, e.g. 2.5
     if rate is None:
         # no rate saved -> update least price only, keep the suggested price as it is
         cur.execute("UPDATE competitor_table SET least_price = %s, least_priced_website = %s WHERE fi_record_id = %s",
@@ -1891,6 +1935,8 @@ def airtable_set_prices(good, tag="PRICES"):
     return done, failed
 
 
+# ============================================================ SECTION 15: Automate: brands on automatic -> Airtable UAE Price
+# auto_apply() = UAE Price := suggested price for automatic brands | Update price / Update all routes.
 # ---------------------------------------------------------------- Automate (Settings -> Automate)
 # Brands ticked on /settings/automate are on AUTOMATIC: their UAE Price in Airtable is set to the suggested price
 #   - right away when "Update all" is clicked, and
@@ -2000,6 +2046,8 @@ def ct_update_prices_route():
                     "error": (f"{len(failed)} not updated in Airtable" if failed else None)})
 
 
+# ============================================================ SECTION 16: our product pages (fragrantsouq.com) + remaining routes
+# /competitor/load-our-links, match-xx routes, /competitor/update-price, /competitor/update-least.
 # ---------------------------------------------------------------- OUR product pages (fragrantsouq.com)
 OUR_SITE = os.environ.get("OUR_SITE", "https://fragrantsouq.com")
 
