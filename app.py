@@ -12,7 +12,8 @@ Files in this project
   competitors_page.py -> the dark tabbed page /competitors (Competitor table | Samawa | French Fragrance | Branded Perfume)
                          + the Settings pages (Automate, User management)
   discount_rate.py    -> Settings -> Auto discount rate: the page box, saving the rate, get_discount_rate()
-  price_limits.py     -> LOP / MOP: lowest / highest allowed suggested price (rule, columns, card boxes, Save)
+  price_limits.py     -> LOP / MOP: lowest / highest allowed suggested price (columns, card boxes, Save)
+  suggested_price.py  -> THE suggested price rule as plain functions: cheapest - X%, then <= LOP -> LOP, >= MOP -> MOP
   daily_update.py     -> RUN 1 on the PC (French Fragrance / Branded Perfume / Essenzi) + RUN 2 inside this website
   branded_perfume.py  -> copies French Fragrance products and reads the same pages on brandedperfume.com
   essenzi.py          -> same for essenzi.com (table essenzi_catalog); page reading = es_scraper.py on the PC
@@ -85,6 +86,7 @@ import competitors_page                            # competitors page helpers
 import discount_rate                               # Auto discount rate: get_discount_rate() + "saved" hook (discount_rate.py)
 from discount_rate import discount_bp              # POST /settings/discount (save the rate)
 import price_limits                                # LOP / MOP: rule, columns, card boxes (price_limits.py)
+from suggested_price import raw_suggested_price    # THE suggested price rule (suggested_price.py): cheapest - X%
 from price_limits import limits_bp                 # POST /competitor/limits (save LOP / MOP)
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
@@ -1531,7 +1533,9 @@ WHERE c.fi_record_id = w.fi_record_id;
 
 # Suggested price = cheapest in-stock COMPETITOR price minus the Auto discount rate,
 # then kept between the product's LOP and MOP (typed on /competitors; empty = no limit):
-#     raw < LOP -> LOP      raw > MOP -> MOP      otherwise raw       (no competitor in stock -> no suggested price)
+#     raw <= LOP -> LOP     raw >= MOP -> MOP     otherwise raw       (no competitor in stock -> no suggested price)
+# The rule as Python functions = suggested_price.py (used for ONE product). SUGGEST_SQL below = the SAME rule in SQL
+# for ALL products at once - if you change the rule, change both.
 # The rate is NOT in the code: the admin writes it in Settings -> Auto discount rate
 # (table app_settings, key 'discount_rate'). It is read again every time prices are calculated.
 # No rate saved yet -> suggested prices are left as they are (nothing is guessed).
@@ -1850,10 +1854,10 @@ def least_for(cur, fid):
         return
     # same rounding as Postgres ROUND (half away from zero): 97.5 -> 98
     log(f"[SUGGEST] {fid}: cheapest in-stock competitor {best_comp} - {rate}% (rounded to {SUGGEST_DECIMALS} decimals)")
-    suggested = (float(Decimal(str(best_comp * (1 - rate / 100))).quantize(Decimal(1).scaleb(-SUGGEST_DECIMALS),
-                                                                          rounding=ROUND_HALF_UP))
-                 if best_comp else None)
-    suggested = price_limits.apply_limits(cur, fid, suggested)   # LOP / MOP of this product (price_limits.py)
+    # Step 4: cheapest in-stock competitor - X%, rounded (suggested_price.py)
+    suggested = raw_suggested_price(best_comp, rate)
+    # Step 5: <= LOP -> LOP, >= MOP -> MOP (suggested_price.py rule, LOP / MOP read by price_limits.py)
+    suggested = price_limits.apply_limits(cur, fid, suggested)
     cur.execute("UPDATE competitor_table SET least_price = %s, least_priced_website = %s, suggested_price = %s "
                 "WHERE fi_record_id = %s", (least, sites, suggested, fid))
     log(f"[SUGGEST] Least for {fid}: {least} ({sites}) | suggested {suggested} ({rate}% below {best_comp})")

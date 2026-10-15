@@ -3,9 +3,9 @@ LOP / MOP  (lowest / highest allowed suggested price, typed by hand on each prod
 =========================================================================================================
 Separate module for everything about LOP / MOP.
 
-Rule (used for EVERY suggested price):
+Rule (used for EVERY suggested price - written as functions in suggested_price.py):
     raw   = cheapest in-stock competitor price - Auto discount rate (discount_rate.py)
-    final = raw < LOP -> LOP   |   raw > MOP -> MOP   |   otherwise raw
+    final = raw <= LOP -> LOP   |   raw >= MOP -> MOP   |   otherwise raw
     empty LOP / MOP = no limit.  No competitor in stock -> no suggested price (LOP / MOP never invent one).
     Example (LOP 1500, MOP 1700): raw 1571 -> 1571 | raw 1455 -> 1500 | raw 1795 -> 1700
 
@@ -25,6 +25,8 @@ Used by:
 """
 
 from flask import Blueprint, request, jsonify, g
+
+from suggested_price import apply_lop_mop      # THE LOP / MOP rule (suggested_price.py SECTION 3)
 
 limits_bp = Blueprint("price_limits", __name__)
 
@@ -64,11 +66,12 @@ def apply_limits(cur, fid, price):
         return None
     cur.execute("SELECT lop, mop FROM competitor_table WHERE fi_record_id = %s", (fid,))
     lop, mop = cur.fetchone() or (None, None)
-    final = price
-    if lop is not None and final < float(lop):
-        final = float(lop)                                        # below LOP -> LOP
-    if mop is not None and final > float(mop):
-        final = float(mop)                                        # above MOP -> MOP
+    # <= LOP -> LOP, >= MOP -> MOP, otherwise unchanged (suggested_price.py)
+    try:
+        final = apply_lop_mop(price, float(lop) if lop is not None else None, float(mop) if mop is not None else None)
+    except ValueError as ex:                                      # LOP > MOP saved somehow -> limits ignored
+        log(f"[LIMITS] {fid}: {ex} -> LOP / MOP ignored, suggested {price}")
+        return price
     log(f"[LIMITS] {fid}: suggested {price} | LOP {lop} | MOP {mop} -> {final}"
         + (" (raised to LOP)" if final > price else " (lowered to MOP)" if final < price else ""))
     return final
