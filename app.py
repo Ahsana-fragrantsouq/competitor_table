@@ -14,6 +14,8 @@ Files in this project
   discount_rate.py    -> Settings -> Auto discount rate: the page box, saving the rate, get_discount_rate()
   price_limits.py     -> LOP / MOP: lowest / highest allowed suggested price (columns, card boxes, Save)
   suggested_price.py  -> THE suggested price rule as plain functions: cheapest - X%, then <= LOP -> LOP, >= MOP -> MOP
+  price_triggers.py   -> WHEN one product is recalculated: TRIGGER 1 competitor price / stock changed,
+                         TRIGGER 2 admin saved LOP / MOP (recalc_product() = the calculation for one product)
   daily_update.py     -> RUN 1 on the PC (French Fragrance / Branded Perfume / Essenzi) + RUN 2 inside this website
   branded_perfume.py  -> copies French Fragrance products and reads the same pages on brandedperfume.com
   essenzi.py          -> same for essenzi.com (table essenzi_catalog); page reading = es_scraper.py on the PC
@@ -86,7 +88,7 @@ import competitors_page                            # competitors page helpers
 import discount_rate                               # Auto discount rate: get_discount_rate() + "saved" hook (discount_rate.py)
 from discount_rate import discount_bp              # POST /settings/discount (save the rate)
 import price_limits                                # LOP / MOP: rule, columns, card boxes (price_limits.py)
-from suggested_price import raw_suggested_price    # THE suggested price rule (suggested_price.py): cheapest - X%
+import price_triggers                              # WHEN prices recalc: competitor change / LOP-MOP saved (price_triggers.py)
 from price_limits import limits_bp                 # POST /competitor/limits (save LOP / MOP)
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
@@ -1785,7 +1787,7 @@ def ct_match_ff_route():
 
 
 # ============================================================ SECTION 14: suggestion OK / Not OK + one product's least price
-# least_for() = recalculates least + suggested price of ONE product (after OK / Not OK).
+# least_for() = recalculates least + suggested price of ONE product (after OK / Not OK) -> price_triggers.recalc_product().
 # ---------------------------------------------------------------- suggestion OK / Not OK buttons
 # Where each shop's products are, so an accepted suggestion gets its name / price / stock
 SUGGESTION_SHOPS = {
@@ -1829,38 +1831,10 @@ def link_sisters_for(cur, fid):
 
 
 def least_for(cur, fid):
-    """Recalculate least price / least priced website / suggested price for ONE product (same rules as LEAST_SQL)."""
-    cols = ", ".join(f"{p}_price, {p}_stock, {p}_link" for _, p in LEAST_ORDER)
-    cur.execute(f"SELECT uae_price, {cols} FROM competitor_table WHERE fi_record_id = %s", (fid,))
-    row = cur.fetchone()
-    if not row:
-        return
-    offers = [("Fragrant Souq", float(row[0]))] if row[0] and row[0] > 0 else []
-    comp = []
-    for i, (label, _) in enumerate(LEAST_ORDER):
-        price, stock, link = row[1 + i * 3: 4 + i * 3]
-        if stock and link and price and price > 0:                 # only in-stock competitors count
-            comp.append((label, float(price)))
-    offers += comp
-    least = min((pr for _, pr in offers), default=None)
-    sites = ", ".join(s for s, pr in offers if least is not None and abs(pr - least) < 0.005) or None
-    best_comp = min((pr for _, pr in comp), default=None)
-    rate = discount_rate.get_discount_rate(cur)            # Settings -> Auto discount rate, e.g. 2.5
-    if rate is None:
-        # no rate saved -> update least price only, keep the suggested price as it is
-        cur.execute("UPDATE competitor_table SET least_price = %s, least_priced_website = %s WHERE fi_record_id = %s",
-                    (least, sites, fid))
-        log(f"[SUGGEST] Least for {fid}: {least} ({sites}) | suggested NOT changed (no Auto discount rate saved)")
-        return
-    # same rounding as Postgres ROUND (half away from zero): 97.5 -> 98
-    log(f"[SUGGEST] {fid}: cheapest in-stock competitor {best_comp} - {rate}% (rounded to {SUGGEST_DECIMALS} decimals)")
-    # Step 4: cheapest in-stock competitor - X%, rounded (suggested_price.py)
-    suggested = raw_suggested_price(best_comp, rate)
-    # Step 5: <= LOP -> LOP, >= MOP -> MOP (suggested_price.py rule, LOP / MOP read by price_limits.py)
-    suggested = price_limits.apply_limits(cur, fid, suggested)
-    cur.execute("UPDATE competitor_table SET least_price = %s, least_priced_website = %s, suggested_price = %s "
-                "WHERE fi_record_id = %s", (least, sites, suggested, fid))
-    log(f"[SUGGEST] Least for {fid}: {least} ({sites}) | suggested {suggested} ({rate}% below {best_comp})")
+    """Recalculate least price / least priced website / suggested price for ONE product.
+    The calculation is in price_triggers.recalc_product() (same rules as LEAST_SQL + SUGGEST_SQL,
+    suggested price rule = suggested_price.py). Used after OK on a suggestion and after Update price."""
+    price_triggers.recalc_product(cur, fid, reason="one product")
 
 
 @app.post("/competitor/suggestion")
@@ -2222,7 +2196,7 @@ def ct_update_price_route():
 
 
 # ---- LOP / MOP: Save route + rule live in price_limits.py; here app.py gives it the functions it needs
-price_limits.init(connect=pg_conn, create_sql=CT_CREATE, recalc_one=least_for,
+price_limits.init(connect=pg_conn, create_sql=CT_CREATE,
                   automatic_brands=auto_brands, push_prices=airtable_set_prices)
 
 

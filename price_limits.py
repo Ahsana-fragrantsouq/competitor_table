@@ -14,11 +14,11 @@ Where things are (change them here):
   SECTION 2  database columns    -> LIMITS_CREATE: lop, mop, limits_by, limits_at in competitor_table
   SECTION 3  the rule            -> clamp_sql() for the SQL of ALL products, apply_limits() for ONE product
   SECTION 4  card on /competitors-> LIMITS_CSS (look), LIMITS_CARD_HTML (the 2 boxes + Save), LIMITS_JS (Save button)
-  SECTION 5  save (route)        -> POST /competitor/limits: check, save, recalculate that product, Airtable if automatic
+  SECTION 5  save (route)        -> POST /competitor/limits: check, save, TRIGGER 2 (price_triggers.py), Airtable if automatic
   SECTION 6  hooks from app.py   -> init(): app.py gives the functions this module needs (no circular import)
 
 Used by:
-  app.py               -> CT_CREATE + LIMITS_CREATE, SUGGEST_SQL uses clamp_sql(), least_for() uses apply_limits(),
+  app.py               -> CT_CREATE + LIMITS_CREATE, SUGGEST_SQL uses clamp_sql(), least_for() -> price_triggers.recalc_product(),
                           registers limits_bp, calls init(...)
   competitors_page.py  -> puts LIMITS_CSS / LIMITS_CARD_HTML / LIMITS_JS into its page (placeholders @@LIMITS_...@@),
                           reads the lop / mop columns for the cards
@@ -27,6 +27,7 @@ Used by:
 from flask import Blueprint, request, jsonify, g
 
 from suggested_price import apply_lop_mop      # THE LOP / MOP rule (suggested_price.py SECTION 3)
+import price_triggers                          # TRIGGER 2: recalculate the product after Save (price_triggers.py)
 
 limits_bp = Blueprint("price_limits", __name__)
 
@@ -60,7 +61,7 @@ def clamp_sql(expr, table_alias="c"):
 
 
 def apply_limits(cur, fid, price):
-    """For ONE product (used in app.py least_for): keep `price` between its LOP and MOP.
+    """For ONE product: keep `price` between its LOP and MOP (helper - price_triggers.recalc_product() does this itself).
     price None (no competitor in stock) stays None - LOP / MOP never invent a price."""
     if price is None:
         return None
@@ -177,7 +178,8 @@ def limits_save():
                        WHERE fi_record_id = %s""", (lop, mop, user, fid))
         if cur.rowcount == 0:
             return jsonify({"ok": False, "error": "Product not found"}), 404
-        HOOKS["recalc_one"](cur, fid)                    # app.py least_for(): least + suggested price of this product
+        # TRIGGER 2: new LOP / MOP -> least + suggested price of this product recalculated at once (price_triggers.py)
+        price_triggers.on_limits_change(cur, fid, user)
         cur.execute("SELECT suggested_price, least_price, least_priced_website, LOWER(brand), uae_price "
                     "FROM competitor_table WHERE fi_record_id = %s", (fid,))
         sugg, least, site, brand, ours = cur.fetchone()
@@ -205,12 +207,11 @@ def limits_save():
 HOOKS = {}
 
 
-def init(connect, create_sql, recalc_one, automatic_brands, push_prices):
+def init(connect, create_sql, automatic_brands, push_prices):
     """connect()                      -> new Postgres connection (app.py pg_conn)
     create_sql                       -> app.py CT_CREATE (creates / extends competitor_table)
-    recalc_one(cur, fid)             -> app.py least_for: least + suggested price of ONE product
     automatic_brands(cur)            -> app.py auto_brands: list of brands on automatic (lower case)
     push_prices({fid: price}, tag)   -> app.py airtable_set_prices: write UAE Price to Airtable"""
-    HOOKS.update(connect=connect, create_sql=create_sql, recalc_one=recalc_one,
+    HOOKS.update(connect=connect, create_sql=create_sql,
                  automatic_brands=automatic_brands, push_prices=push_prices)
-    log("[LIMITS] Linked to app.py: Save on LOP / MOP recalculates the suggested price at once")
+    log("[LIMITS] Linked to app.py: Save on LOP / MOP recalculates the suggested price at once (TRIGGER 2)")

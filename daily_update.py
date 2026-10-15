@@ -2,6 +2,8 @@ r"""
 Daily competitor update (runs on YOUR PC Monday-Friday at 11:30 AM - Windows Task Scheduler; to change the time
 see START TIME below)
 Saturday / Sunday: nothing runs (PC is off; if it is on, the script skips those days unless --force).
+SUGGESTED PRICE: every changed competitor price / stock recalculates that product at once (TRIGGER 1,
+price_triggers.py + suggested_price.py - keep both next to this file); update-least at the end does all products.
 -------------------------------------------------------------------------------------------------------------------
 EVERY WORKING DAY (Mon-Fri) - French Fragrance, Branded Perfume, Essenzi (their pages must be opened one by one in your Chrome):
     the NEXT 10 BRANDS of the shop's OWN brand list (A -> Z, then again from A): price + stock of ALL their products
@@ -61,6 +63,16 @@ from datetime import datetime, date, timedelta
 
 import requests
 import psycopg2
+
+# TRIGGER 1 (price_triggers.py + suggested_price.py, same files as on Render - copy both next to this file):
+# a changed competitor price / stock recalculates that product's suggested price at once.
+# Missing files -> the run still works, prices are then recalculated only at the end (update-least).
+try:
+    import price_triggers
+except ImportError as _ex:
+    price_triggers = None
+    print(f"[TRIGGER 1] price_triggers.py / suggested_price.py not found ({_ex}) -> suggested prices are "
+          f"recalculated only at the end of the run", flush=True)
 
 # ---------------------------------------------------------------- settings
 # START TIME (11:30 AM, Monday-Friday) is NOT set in this file - Windows Task Scheduler starts daily_update.bat.
@@ -373,7 +385,9 @@ def check_price(key, url, r, old_price):
 
 def save_one(cur, key, rid, url, r):
     """New price / stock -> the shop's own table (+ competitor_table for French Fragrance). True = something changed.
-    Branded Perfume / Essenzi prices reach competitor_table through update-least at the end."""
+    Changed -> TRIGGER 1 (price_triggers.py): the new price / stock goes into competitor_table (Branded Perfume /
+    Essenzi too) and that product's least + suggested price are recalculated at once.
+    update-least at the end of the run still recalculates everything (+ Airtable for automatic brands)."""
     t = DAILY_SHOPS[key]["table"]
     if key == "ff":
         cur.execute("SELECT price_inc_tax, stock FROM french_fragrance_catalog WHERE id = %s", (rid,))
@@ -401,6 +415,10 @@ def save_one(cur, key, rid, url, r):
     changed = (new_price is not None and old_price != float(new_price)) or old[1] != r["stock"]
     if changed:
         log(f"[{key.upper()}-SAVE] {url}: AED {old_price} / {old[1]}  ->  AED {new_price} / {r['stock']}")
+        # TRIGGER 1: competitor price / stock changed -> recalculate the suggested price of the matched product(s)
+        # (a failed page - 403 / timeout - never reaches save_one, so it never triggers anything)
+        if price_triggers:
+            price_triggers.on_competitor_change(cur, key, url, price=new_price, in_stock=r["stock"] == "In stock")
     return changed
 
 
