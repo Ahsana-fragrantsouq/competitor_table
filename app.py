@@ -14,6 +14,7 @@ Files in this project
   discount_rate.py    -> Settings -> Auto discount rate: the page box, saving the rate, get_discount_rate()
   price_limits.py     -> LOP / MOP: lowest / highest allowed suggested price (columns, card boxes, Save)
   suggested_price.py  -> THE suggested price rule as plain functions: cheapest - X%, then <= LOP -> LOP, >= MOP -> MOP
+  skip_auto.py        -> 'Skip automatic price' checkbox per product: never changed automatically in Airtable
   db_triggers.py      -> Postgres triggers: list price / stock change -> competitor_table -> least + suggested price
   price_triggers.py   -> WHEN one product is recalculated: TRIGGER 1 competitor price / stock changed,
                          TRIGGER 2 admin saved LOP / MOP (recalc_product() = the calculation for one product)
@@ -92,6 +93,8 @@ import price_limits                                # LOP / MOP: rule, columns, c
 import price_triggers                              # WHEN prices recalc: competitor change / LOP-MOP saved (price_triggers.py)
 import db_triggers                                 # Postgres triggers: competitor lists -> competitor_table -> suggested price
 from price_limits import limits_bp                 # POST /competitor/limits (save LOP / MOP)
+import skip_auto                                   # 'Skip automatic price' checkbox per product (skip_auto.py)
+from skip_auto import skip_bp                      # POST /competitor/no-auto (save the checkbox)
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
 from vperfumes import vperfumes_bp                 # /vperfumes/test, /vperfumes/run, /vperfumes/status
@@ -113,6 +116,7 @@ app.register_blueprint(samawa_catalog_bp)
 app.register_blueprint(competitors_bp)
 app.register_blueprint(discount_bp)                # Settings -> Auto discount rate (discount_rate.py)
 app.register_blueprint(limits_bp)                  # LOP / MOP Save on the product cards (price_limits.py)
+app.register_blueprint(skip_bp)                    # 'Skip automatic price' checkbox on the cards (skip_auto.py)
 app.register_blueprint(branded_perfume_bp)
 app.register_blueprint(essenzi_bp)
 app.register_blueprint(vperfumes_bp)
@@ -920,7 +924,7 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_priced_website TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS suggested_price NUMERIC(10,2);
 CREATE INDEX IF NOT EXISTS idx_ct_sku ON competitor_table (sku);
 CREATE INDEX IF NOT EXISTS idx_ct_brand ON competitor_table (brand);
-""" + price_limits.LIMITS_CREATE       # LOP / MOP columns (price_limits.py SECTION 2)
+""" + price_limits.LIMITS_CREATE + skip_auto.SKIP_CREATE   # LOP / MOP columns (price_limits.py) + no_auto (skip_auto.py)
 
 # Step 1 save: new product -> insert, existing product (same fi_record_id) -> update its details.
 # Samawa columns are NOT touched here, so re-running step 1 keeps the match results.
@@ -1963,8 +1967,13 @@ def auto_apply(brands=None, reason=""):
                 return {"brands": 0, "products": 0, "updated": 0, "failed": 0}
             cur.execute("""SELECT fi_record_id, suggested_price FROM competitor_table
                            WHERE LOWER(brand) = ANY(%s) AND suggested_price > 0
-                             AND uae_price IS DISTINCT FROM suggested_price""", (wanted,))
+                             AND uae_price IS DISTINCT FROM suggested_price
+                             AND """ + skip_auto.NOT_SKIPPED_SQL, (wanted,))      # 'Skip automatic price' ticked -> left out
             good = {fid: float(p) for fid, p in cur.fetchall()}
+            cur.execute("SELECT COUNT(*) FROM competitor_table WHERE LOWER(brand) = ANY(%s) AND no_auto", (wanted,))
+            skipped = cur.fetchone()[0]
+            if skipped:
+                log(f"[AUTO] {reason}: {skipped} products of automatic brands have 'Skip automatic price' ticked -> not changed")
         finally:
             cur.close()
             conn.close()
@@ -1996,7 +2005,8 @@ def automate_save_route():
                                ON CONFLICT (brand) DO UPDATE SET auto = EXCLUDED.auto,
                                    updated_by = EXCLUDED.updated_by, updated_at = NOW()""", rows)
         cur.execute("""SELECT COUNT(*) FROM competitor_table WHERE LOWER(brand) = ANY(%s) AND suggested_price > 0
-                         AND uae_price IS DISTINCT FROM suggested_price""", ([b.lower() for b in auto],))
+                         AND uae_price IS DISTINCT FROM suggested_price AND """ + skip_auto.NOT_SKIPPED_SQL,
+                    ([b.lower() for b in auto],))
         to_update = cur.fetchone()[0]
         conn.commit()
     finally:
@@ -2200,6 +2210,8 @@ def ct_update_price_route():
 # ---- LOP / MOP: Save route + rule live in price_limits.py; here app.py gives it the functions it needs
 price_limits.init(connect=pg_conn, create_sql=CT_CREATE,
                   automatic_brands=auto_brands, push_prices=airtable_set_prices)
+skip_auto.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Skip automatic price' checkbox (skip_auto.py)
+               automatic_brands=auto_brands, push_prices=airtable_set_prices)
 
 
 # ---------------------------------------------------------------- database triggers (db_triggers.py)

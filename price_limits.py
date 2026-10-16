@@ -180,10 +180,13 @@ def limits_save():
             return jsonify({"ok": False, "error": "Product not found"}), 404
         # TRIGGER 2: new LOP / MOP -> least + suggested price of this product recalculated at once (price_triggers.py)
         price_triggers.on_limits_change(cur, fid, user)
-        cur.execute("SELECT suggested_price, least_price, least_priced_website, LOWER(brand), uae_price "
-                    "FROM competitor_table WHERE fi_record_id = %s", (fid,))
-        sugg, least, site, brand, ours = cur.fetchone()
-        automatic = brand in HOOKS["automatic_brands"](cur)   # Settings -> Automate: brand ticked?
+        cur.execute("SELECT suggested_price, least_price, least_priced_website, LOWER(brand), uae_price, "
+                    "COALESCE(no_auto, FALSE) FROM competitor_table WHERE fi_record_id = %s", (fid,))
+        sugg, least, site, brand, ours, skipped = cur.fetchone()
+        # Settings -> Automate: brand ticked? AND 'Skip automatic price' NOT ticked on this card (skip_auto.py)
+        automatic = brand in HOOKS["automatic_brands"](cur) and not skipped
+        if skipped:
+            log(f"[LIMITS] {fid}: 'Skip automatic price' is ticked -> Airtable not changed")
         conn.commit()
     finally:
         cur.close()

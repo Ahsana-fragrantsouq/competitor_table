@@ -33,6 +33,7 @@ from flask import Blueprint, request, render_template_string, g, redirect
 from auth import list_users, is_admin, MIN_PASSWORD      # User management (users are saved by auth.py)
 import discount_rate                                      # Settings -> Auto discount rate (own file: discount_rate.py)
 import price_limits                                       # LOP / MOP boxes on the product card (own file: price_limits.py)
+import skip_auto                                          # 'Skip automatic price' checkbox on the cards (skip_auto.py)
 from discount_rate import get_discount_rate               # kept here so competitors_page.get_discount_rate() still works
 
 competitors_bp = Blueprint("competitors", __name__)
@@ -79,6 +80,7 @@ SOURCES = [
               "least_price": "least_price", "least_site": "least_priced_website",
               "suggested_price": "suggested_price", "fi": "fi_record_id",
               "lop": "lop", "mop": "mop",           # LOP / MOP (price_limits.py) - read for the card boxes
+              "no_auto": "no_auto",                 # Skip automatic price checkbox (skip_auto.py)
               "stock": None, "updated": "updated_at"}},
     {"key": "samawa", "label": "Samawa", "table": "samawa_catalog",
      "cols": {"name": "name", "brand": "brand", "gtin": "gtin", "url": "product_url",
@@ -527,6 +529,8 @@ HTML = """
  .upd-btn:disabled{opacity:.6;cursor:wait}
  /* LOP / MOP boxes: price_limits.py LIMITS_CSS */
  @@LIMITS_CSS@@
+ /* Skip automatic price checkbox: skip_auto.py SKIP_CSS */
+ @@SKIP_CSS@@
  .upd-msg{font-size:13px;margin-top:6px;min-height:16px}
  .sitelink{color:inherit;text-decoration:underline;text-underline-offset:3px}
  .sitelink:hover{color:#f2d675}
@@ -776,9 +780,16 @@ HTML = """
     {% endfor %}
     {% if shown.n == 0 %}<div class="shop"><span class="gtin">{% if shown.out %}No competitor has this product in stock{% else %}No competitor has this product{% endif %}</span></div>{% endif %}
     <div class="date">Updated {{ r.updated.strftime('%d %b, %H:%M') if r.updated else '' }}</div>
+    {# bottom row: "Show out of stock" (left, only when some are out of stock) + "Skip automatic price" (right) #}
+    <div class="cardfoot">
     {% if shown.out %}
     {# out-of-stock competitors: hidden until "Show out of stock" is clicked (toggleOut in the script below) #}
     <button type="button" class="outtoggle" onclick="toggleOut(this)" data-n="{{ shown.out }}">Show out of stock ({{ shown.out }})</button>
+    {% endif %}
+    {# Skip automatic price checkbox: skip_auto.py SKIP_CARD_HTML #}
+    @@SKIP_CARD@@
+    </div>
+    {% if shown.out %}
     <div class="outlist" hidden>
       {% for label, k in src.shops %}
         {% if r[k ~ '_url'] and not r[k ~ '_stock'] %}{{ shop_block(r, label, k) }}{% endif %}
@@ -968,7 +979,7 @@ HTML = """
   // Suggestion "OK" / "Not OK": tell the server, then reload so the card shows the new match / no suggestion
   // ---- "Show out of stock" / "Hide out of stock" under each product ----
   function toggleOut(btn) {
-    var list = btn.nextElementSibling, open = list.hidden;
+    var list = btn.closest('.card').querySelector('.outlist'), open = list.hidden;
     list.hidden = !open;
     btn.textContent = (open ? "Hide out of stock (" : "Show out of stock (") + btn.dataset.n + ")";
     console.log("[OUT-OF-STOCK] " + (open ? "shown" : "hidden") + ": " + btn.dataset.n + " competitor(s)");
@@ -991,6 +1002,8 @@ HTML = """
   // "Update price": send the (edited) suggested price to the server -> Airtable UAE Price + competitor table
   {# LOP / MOP Save script: price_limits.py LIMITS_JS #}
   @@LIMITS_JS@@
+  {# Skip automatic price script: skip_auto.py SKIP_JS #}
+  @@SKIP_JS@@
   async function updatePrice(fi, btn) {
     var input = document.getElementById("sp-" + fi), msg = document.getElementById("msg-" + fi);
     var price = parseFloat(input.value);
@@ -1018,7 +1031,11 @@ HTML = """
 # LOP / MOP parts of the page come from price_limits.py (SECTION 4 there): look, boxes, Save script
 HTML = (HTML.replace("@@LIMITS_CSS@@", price_limits.LIMITS_CSS)
             .replace("@@LIMITS_CARD@@", price_limits.LIMITS_CARD_HTML)
-            .replace("@@LIMITS_JS@@", price_limits.LIMITS_JS))
+            .replace("@@LIMITS_JS@@", price_limits.LIMITS_JS)
+            # Skip automatic price checkbox (skip_auto.py SECTION 2)
+            .replace("@@SKIP_CSS@@", skip_auto.SKIP_CSS)
+            .replace("@@SKIP_CARD@@", skip_auto.SKIP_CARD_HTML)
+            .replace("@@SKIP_JS@@", skip_auto.SKIP_JS))
 
 
 # ============================================================ SECTION 7: competitors page route (/competitors)
@@ -1643,3 +1660,4 @@ def get_setting(cur, key):
     return row
 
 
+# Auto discount rate (save route, get_discount_rate, recalculation hook) moved to its own file: discount_rate.py
