@@ -1326,7 +1326,9 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
        &middot; {{ (st.brands or [])|join(', ') }}</p>
     {% if st.shops %}<div class="dshops">
       {% for shop, r in st.shops.items() %}
-      <span>{{ shop }}: {% if r.error %}<span class="errc">failed</span>{% else %}{{ r.checked }} checked, {{ r.changed }} changed{% if r.gone %}, {{ r.gone }} gone{% endif %}{% if r.errors %}, <span class="errc">{{ r.errors }} errors</span>{% endif %}{% endif %}</span>
+      {# new products = the French Fragrance sitemap check of the same day (daily_update.py run_ff_new) #}
+      {% set nw = (st.weekly_results or {}).get(shop) or {} %}
+      <span>{{ shop }}: {% if r.error %}<span class="errc">failed</span>{% else %}{{ r.checked }} checked, {{ r.changed }} changed{% if r.gone %}, {{ r.gone }} gone{% endif %}{% if r.errors %}, <span class="errc">{{ r.errors }} errors</span>{% endif %}{% endif %}{% if nw.date == st.date %}, <b>{{ nw.new_added or 0 }} new</b>{% endif %}</span>
       {% endfor %}</div>{% endif %}
     {% if st.next %}<p class="hint">Next: {{ st.next|join(', ') }}</p>{% endif %}
     {% else %}<p class="hint">Not run yet &mdash; the first run starts at brand A.</p>{% endif %}
