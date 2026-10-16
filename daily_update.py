@@ -9,10 +9,12 @@ RUN 1 - on YOUR PC, Monday-Friday 11:30 AM India time (Windows Task Scheduler st
     The brand is read from the start of the product name ("Christian Dior Sauvage EDT" -> "Christian Dior").
     Also once a day: NEW French Fragrance products from its sitemap are saved (+ their Branded Perfume / Essenzi rows)
     and matched to our products (FF_NEW_PRODUCTS).
+    Also every PC_LIST_DAYS (14) days: OUNASS whole product list with on_scraper.py in your Chrome (Ounass blocks
+    Render and loads more products only while scrolling) -> new products saved, saved ones get price + stock, matching.
     Progress: app_settings key 'daily_update' (a stopped run continues with the same brands).
 
 RUN 2 - inside the website on Render (no PC, no cron job), EVERY day at RUN2_TIME (7:00 AM India time):
-    ONE shop a day in RUN2_ORDER: Samawa -> Ounass -> V Perfumes -> Amberiya -> Al Injaz -> Niche Gallerie,
+    ONE shop a day in RUN2_ORDER: Samawa -> V Perfumes -> Amberiya -> Al Injaz -> Niche Gallerie,
     then a pause; a new round starts RUN2_ROUND_DAYS (14) days after the last one began.
     Whole product list of that shop: new products are saved, products already saved only get the new price + stock,
     then matching to our products. app.py starts run2_scheduler() when the website starts.
@@ -21,8 +23,8 @@ RUN 2 - inside the website on Render (no PC, no cron job), EVERY day at RUN2_TIM
 After each run Render recalculates least + suggested price and updates the automatic brands in Airtable
 (/competitor/update-least). Settings -> Automate shows both runs.
 
-BEFORE the first run (once): put this file next to bp_scraper.py, es_scraper.py, price_triggers.py,
-suggested_price.py, then fill in daily_update.bat (database URL, RUN_SECRET) and create the scheduled task.
+BEFORE the first run (once): put this file next to bp_scraper.py, es_scraper.py, on_scraper.py (+ ounass.py),
+price_triggers.py, suggested_price.py, then fill in daily_update.bat (database URL, RUN_SECRET) and create the scheduled task.
 
 Run by hand (PC):
   python daily_update.py --test            -> today's brands, 3 products per shop, PRINT only (nothing saved)
@@ -30,6 +32,7 @@ Run by hand (PC):
   python daily_update.py --force           -> RUN 1 again for today's brands (also on Saturday / Sunday)
   python daily_update.py --brands "Dior,Chanel"   -> only these brands (does NOT move the daily position)
   python daily_update.py --shop es         -> one shop only (ff, bp, es; daily position not moved)
+  python daily_update.py --ounass         -> Ounass whole list now (even when not due yet)
   python daily_update.py --full-lists --force     -> RUN 2 now (today's shop) - normally the website does this
 Everything is printed AND written to daily_update.log next to this file.
 """
@@ -85,9 +88,10 @@ DAILY_SHOPS = {
 RUN2_STATE_KEY = "full_lists"  # RUN 2 progress in app_settings (separate from RUN 1)
 # RUN 2 START TIME (India time, EVERY day incl. Saturday / Sunday) - CHANGE IT HERE, then push to GitHub + deploy:
 RUN2_TIME = "07:00"            # "HH:MM", 24-hour India time. Example: "06:30", "09:00", "14:00"
-# ONE SHOP PER DAY in this order (day 1 Samawa, day 2 Ounass, day 3 V Perfumes ...). After the 6th shop the round is
-# complete; the next round starts RUN2_ROUND_DAYS after the start of the last one -> every shop once every 2 weeks.
-RUN2_ORDER = ["samawa", "on", "vp", "am", "aj", "ng"]
+# ONE SHOP PER DAY in this order (day 1 Samawa, day 2 V Perfumes ...). After the last shop the round is complete;
+# the next round starts RUN2_ROUND_DAYS after the start of the last one -> every shop once every 2 weeks.
+# Ounass is NOT here: it runs on the PC (PC_LISTS below). The next shop = the first one not done yet in this round.
+RUN2_ORDER = ["samawa", "vp", "am", "aj", "ng"]
 RUN2_ROUND_DAYS = 14           # a new round every 14 days (7 = every week)
 RUN2_DAYS = range(0, 7)        # 0 = Monday ... 6 = Sunday: Render runs every day
 # RUN2_SAVE_NEW = True  -> NEW products of the shop are SAVED and matched to our products.
@@ -100,7 +104,6 @@ RUN2_UPDATE_COLUMNS = {"price", "price_inc_tax", "stock", "updated_at"}   # what
 RUN2_SHOPS = [
     # (key, label, table, Render download link, Render status link, match link)
     ("samawa", "Samawa", "samawa_catalog", "/samawa-catalog/run", "/samawa-catalog/status", "/competitor/match-samawa"),
-    ("on", "Ounass", "ounass_catalog", "/ounass/run", "/ounass/status", "/competitor/match-on"),
     ("vp", "V Perfumes", "vperfumes_catalog", "/vperfumes/run", "/vperfumes/status", "/competitor/match-vp"),
     ("am", "Amberiya", "amberiya_catalog", "/amberiya/run", "/amberiya/status", "/competitor/match-am"),
     ("aj", "Al Injaz", "alinjaz_catalog", "/alinjaz/run", "/alinjaz/status", "/competitor/match-aj"),
@@ -108,6 +111,16 @@ RUN2_SHOPS = [
      "/competitor/match-ng"),
 ]
 RUN2_LABELS = {k: label for k, label, *_ in RUN2_SHOPS}
+
+# ---------------------------------------------------------------- whole lists on the PC (part of RUN 1)
+# Shops that block Render: their whole list is read in YOUR Chrome by their PC scraper, after the daily brands,
+# once every PC_LIST_DAYS days (Monday-Friday only, the PC is off at weekends). Same rules as RUN 2:
+# new products saved, saved products only price + stock (RUN2_ONLY_PRICE_STOCK), then matching on Render.
+PC_LIST_DAYS = 14
+PC_LISTS = [
+    # (key, label, table, PC scraper next to this file, match link on Render)
+    ("on", "Ounass", "ounass_catalog", "on_scraper.py", "/competitor/match-on"),
+]
 
 
 def log(*a):
@@ -412,50 +425,72 @@ def run_daily_shop(key, ids, test, get_page):
         log(f"[{key.upper()}] Page reader: {s['reader']}.py | site {m.group(0) if m else '?'}")
         page = get_page(m.group(0) if m else None, reader)
         errors_in_row = 0
-        for i, (rid, url) in enumerate(todo, 1):
-            try:
-                r = reader.scrape_product(page, url)
+        # a page that fails (timeout, page did not load) is tried ONCE more at the end of the shop;
+        # it only counts as an error when it fails again (then the old price + stock simply stay)
+        retry, blocked = [], False
+        for rnd in (1, 2):
+            batch = list(enumerate(todo, 1)) if rnd == 1 else retry
+            if rnd == 2:
+                if not retry or blocked:
+                    break
+                log(f"[{key.upper()}] Trying the {len(retry)} page(s) that failed once more")
+                time.sleep(10)
                 errors_in_row = 0
-            except Exception as ex:
-                st["errors"] += 1
-                errors_in_row += 1
-                log(f"[{key.upper()}] {i}/{len(todo)} ERROR {url}: {str(ex).splitlines()[0][:150]}")
-                if errors_in_row >= 10:
-                    log(f"[{key.upper()}] 10 errors in a row - probably blocked. Stopping this shop for today.")
-                    break
-                time.sleep(DELAY)
-                continue
-            st["checked"] += 1
-            st["gone"] += r["status"] != "ok"             # page gone from the shop -> saved as "Not on site"
-            for db_try in (1, 2):                         # database connection lost -> reconnect once and save again
+                st["errors"] += len(retry)                    # counted as errors until they work on this try
+            for i, (rid, url) in batch:
                 try:
-                    old_price, old_stock = old_values(cur, key, rid)
-                    r2 = check_price(key, url, r, old_price)          # wrongly read price -> fixed or not saved
-                    if test:
-                        log(f"[TEST] {i}/{len(todo)} {(r2.get('title') or url)[:60]} -> AED {r2.get('price_inc_tax')} | "
-                            f"{r2['stock']}  (saved now: AED {old_price} | {old_stock}) (not saved)")
+                    r = reader.scrape_product(page, url)
+                    errors_in_row = 0
+                except Exception as ex:
+                    errors_in_row += 1
+                    why = str(ex).splitlines()[0][:150]
+                    if rnd == 1:
+                        retry.append((i, (rid, url)))
+                        log(f"[{key.upper()}] {i}/{len(todo)} ERROR {url}: {why} -> tried again at the end")
                     else:
-                        changed = save_one(cur, key, rid, url, r2)
-                        conn.commit()                    # saved one by one: a stop never loses checked products
-                        st["changed"] += changed
-                        log(f"[{key.upper()}] {i}/{len(todo)} {(r2.get('title') or url)[:50]} | "
-                            f"AED {r2.get('price_inc_tax') or '-'} | {r2['stock']}{'  <- CHANGED' if changed else ''}")
-                    break
-                except (psycopg2.OperationalError, psycopg2.InterfaceError) as ex:
-                    log(f"[{key.upper()}] {i}/{len(todo)} database connection lost: {str(ex).strip()[:120]} "
-                        + ("-> reconnecting" if db_try == 1 else "-> product skipped"))
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-                    if db_try == 2:
-                        st["errors"] += 1
-                        conn = db()                      # fresh connection for the next product
-                        cur = conn.cursor()
+                        log(f"[{key.upper()}] {i}/{len(todo)} ERROR again {url}: {why} -> skipped (old price + stock kept)")
+                    if errors_in_row >= 10:
+                        log(f"[{key.upper()}] 10 errors in a row - probably blocked. Stopping this shop for today.")
+                        blocked = True
                         break
-                    conn = db()                          # waits up to 10 minutes for the internet to come back
-                    cur = conn.cursor()
-            time.sleep(DELAY)
+                    time.sleep(DELAY)
+                    continue
+                if rnd == 2:
+                    st["errors"] -= 1                         # worked on the second try -> not an error
+                    log(f"[{key.upper()}] {i}/{len(todo)} OK on the second try")
+                st["checked"] += 1
+                st["gone"] += r["status"] != "ok"             # page gone from the shop -> saved as "Not on site"
+                for db_try in (1, 2):                         # database connection lost -> reconnect once and save again
+                    try:
+                        old_price, old_stock = old_values(cur, key, rid)
+                        r2 = check_price(key, url, r, old_price)          # wrongly read price -> fixed or not saved
+                        if test:
+                            log(f"[TEST] {i}/{len(todo)} {(r2.get('title') or url)[:60]} -> AED {r2.get('price_inc_tax')} | "
+                                f"{r2['stock']}  (saved now: AED {old_price} | {old_stock}) (not saved)")
+                        else:
+                            changed = save_one(cur, key, rid, url, r2)
+                            conn.commit()                    # saved one by one: a stop never loses checked products
+                            st["changed"] += changed
+                            log(f"[{key.upper()}] {i}/{len(todo)} {(r2.get('title') or url)[:50]} | "
+                                f"AED {r2.get('price_inc_tax') or '-'} | {r2['stock']}{'  <- CHANGED' if changed else ''}")
+                        break
+                    except (psycopg2.OperationalError, psycopg2.InterfaceError) as ex:
+                        log(f"[{key.upper()}] {i}/{len(todo)} database connection lost: {str(ex).strip()[:120]} "
+                            + ("-> reconnecting" if db_try == 1 else "-> product skipped"))
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                        if db_try == 2:
+                            st["errors"] += 1
+                            conn = db()                      # fresh connection for the next product
+                            cur = conn.cursor()
+                            break
+                        conn = db()                          # waits up to 10 minutes for the internet to come back
+                        cur = conn.cursor()
+                time.sleep(DELAY)
+        if blocked and rnd == 1:
+            st["errors"] += len(retry)                        # blocked before the second try -> they stay errors
     finally:
         try:
             cur.close()
@@ -858,21 +893,30 @@ def india_now():
     return datetime.utcnow() + timedelta(hours=5, minutes=30)
 
 
-def run2_plan(state, today):
-    """Which shop today? Returns (shop key or None, message). Round = RUN2_ORDER one shop a day; next round starts
-    RUN2_ROUND_DAYS after the start of the previous round."""
-    idx = state.get("next_index", 0)
+def run2_pending(state):
+    """Shops of RUN2_ORDER not done yet in the current round (done_on >= round_start), in order."""
     start = state.get("round_start")
-    if start and idx >= len(RUN2_ORDER):                          # round complete -> wait for the next round
+    res = state.get("weekly_results") or {}
+    return [k for k in RUN2_ORDER
+            if not (start and (res.get(RUN2_LABELS[k]) or {}).get("done_on", "") >= start)]
+
+
+def run2_plan(state, today):
+    """Which shop today? Returns (shop key or None, message). Round = RUN2_ORDER one shop a day (the first shop not
+    done yet in this round); the next round starts RUN2_ROUND_DAYS after the start of the previous round."""
+    start = state.get("round_start")
+    pending = run2_pending(state) if start else list(RUN2_ORDER)
+    if start and not pending:                                      # round complete -> wait for the next round
         next_round = date.fromisoformat(start) + timedelta(days=RUN2_ROUND_DAYS)
         if date.fromisoformat(today) < next_round:
             return None, f"round of {start} complete - next round starts {next_round.isoformat()}"
-        start, idx = None, 0
+        start = None
     if not start:                                                  # first run ever / new round
-        state.update({"round_start": today, "next_index": 0})
-        idx = 0
-        log(f"[RUN2] New round starts today {today}: {' -> '.join(RUN2_ORDER)} (one shop a day)")
-    return RUN2_ORDER[idx], f"shop {idx + 1} of {len(RUN2_ORDER)} in the round of {state['round_start']}"
+        state["round_start"] = today
+        pending = list(RUN2_ORDER)
+        log(f"[RUN2] New round starts today {today}: {' -> '.join(RUN2_LABELS[k] for k in RUN2_ORDER)} (one shop a day)")
+    shop = pending[0]
+    return shop, f"shop {RUN2_ORDER.index(shop) + 1} of {len(RUN2_ORDER)} in the round of {state['round_start']}"
 
 
 def render_full_lists(args, quiet=False, restart_stopped=False):
@@ -924,13 +968,13 @@ def render_full_lists(args, quiet=False, restart_stopped=False):
     run2_shop(state, shop)                               # download -> new products saved -> details kept -> match
     res = state.setdefault("weekly_results", {}).setdefault(label, {})
     res["done_on"] = today                               # shown on the Automate page: last update of this shop
-    idx = RUN2_ORDER.index(shop) + 1
-    if idx < len(RUN2_ORDER):
-        state["next_info"] = f"tomorrow: {RUN2_LABELS[RUN2_ORDER[idx]]}"
+    left = run2_pending(state)                           # shops still to do in this round
+    if left:
+        state["next_info"] = f"tomorrow: {RUN2_LABELS[left[0]]}"
     else:
         nr = date.fromisoformat(state["round_start"]) + timedelta(days=RUN2_ROUND_DAYS)
         state["next_info"] = f"round complete - next round ({RUN2_LABELS[RUN2_ORDER[0]]} first) on {nr.isoformat()}"
-    state.update({"next_index": idx, "weekly_status": "done", "weekly_date": today,
+    state.update({"weekly_status": "done", "weekly_date": today,
                   "weekly_finished": india_now().isoformat(timespec="minutes")})
     r = render_get("/competitor/update-least")           # least price + suggested price + automatic brands
     state["recalc"] = f"HTTP {r.status_code}" if r is not None else "not started"
@@ -964,8 +1008,61 @@ def run2_scheduler(check_every=60):
         time.sleep(check_every)
 
 
+# ---------------------------------------------------------------- whole lists on the PC (Ounass) - part of RUN 1
+def pc_list_due(state, label, force=False):
+    """Due when it never ran, or its last good run is PC_LIST_DAYS days ago or more."""
+    last = ((state.get("pc_lists") or {}).get(label) or {}).get("done_on")
+    days = (date.today() - date.fromisoformat(last)).days if last else None
+    due = force or last is None or days >= PC_LIST_DAYS
+    log(f"[PC-LIST] {label}: last whole list {last or 'never'}"
+        + (f" ({days} days ago)" if days is not None else "") + f" -> {'RUN TODAY' if due else 'not due yet'}")
+    return due
+
+
+def run_pc_lists(state, force=False):
+    """Whole list of each PC_LISTS shop that is due: PC scraper in Chrome -> new products kept -> only price + stock
+    on saved products -> matching on Render. Returns True when at least one shop ran."""
+    ran = False
+    for key, label, table, scraper, match in PC_LISTS:
+        if not pc_list_due(state, label, force):
+            continue
+        path = os.path.join(HERE, scraper)
+        if not os.path.exists(path):
+            log(f"[PC-LIST] {scraper} not found next to daily_update.py -> {label} skipped")
+            continue
+        log(f"\n[PC-LIST] ===== {label}: whole product list in your Chrome ({scraper}) =====")
+        started = time.time()
+        before_id = max_row_id(table)                    # everything above this after the download = new products
+        if RUN2_ONLY_PRICE_STOCK:
+            keep_details(table, label)                   # names / brands / links are put back afterwards
+        p = subprocess.run([sys.executable, path], cwd=HERE, env=dict(os.environ), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        tail = [ln for ln in (p.stdout or "").splitlines() if ln.strip()][-3:]
+        for ln in tail:
+            log(f"[PC-LIST] {scraper}: {ln}")
+        res = {"exit": p.returncode, "minutes": round((time.time() - started) / 60, 1), "last_line": tail[-1:]}
+        if p.returncode != 0:
+            res["error"] = f"{scraper} failed: {(p.stderr or '').strip()[-200:]}"
+            log(f"[PC-LIST] {res['error']}")
+        n_new = remove_new_products(table, label, before_id)
+        res.update({"new_added": n_new, "new_after_id": before_id or 0, "date": date.today().isoformat()})
+        if RUN2_ONLY_PRICE_STOCK:
+            res["details_restored"] = restore_details(table, label)
+        if p.returncode == 0:
+            log(f"[PC-LIST] {label}: matching to our products on Render")
+            res["match"] = start_and_wait(match, "/samawa/status", f"{label} match")
+            res["done_on"] = date.today().isoformat()    # a failed run is tried again the next working day
+        state.setdefault("pc_lists", {})[label] = res
+        state.setdefault("weekly_results", {})[label] = res     # shop page: "N new products added"
+        write_state(state)
+        log(f"[PC-LIST] {label} finished in {res['minutes']} min: {n_new} new products"
+            + (f" | ERROR {res['error']}" if res.get("error") else ""))
+        ran = True
+    return ran
+
+
 # ---------------------------------------------------------------- main (RUN 1)
-RUN1_RESULT_SHOPS = ("French Fragrance", "Branded Perfume", "Essenzi")   # "new products" info RUN 1 keeps
+RUN1_RESULT_SHOPS = ("French Fragrance", "Branded Perfume", "Essenzi") + tuple(lbl for _, lbl, *_ in PC_LISTS)
 
 
 def clean_old_run2(state):
@@ -987,6 +1084,7 @@ def main():
     ap.add_argument("--force", action="store_true", help="run today's brands again")
     ap.add_argument("--brands", default="", help='only these brands, e.g. "Dior,Chanel" (daily position unchanged)')
     ap.add_argument("--shop", default="", choices=[""] + list(DAILY_SHOPS), help="daily part for one shop only")
+    ap.add_argument("--ounass", action="store_true", help="Ounass whole list now (even when not due yet)")
     ap.add_argument("--full-lists", action="store_true",
                     help="RUN 2 by hand: today's shop (normally the website runs it at RUN2_TIME); add --force")
     args = ap.parse_args()
@@ -997,7 +1095,7 @@ def main():
     log("=" * 70)
     log(f"[RUN] Started {datetime.now():%d %b %Y %H:%M}" + (" (TEST - nothing saved)" if args.test else ""))
     log(f"[RUN] Options: {vars(args)} | folder {HERE} | Render {SITE}")
-    if date.today().weekday() not in WORK_DAYS and not (args.force or args.test or args.brands or args.shop):
+    if date.today().weekday() not in WORK_DAYS and not (args.force or args.test or args.brands or args.shop or args.ounass):
         log(f"[RUN] Today is {DAYS[date.today().weekday()]} - no update on Saturday / Sunday "
             f"(use --force to run anyway)")
         return
@@ -1100,10 +1198,15 @@ def main():
         log("[TEST] Done - nothing was saved, daily position not changed.")
         return
 
+    # ---------------- whole lists on the PC (Ounass), once every PC_LIST_DAYS days
+    pc_ran = False
+    if not args.brands and not args.shop:
+        pc_ran = run_pc_lists(state, force=args.ounass)
+
     # ---------------- least price + suggested price + automatic brands (Branded Perfume / Essenzi prices too)
-    if not brands and not ff_new_added:
+    if not brands and not ff_new_added and not pc_ran:
         log("[RUN] No daily brands / new products today -> update-least not needed")
-    if (brands or ff_new_added) and not args.test:
+    if (brands or ff_new_added or pc_ran) and not args.test:
         r = render_get("/competitor/update-least")
         state["recalc"] = (f"HTTP {r.status_code}" if r is not None else "not started")
         log(f"[RENDER] update-least -> {state['recalc']}")

@@ -1318,7 +1318,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
     <div class="runhead"><b>Run 1 &middot; PC</b> <span class="gtin">Monday&ndash;Friday {{ daily.run1_time }}</span></div>
     <p class="hint">French Fragrance, Branded Perfume, Essenzi: price + stock of all products of the next {{ daily.per_day }} brands
        {%- if st and st.total_brands %} ({{ st.total_brands }} brands, one round every {{ (st.total_brands / daily.per_day)|round(0, 'ceil')|int }} working days){% endif %}.
-       New French Fragrance products are saved too.</p>
+       New French Fragrance products are saved too. Ounass (it blocks Render): whole list in your Chrome every 2 weeks.</p>
     {% if st and st.date %}
     <p class="hint">Last run <b>{{ st.date }}</b> &middot;
        {% if st.daily_status == 'done' %}<span class="okc">done{% if st.finished %} at {{ st.finished[11:16] }}{% endif %}</span>
@@ -1330,6 +1330,18 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
       {% endfor %}</div>{% endif %}
     {% if st.next %}<p class="hint">Next: {{ st.next|join(', ') }}</p>{% endif %}
     {% else %}<p class="hint">Not run yet &mdash; the first run starts at brand A.</p>{% endif %}
+    {# whole lists read on the PC (they block Render): daily_update.py PC_LISTS / PC_LIST_DAYS #}
+    <table class="r2tab">
+      {% for s in daily.pc_rows %}
+      <tr><td>{{ s.label }}</td>
+          <td>{% if s.error %}<span class="errc">&#10007; {{ s.tried }}</span>
+              {% elif s.date %}<span class="okc">&#10003; {{ s.date }}</span>
+              {% else %}<span class="gtin">next PC run</span>{% endif %}</td>
+          <td class="gtin">whole list in Chrome every {{ s.every }} days
+              {%- if s.error %} &middot; <span class="errc">{{ s.error[:120] }}</span> (tried again next working day)
+              {%- elif s.date %} &middot; {{ s.new }} new &middot; next {{ s.due }}{% endif %}</td></tr>
+      {% endfor %}
+    </table>
   </div>
 
   {# ======== RUN 2: Render, every day at RUN2_TIME, one shop a day (daily_update.py RUN2_ORDER / RUN2_ROUND_DAYS) ======== #}
@@ -1618,22 +1630,24 @@ def run2_rows(rs):
     """RUN 2 table on the Automate page: one row per shop of the CURRENT round, in RUN2_ORDER.
     status: done / error / incomplete (finished in this round) | running | waiting (with its due date).
     Results from an older round are not shown (the shop shows 'due ...' until it runs in this round)."""
-    from datetime import date, timedelta
+    from datetime import datetime, timedelta
     try:
         import daily_update as du                          # RUN2_ORDER, RUN2_LABELS (same file as the scheduler)
         order = [(k, du.RUN2_LABELS[k]) for k in du.RUN2_ORDER]
     except Exception as ex:                                # daily_update.py missing -> fixed order
         print(f"[RUN2-BOX] daily_update.py not importable ({ex}) -> default shop order", flush=True)
-        order = [("samawa", "Samawa"), ("on", "Ounass"), ("vp", "V Perfumes"), ("am", "Amberiya"),
+        order = [("samawa", "Samawa"), ("vp", "V Perfumes"), ("am", "Amberiya"),
                  ("aj", "Al Injaz"), ("ng", "Niche Gallerie")]
     rs = rs or {}
     start = rs.get("round_start")
     results = rs.get("weekly_results") or {}
+    # due dates: shops not done yet run one a day, starting today (or tomorrow when today's shop is done)
+    today = (datetime.utcnow() + timedelta(hours=5, minutes=30)).date()   # India date
+    day = today + timedelta(days=1 if rs.get("weekly_date") == today.isoformat() else 0)
     rows = []
-    for i, (key, label) in enumerate(order):
+    for key, label in order:
         r = results.get(label) or {}
-        due = (date.fromisoformat(start) + timedelta(days=i)).isoformat() if start else None
-        row = {"label": label, "due": due, "date": r.get("done_on"), "new": r.get("new_added", 0), "msg": ""}
+        row = {"label": label, "due": None, "date": r.get("done_on"), "new": r.get("new_added", 0), "msg": ""}
         if rs.get("weekly_status") == "running" and rs.get("today_shop") == label:
             row["status"] = "running"
         elif start and r.get("done_on") and r["done_on"] >= start:          # finished in THIS round
@@ -1649,8 +1663,28 @@ def run2_rows(rs):
                 row["status"] = "done"
         else:
             row["status"] = "waiting"
+            row["due"] = day.isoformat()
+            day += timedelta(days=1)
         rows.append(row)
     print("[RUN2-BOX] " + " | ".join(f"{x['label']}: {x['status']} {x['date'] or x['due'] or ''}" for x in rows), flush=True)
+    return rows
+
+
+def pc_rows(state):
+    """Whole lists run by the PC (Ounass) - shown in the RUN 1 part: last good run, next due, new products / error."""
+    from datetime import date, timedelta
+    try:
+        import daily_update as du
+        lists, every = [lbl for _, lbl, *_ in du.PC_LISTS], du.PC_LIST_DAYS
+    except Exception:
+        lists, every = ["Ounass"], 14
+    rows = []
+    for label in lists:
+        r = ((state or {}).get("pc_lists") or {}).get(label) or {}
+        done = r.get("done_on")
+        rows.append({"label": label, "every": every, "date": done, "new": r.get("new_added", 0),
+                     "error": r.get("error"), "tried": r.get("date"),
+                     "due": (date.fromisoformat(done) + timedelta(days=every)).isoformat() if done else None})
     return rows
 
 
@@ -1672,7 +1706,7 @@ def daily_info(cur):
         run2_time, round_days = du.RUN2_TIME, du.RUN2_ROUND_DAYS
     except Exception:
         run2_time, round_days = "07:00", 14
-    info = {"per_day": per_day, "state": state, "render_state": rs, "run1_time": RUN1_TIME,
+    info = {"pc_rows": pc_rows(state), "per_day": per_day, "state": state, "render_state": rs, "run1_time": RUN1_TIME,
             "run2_time": run2_time, "run2_round_days": round_days, "run2_rows": run2_rows(rs)}
     print(f"[DAILY] Box: RUN 1 {per_day} brands/day, last {(state or {}).get('date', 'never')} "
           f"({(state or {}).get('daily_status', '-')}) | RUN 2 round {(rs or {}).get('round_start', '-')}, "
