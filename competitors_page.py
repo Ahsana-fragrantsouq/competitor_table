@@ -1041,10 +1041,9 @@ HTML = (HTML.replace("@@LIMITS_CSS@@", price_limits.LIMITS_CSS)
 # ============================================================ SECTION 7: competitors page route (/competitors)
 # Reads the rows of the open tab, applies search / filters / paging, then fills HTML (SECTION 6).
 def last_new_products(cur, label):
-    """New products saved for this shop by the last full list. Two writers: the PC run (app_settings 'daily_update':
-    French Fragrance / Branded Perfume / Essenzi / Al Injaz / Ounass) and the Render Cron Job ('full_lists': Samawa,
-    Amberiya, V Perfumes, Niche Gallerie). Each has weekly_results -> {label: {new_added, new_after_id, date}};
-    the newest one for this shop is shown. None = nothing to show."""
+    """New products saved for this shop by the last run. Two writers: RUN 1 on the PC (app_settings 'daily_update':
+    French Fragrance / Branded Perfume / Essenzi) and RUN 2 on Render ('full_lists': the 6 other shops).
+    Each has weekly_results -> {label: {new_added, new_after_id, date}}; the newest one for this shop is shown."""
     import json
     best = None
     for key in ("daily_update", "full_lists"):
@@ -1264,8 +1263,14 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
  .daily .drow button{padding:9px 16px;font-size:15px}
  .daily .drow select{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:9px 10px;font-size:15px}
  .dshops{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--muted);margin:4px 2px}
- .dshops > span{white-space:nowrap}
- .okc{color:#8cc58c} .errc{color:#e0806c}
+ .okc{color:#8cc58c} .errc{color:#e0806c} .warnc{color:#f2b46c}
+ /* RUN 1 / RUN 2 parts of the box + the RUN 2 shop table */
+ .runbox{border-top:1px solid var(--line);margin-top:14px;padding-top:12px}
+ .runhead{font-size:16px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+ .r2tab{border-collapse:collapse;font-size:14px;margin-top:6px;width:100%}
+ .r2tab td{padding:5px 12px 5px 0;border-top:1px solid var(--line);vertical-align:top}
+ .r2tab td:first-child{white-space:nowrap;width:130px}
+ .r2tab td:nth-child(2){white-space:nowrap;width:120px}
  /* ---- User management ---- */
  .urow{display:flex;gap:8px;flex-wrap:wrap}
  .urow input,.urow select,.inl input{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:10px;
@@ -1297,49 +1302,56 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 {# ======== 8a Automate: daily update box + brands on automatic ======== #}
 {% if option and option[0] == 'automate' %}
 <a class="back" href="/settings">&larr; All settings</a>
-{# ---- Daily competitor update + full lists every working day (daily_update.py on the PC, Monday-Friday 11:30 AM) ---- #}
+{# ---- RUN 1 (PC) + RUN 2 (Render) box. Data: daily_info() in SECTION 10. Times / order come from daily_update.py ---- #}
 <div class="dform daily">
   {% set st = daily.state %}
-  <form method="post" action="/settings/daily" class="drow" onsubmit="console.log('[DAILY] Save: ' + this.per_day.value + ' brands/day, weekly day ' + this.weekly_day.value)">
-    <label for="perday" style="margin:0">Daily update:</label>
+  <form method="post" action="/settings/daily" class="drow" onsubmit="console.log('[DAILY] Save: ' + this.per_day.value + ' brands/day')">
+    <label for="perday" style="margin:0">Run 1:</label>
     <input id="perday" name="per_day" type="number" min="1" max="100" step="1" value="{{ daily.per_day }}" style="width:80px">
     <span class="pct">brands a day</span>
-    <input type="hidden" name="weekly_day" value="{{ daily.weekly_day }}">
     <button type="submit">Save</button>
   </form>
-  {# START TIME: "11:30 AM" here is only text. The real start time is in Windows Task Scheduler on the PC:
-     schtasks /Change /TN "Competitor daily update" /ST 11:30   (change 11:30, then change this text too) #}
-  <p class="hint"><b>Monday-Friday 11:30 AM</b> (no update on Saturday / Sunday): French Fragrance, Branded Perfume, Essenzi &mdash; price + stock of ALL products of the
-     next {{ daily.per_day }} brands of their own brand list{% if st and st.total_brands %} ({{ st.total_brands }} brands &rarr; one round every
-     {{ (st.total_brands / daily.per_day)|round(0, 'ceil')|int }} working days){% endif %}, then again from A.<br>
-     New French Fragrance products are saved too (+ their Branded Perfume / Essenzi links). <i>(on the PC)</i><br>
-     {# RUN 2 time: set by RUN2_TIME at the top of daily_update.py (India time). Change it there, then this text #}
-     <b>Every day 7:00 AM on Render (no PC), ONE shop a day:</b> Samawa &rarr; Ounass &rarr; V Perfumes &rarr; Amberiya &rarr;
-     Al Injaz &rarr; Niche Gallerie, then a pause; a new round every 2 weeks (RUN2_ORDER / RUN2_ROUND_DAYS in daily_update.py).
-     Whole product list of that shop: <b>new products are saved</b>, products already saved get the new price + stock, then matching.</p>
   {% if daily.saved %}<p class="ok">Saved (used from the next run).</p>{% endif %}
-  {% if st and st.date %}
-  <p class="hint"><b>Last daily run {{ st.date }}</b> &middot;
-     {% if st.daily_status == 'done' %}<span class="okc">done{% if st.finished %} at {{ st.finished[11:16] }}{% endif %}</span>
-     {% else %}<span class="errc">{{ st.daily_status or 'running' }}</span>{% endif %}<br>
-     Brands: {{ (st.brands or [])|join(', ') }}</p>
-  {% if st.shops %}<div class="dshops">
-    {% for shop, r in st.shops.items() %}
-    <span>{{ shop }}: {% if r.error %}<span class="errc">failed</span>{% else %}{{ r.checked }} checked, {{ r.changed }} changed{% if r.gone %}, {{ r.gone }} gone{% endif %}{% if r.errors %}, <span class="errc">{{ r.errors }} errors</span>{% endif %}{% endif %}</span>
-    {% endfor %}</div>{% endif %}
-  {% if st.next %}<p class="hint">Next: {{ st.next|join(', ') }}</p>{% endif %}
-  {% else %}<p class="hint">Not run yet - the first daily run starts at brand A.</p>{% endif %}
+
+  {# ======== RUN 1: PC, Monday-Friday. RUN1_TIME (SECTION 10) is only text: the real time is in Windows Task Scheduler ======== #}
+  <div class="runbox">
+    <div class="runhead"><b>Run 1 &middot; PC</b> <span class="gtin">Monday&ndash;Friday {{ daily.run1_time }}</span></div>
+    <p class="hint">French Fragrance, Branded Perfume, Essenzi: price + stock of all products of the next {{ daily.per_day }} brands
+       {%- if st and st.total_brands %} ({{ st.total_brands }} brands, one round every {{ (st.total_brands / daily.per_day)|round(0, 'ceil')|int }} working days){% endif %}.
+       New French Fragrance products are saved too.</p>
+    {% if st and st.date %}
+    <p class="hint">Last run <b>{{ st.date }}</b> &middot;
+       {% if st.daily_status == 'done' %}<span class="okc">done{% if st.finished %} at {{ st.finished[11:16] }}{% endif %}</span>
+       {% else %}<span class="errc">{{ st.daily_status or 'running' }}</span>{% endif %}
+       &middot; {{ (st.brands or [])|join(', ') }}</p>
+    {% if st.shops %}<div class="dshops">
+      {% for shop, r in st.shops.items() %}
+      <span>{{ shop }}: {% if r.error %}<span class="errc">failed</span>{% else %}{{ r.checked }} checked, {{ r.changed }} changed{% if r.gone %}, {{ r.gone }} gone{% endif %}{% if r.errors %}, <span class="errc">{{ r.errors }} errors</span>{% endif %}{% endif %}</span>
+      {% endfor %}</div>{% endif %}
+    {% if st.next %}<p class="hint">Next: {{ st.next|join(', ') }}</p>{% endif %}
+    {% else %}<p class="hint">Not run yet &mdash; the first run starts at brand A.</p>{% endif %}
+  </div>
+
+  {# ======== RUN 2: Render, every day at RUN2_TIME, one shop a day (daily_update.py RUN2_ORDER / RUN2_ROUND_DAYS) ======== #}
   {% set rs = daily.render_state %}
-  <p class="hint"><b>Run 2 (Render, one shop a day):</b>
-     {% if rs and rs.weekly_status == 'running' %}<span class="errc">running now: {{ rs.today_shop }}</span>
-     {% elif rs and rs.weekly_date %}last {{ rs.weekly_date }}{% if rs.today_shop %} &middot; {{ rs.today_shop }}{% if rs.weekly_finished %} done at {{ rs.weekly_finished[11:16] }}{% endif %}{% endif %}
-     {% else %}not run yet{% endif %}
-     {% if rs and rs.next_info %}<br>Next: {{ rs.next_info }}{% endif %}
-     {% if rs and rs.round_start %}<br>Round started {{ rs.round_start }}{% endif %}
-  {% if rs and rs.weekly_results %}</p><div class="dshops">
-    {% for shop, r in rs.weekly_results.items() %}<span>{{ shop }}: {% if r.error %}<span class="errc">{{ r.error }}</span>{% else %}<span class="okc">{{ r.done_on or 'done' }}</span>{% if r.new_added is defined %} &middot; {{ r.new_added }} new{% endif %}{% endif %}</span>{% endfor %}
-  </div>{% else %}</p>{% endif %}
-  {# the PC run does only French Fragrance / Branded Perfume / Essenzi (above); the 6 other shops run on Render (above) #}
+  <div class="runbox">
+    <div class="runhead"><b>Run 2 &middot; Render</b> <span class="gtin">every day {{ daily.run2_time }}, one shop a day, a new round every {{ daily.run2_round_days }} days</span></div>
+    <p class="hint">Whole product list of that shop: new products are saved, saved products get the new price + stock, then matching.
+       {% if rs and rs.round_start %}Round started <b>{{ rs.round_start }}</b>.{% endif %}
+       {% if rs and rs.next_info %}Next: {{ rs.next_info }}.{% endif %}</p>
+    <table class="r2tab">
+      {% for s in daily.run2_rows %}
+      <tr><td>{{ s.label }}</td>
+          <td>{% if s.status == 'done' %}<span class="okc">&#10003; {{ s.date }}</span>
+              {% elif s.status == 'running' %}<span class="errc">running now</span>
+              {% elif s.status == 'error' %}<span class="errc">&#10007; {{ s.date }}</span>
+              {% elif s.status == 'incomplete' %}<span class="warnc">! {{ s.date }}</span>
+              {% else %}<span class="gtin">due {{ s.due or '-' }}</span>{% endif %}</td>
+          <td class="gtin">{% if s.status in ('error', 'incomplete') %}<span class="{{ 'errc' if s.status == 'error' else 'warnc' }}">{{ s.msg }}</span>
+              {% elif s.status == 'done' %}{{ s.new }} new{% endif %}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
 </div>
 {# Automate: search brands at the top, all brands with their product count below #}
 <form class="bsearch" method="get" onsubmit="return true">
@@ -1583,7 +1595,8 @@ def settings_page(key=None):
 
 
 # ============================================================ SECTION 10: saved settings (app_settings) + Daily update box
-# Daily update numbers = DAILY_DEFAULT / WEEKLY_DEFAULT, box data = daily_info(), save = /settings/daily, read any setting = get_setting().
+# RUN 1 brands per day = DAILY_DEFAULT, RUN 1 time text = RUN1_TIME, box data = daily_info() + run2_rows(),
+# save = /settings/daily, read any setting = get_setting().
 # (values the admin changes on the page)
 SETTINGS_CREATE = """
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -1595,59 +1608,101 @@ CREATE TABLE IF NOT EXISTS app_settings (
 """
 
 
-DAILY_DEFAULT = 10      # brands per day when nothing is saved (same as daily_update.py)
-WEEKLY_DEFAULT = 4      # full lists day: 0 = Monday ... 4 = Friday (same as daily_update.py; PC is off at weekends)
-DAYS_LIST = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]          # working days only
+DAILY_DEFAULT = 10      # RUN 1 brands per day when nothing is saved (same as daily_update.py DEFAULT_PER_DAY)
+# RUN 1 START TIME: only text on the page. The real time is in Windows Task Scheduler on the PC
+# (Task "Competitor daily update" -> Triggers). Change it there, then here.
+RUN1_TIME = "11:30 AM"
+
+
+def run2_rows(rs):
+    """RUN 2 table on the Automate page: one row per shop of the CURRENT round, in RUN2_ORDER.
+    status: done / error / incomplete (finished in this round) | running | waiting (with its due date).
+    Results from an older round are not shown (the shop shows 'due ...' until it runs in this round)."""
+    from datetime import date, timedelta
+    try:
+        import daily_update as du                          # RUN2_ORDER, RUN2_LABELS (same file as the scheduler)
+        order = [(k, du.RUN2_LABELS[k]) for k in du.RUN2_ORDER]
+    except Exception as ex:                                # daily_update.py missing -> fixed order
+        print(f"[RUN2-BOX] daily_update.py not importable ({ex}) -> default shop order", flush=True)
+        order = [("samawa", "Samawa"), ("on", "Ounass"), ("vp", "V Perfumes"), ("am", "Amberiya"),
+                 ("aj", "Al Injaz"), ("ng", "Niche Gallerie")]
+    rs = rs or {}
+    start = rs.get("round_start")
+    results = rs.get("weekly_results") or {}
+    rows = []
+    for i, (key, label) in enumerate(order):
+        r = results.get(label) or {}
+        due = (date.fromisoformat(start) + timedelta(days=i)).isoformat() if start else None
+        row = {"label": label, "due": due, "date": r.get("done_on"), "new": r.get("new_added", 0), "msg": ""}
+        if rs.get("weekly_status") == "running" and rs.get("today_shop") == label:
+            row["status"] = "running"
+        elif start and r.get("done_on") and r["done_on"] >= start:          # finished in THIS round
+            err = str(r.get("error") or (r.get("match") or {}).get("error") or "")
+            if err:
+                row["status"] = "error"
+                row["msg"] = ("blocked by the shop's website (captcha page instead of products)" if "captcha" in err
+                              else err[:120])
+            elif r.get("incomplete"):
+                row["status"] = "incomplete"
+                row["msg"] = f"incomplete: only {r.get('saved', '?')} products read - old prices kept for the rest"
+            else:
+                row["status"] = "done"
+        else:
+            row["status"] = "waiting"
+        rows.append(row)
+    print("[RUN2-BOX] " + " | ".join(f"{x['label']}: {x['status']} {x['date'] or x['due'] or ''}" for x in rows), flush=True)
+    return rows
 
 
 def daily_info(cur):
-    """Daily / weekly update box: settings + what daily_update.py saved (last run, results, next brands)."""
+    """Automate box: RUN 1 (brands per day + what the PC saved) and RUN 2 (what Render saved, per shop)."""
     import json
-    def number(key, default, lo, hi):
-        row = get_setting(cur, key)
-        try:
-            v = int(float(row["value"])) if row else default
-        except ValueError:
-            v = default
-        return v if lo <= v <= hi else default
-    row = get_setting(cur, "daily_update")
+    row = get_setting(cur, "daily_brands_per_day")
+    try:
+        per_day = int(float(row["value"])) if row else DAILY_DEFAULT
+    except ValueError:
+        per_day = DAILY_DEFAULT
+    per_day = per_day if 1 <= per_day <= 100 else DAILY_DEFAULT
+    row = get_setting(cur, "daily_update")                # RUN 1 progress (daily_update.py on the PC)
     state = json.loads(row["value"]) if row and row["value"] else None
-    info = {"per_day": number("daily_brands_per_day", DAILY_DEFAULT, 1, 100),
-            "weekly_day": number("daily_weekly_day", WEEKLY_DEFAULT, 0, 4), "days_list": DAYS_LIST, "state": state}
-    row = get_setting(cur, "full_lists")                  # RUN 2 on Render (Render Cron Job, daily_update.py --full-lists)
-    info["render_state"] = json.loads(row["value"]) if row and row["value"] else None
-    print(f"[DAILY] Box: {info['per_day']} brands/day, full lists every {DAYS_LIST[info['weekly_day']]}, last daily "
-          f"{(state or {}).get('date', 'never')} ({(state or {}).get('daily_status', '-')}), last full lists "
-          f"{(state or {}).get('weekly_date', 'never')}", flush=True)
+    row = get_setting(cur, "full_lists")                  # RUN 2 progress (daily_update.py inside the website)
+    rs = json.loads(row["value"]) if row and row["value"] else None
+    try:
+        import daily_update as du
+        run2_time, round_days = du.RUN2_TIME, du.RUN2_ROUND_DAYS
+    except Exception:
+        run2_time, round_days = "07:00", 14
+    info = {"per_day": per_day, "state": state, "render_state": rs, "run1_time": RUN1_TIME,
+            "run2_time": run2_time, "run2_round_days": round_days, "run2_rows": run2_rows(rs)}
+    print(f"[DAILY] Box: RUN 1 {per_day} brands/day, last {(state or {}).get('date', 'never')} "
+          f"({(state or {}).get('daily_status', '-')}) | RUN 2 round {(rs or {}).get('round_start', '-')}, "
+          f"{(rs or {}).get('next_info', '-')}", flush=True)
     return info
 
 
 @competitors_bp.route("/settings/daily", methods=["POST"])
 def daily_save():
-    """Save brands per day (1 - 100) and the weekly full-list day (0 = Monday ... 4 = Friday)."""
+    """Save RUN 1 brands per day (1 - 100)."""
     user = g.get("user") or "unknown"
     try:
         n = int(float(request.form.get("per_day") or ""))
-        day = int(request.form.get("weekly_day") or WEEKLY_DEFAULT)
     except ValueError:
-        n, day = 0, -1
-    if not 1 <= n <= 100 or not 0 <= day <= 4:
-        print(f"[DAILY] {user}: per_day={request.form.get('per_day')!r} weekly_day={request.form.get('weekly_day')!r} "
-              f"not valid -> not saved", flush=True)
+        n = 0
+    if not 1 <= n <= 100:
+        print(f"[DAILY] {user}: per_day={request.form.get('per_day')!r} not valid -> not saved", flush=True)
         return redirect("/settings/automate")
     conn = db_conn()
     cur = conn.cursor()
     try:
         cur.execute(SETTINGS_CREATE)
-        for key, value in (("daily_brands_per_day", n), ("daily_weekly_day", day)):
-            cur.execute("""INSERT INTO app_settings (key, value, updated_by) VALUES (%s, %s, %s)
-                           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by,
-                                                           updated_at = NOW()""", (key, str(value), user))
+        cur.execute("""INSERT INTO app_settings (key, value, updated_by) VALUES ('daily_brands_per_day', %s, %s)
+                       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by,
+                                                       updated_at = NOW()""", (str(n), user))
         conn.commit()
     finally:
         cur.close()
         conn.close()
-    print(f"[DAILY] {user} saved: {n} brands a day, full lists every {DAYS_LIST[day]}", flush=True)
+    print(f"[DAILY] {user} saved: {n} brands a day (RUN 1)", flush=True)
     return redirect("/settings/automate?daily_saved=1")
 
 

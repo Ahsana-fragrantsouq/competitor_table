@@ -1,54 +1,36 @@
 r"""
-Daily competitor update (runs on YOUR PC Monday-Friday at 11:30 AM - Windows Task Scheduler; to change the time
-see START TIME below)
-Saturday / Sunday: nothing runs (PC is off; if it is on, the script skips those days unless --force).
-SUGGESTED PRICE: every changed competitor price / stock recalculates that product at once (TRIGGER 1,
-price_triggers.py + suggested_price.py - keep both next to this file); update-least at the end does all products.
--------------------------------------------------------------------------------------------------------------------
-EVERY WORKING DAY (Mon-Fri) - French Fragrance, Branded Perfume, Essenzi (their pages must be opened one by one in your Chrome):
-    the NEXT 10 BRANDS of the shop's OWN brand list (A -> Z, then again from A): price + stock of ALL their products
-    (matched to us or not - "Missing items" too).
-    These shops have no brand column -> the brand is read from the start of the product name
-    ("Christian Dior Sauvage EDT 100ml" -> "Christian Dior"), using every brand known in the database
-    (our brands + Samawa / Amberiya / Ounass brands); unknown -> the first word of the name.
-    Branded Perfume + Essenzi are the same products as French Fragrance -> same brand list and same position.
+Competitor price update - TWO runs (this file is used by both)
+================================================================
+RUN 1 - on YOUR PC, Monday-Friday 11:30 AM India time (Windows Task Scheduler starts daily_update.bat; to change the
+        time see START TIME in daily_update.bat). Saturday / Sunday: nothing (skipped unless --force).
+    French Fragrance, Branded Perfume, Essenzi (their pages must be opened one by one in your Chrome):
+    the NEXT N BRANDS (Settings -> Automate, default 10) of their own brand list (A -> Z, then again from A):
+    price + stock of ALL products of those brands. Branded Perfume + Essenzi = the same products as French Fragrance.
+    The brand is read from the start of the product name ("Christian Dior Sauvage EDT" -> "Christian Dior").
+    Also once a day: NEW French Fragrance products from its sitemap are saved (+ their Branded Perfume / Essenzi rows)
+    and matched to our products (FF_NEW_PRODUCTS).
+    Progress: app_settings key 'daily_update' (a stopped run continues with the same brands).
 
-EVERY WORKING DAY after the daily brands (FULL_LISTS_EVERY_DAY = True; False = once a week on the day chosen in
-Settings -> Automate) -
-Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass give their WHOLE product list in one go:
-    full download of every product (all brands), then matching to our products on Render.
-    NEW PRODUCTS are SAVED (WEEKLY_SAVE_NEW = True) and matched to our products like the others.
-    PRODUCTS ALREADY SAVED: only price + stock change - name, brand, GTIN, link, volume ... are put back to what
-    they were before the download (WEEKLY_ONLY_PRICE_STOCK).
-       Samawa / Amberiya / V Perfumes  -> download runs on Render (/samawa-catalog/run, /amberiya/run, /vperfumes/run)
-       Al Injaz / Niche Gallerie / Ounass -> aj_scraper.py / ng_scraper.py / on_scraper.py on this PC (Chrome)
-       then /competitor/match-samawa, match-am, match-vp, match-aj, match-ng, match-on on Render (one after another)
+RUN 2 - inside the website on Render (no PC, no cron job), EVERY day at RUN2_TIME (7:00 AM India time):
+    ONE shop a day in RUN2_ORDER: Samawa -> Ounass -> V Perfumes -> Amberiya -> Al Injaz -> Niche Gallerie,
+    then a pause; a new round starts RUN2_ROUND_DAYS (14) days after the last one began.
+    Whole product list of that shop: new products are saved, products already saved only get the new price + stock,
+    then matching to our products. app.py starts run2_scheduler() when the website starts.
+    Progress: app_settings key 'full_lists'.
 
-EVERY WORKING DAY as well - NEW French Fragrance products (FF_NEW_PRODUCTS = True): French Fragrance's sitemap is
-compared with our table; new products are opened and saved, their Branded Perfume + Essenzi links added and opened,
-then matched to our products (/competitor/match-ff). Shop pages show "N new products added".
+After each run Render recalculates least + suggested price and updates the automatic brands in Airtable
+(/competitor/update-least). Settings -> Automate shows both runs.
 
-RUN 2 WITHOUT THE PC: ONE shop per day (Samawa, Ounass, V Perfumes, Amberiya, Al Injaz, Niche Gallerie - RUN2_ORDER),
-every day incl. weekend at RUN2_TIME, inside the website on Render (app.py starts run2_scheduler(); no cron job).
-After the 6 shops the next round starts 2 weeks after the round began (RUN2_ROUND_DAYS). The PC does no full lists.
+BEFORE the first run (once): put this file next to bp_scraper.py, es_scraper.py, price_triggers.py,
+suggested_price.py, then fill in daily_update.bat (database URL, RUN_SECRET) and create the scheduled task.
 
-At the end Render recalculates least price + suggested price and updates the automatic brands in Airtable.
-Settings -> Automate shows: brands per day, weekly day, last run, today's brands, results per shop, next brands.
-Progress is saved in table app_settings (key 'daily_update'), so a stopped run continues with the same brands.
-
-BEFORE the first run (once):
-  1. Put this file in your scraper folder, next to bp_scraper.py, es_scraper.py, aj_scraper.py, ng_scraper.py,
-     on_scraper.py (+ alinjaz.py, nichegallerie.py, ounass.py which those scrapers import).
-  2. Edit daily_update.bat (database URL, RUN_SECRET) and create the scheduled task (see daily_update.bat).
-
-Run by hand:
+Run by hand (PC):
   python daily_update.py --test            -> today's brands, 3 products per shop, PRINT only (nothing saved)
-  python daily_update.py                   -> the real run (daily part; weekly part only on the weekly day)
-  python daily_update.py --force           -> run today's brands again
-  python daily_update.py --weekly          -> run the weekly full lists now (whatever day it is)
-  python daily_update.py --no-weekly       -> daily part only
+  python daily_update.py                   -> RUN 1 (the real run)
+  python daily_update.py --force           -> RUN 1 again for today's brands (also on Saturday / Sunday)
   python daily_update.py --brands "Dior,Chanel"   -> only these brands (does NOT move the daily position)
-  python daily_update.py --shop es         -> daily part for one shop only (ff, bp, es; daily position not moved)
+  python daily_update.py --shop es         -> one shop only (ff, bp, es; daily position not moved)
+  python daily_update.py --full-lists --force     -> RUN 2 now (today's shop) - normally the website does this
 Everything is printed AND written to daily_update.log next to this file.
 """
 
@@ -85,12 +67,10 @@ CDP_URL = "http://localhost:9222"                                           # yo
 CHROME_EXE = os.environ.get("CHROME_EXE", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
 CHROME_PROFILE = os.environ.get("CHROME_PROFILE", r"C:\ff-scraper\chrome-profile")
 DEFAULT_PER_DAY = 10           # brands per day when nothing is saved in Settings -> Automate
-DEFAULT_WEEKLY_DAY = 4         # 0 = Monday ... 4 = Friday (Settings -> Automate; weekends are never used)
-WORK_DAYS = range(0, 5)        # Monday-Friday: the PC is off on Saturday and Sunday
+WORK_DAYS = range(0, 5)        # RUN 1: Monday-Friday (the PC is off on Saturday and Sunday)
 DELAY = 1.5                    # seconds between product pages (be gentle with the shops)
-STATE_KEY = "daily_update"     # app_settings key: positions, today's brands, results
+STATE_KEY = "daily_update"     # RUN 1 progress in app_settings: positions, today's brands, results
 PER_DAY_KEY = "daily_brands_per_day"
-WEEKLY_DAY_KEY = "daily_weekly_day"
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(HERE, "daily_update.log")
@@ -101,46 +81,33 @@ DAILY_SHOPS = {
     "bp": {"label": "Branded Perfume", "table": "branded_perfume_catalog", "reader": "bp_scraper"},
     "es": {"label": "Essenzi", "table": "essenzi_catalog", "reader": "es_scraper"},
 }
-# Weekly shops (whole list in one go): where the download runs + the match link on Render
-# WEEKLY_SAVE_NEW = True  -> NEW products of the shop (not in our table yet) are SAVED and then matched to our products.
-#                   False -> new rows made by the download are removed again right after it (only current products).
-WEEKLY_SAVE_NEW = True
-# FULL_LISTS_EVERY_DAY = True -> the full lists of the 6 shops (new products + price / stock) run EVERY working day
-#                               after the daily brands, not only on the weekly day. False = only on the weekly day.
-FULL_LISTS_EVERY_DAY = True
-# WEEKLY_ONLY_PRICE_STOCK = True -> for products ALREADY saved, only price + stock change: name, brand, GTIN, link,
-# volume ... are put back to what they were before the download (new products keep everything they came with).
-WEEKLY_ONLY_PRICE_STOCK = True
-# columns the download is allowed to change on products already saved:
-WEEKLY_UPDATE_COLUMNS = {"price", "price_inc_tax", "stock", "updated_at"}
-WEEKLY_TABLES = {"samawa": "samawa_catalog", "am": "amberiya_catalog", "vp": "vperfumes_catalog",
-                 "aj": "alinjaz_catalog", "ng": "nichegallerie_catalog", "on": "ounass_catalog"}
-# RUN 2 WITHOUT THE PC: runs inside the website on Render at RUN2_TIME (Mon-Fri, see RUN 2 START TIME below)
-# downloads ALL 6 shops on Render. If a shop ever blocks Render (Settings -> Automate shows an error for it), move its
-# key to PC_FULL_LISTS: the PC run then downloads it in your Chrome (aj_scraper.py / ng_scraper.py / on_scraper.py).
-RENDER_FULL_LISTS = ["samawa", "am", "vp", "aj", "ng", "on"]   # Run 2 on Render (no PC)
-PC_FULL_LISTS = []                                             # empty = the PC does no full lists at all
-RENDER_STATE_KEY = "full_lists"                     # app_settings key for the Render run (separate from the PC run)
+# ---------------------------------------------------------------- RUN 2 settings (website on Render, one shop a day)
+RUN2_STATE_KEY = "full_lists"  # RUN 2 progress in app_settings (separate from RUN 1)
 # RUN 2 START TIME (India time, EVERY day incl. Saturday / Sunday) - CHANGE IT HERE, then push to GitHub + deploy:
 RUN2_TIME = "07:00"            # "HH:MM", 24-hour India time. Example: "06:30", "09:00", "14:00"
-# RUN 2 = ONE SHOP PER DAY in this order (day 1 Samawa, day 2 Ounass, day 3 V Perfumes ...). After the 6th shop the
-# round is complete; the next round starts RUN2_ROUND_DAYS after the start of the last one (6 days of updates, then
-# a pause) -> every shop is updated once every 2 weeks.
+# ONE SHOP PER DAY in this order (day 1 Samawa, day 2 Ounass, day 3 V Perfumes ...). After the 6th shop the round is
+# complete; the next round starts RUN2_ROUND_DAYS after the start of the last one -> every shop once every 2 weeks.
 RUN2_ORDER = ["samawa", "on", "vp", "am", "aj", "ng"]
 RUN2_ROUND_DAYS = 14           # a new round every 14 days (7 = every week)
-RUN2_DAYS = range(0, 7)        # 0 = Monday ... 6 = Sunday: Render runs every day (no PC needed)
-# RUN 2 runs INSIDE the website on Render (no cron job, no PC): app.py starts run2_scheduler() below when the
-# website starts; it checks the time every minute and runs the full lists once each working day at RUN2_TIME.
-# By hand (e.g. to test): python daily_update.py --full-lists --force
-WEEKLY_SHOPS = [
-    # (key, label, Render download link or None, PC scraper or None, Render status link, match link)
-    ("samawa", "Samawa", "/samawa-catalog/run", None, "/samawa-catalog/status", "/competitor/match-samawa"),
-    ("am", "Amberiya", "/amberiya/run", None, "/amberiya/status", "/competitor/match-am"),
-    ("vp", "V Perfumes", "/vperfumes/run", None, "/vperfumes/status", "/competitor/match-vp"),
-    ("aj", "Al Injaz", "/alinjaz/run", None, "/alinjaz/status", "/competitor/match-aj"),             # Render
-    ("ng", "Niche Gallerie", "/nichegallerie/run", None, "/nichegallerie/status", "/competitor/match-ng"),   # Render
-    ("on", "Ounass", "/ounass/run", None, "/ounass/status", "/competitor/match-on"),                 # Render
+RUN2_DAYS = range(0, 7)        # 0 = Monday ... 6 = Sunday: Render runs every day
+# RUN2_SAVE_NEW = True  -> NEW products of the shop are SAVED and matched to our products.
+#                 False -> new rows made by the download are removed again right after it.
+RUN2_SAVE_NEW = True
+# RUN2_ONLY_PRICE_STOCK = True -> products ALREADY saved only get the new price + stock: name, brand, GTIN, link,
+# volume ... are put back to what they were before the download (new products keep everything they came with).
+RUN2_ONLY_PRICE_STOCK = True
+RUN2_UPDATE_COLUMNS = {"price", "price_inc_tax", "stock", "updated_at"}   # what the download may change
+RUN2_SHOPS = [
+    # (key, label, table, Render download link, Render status link, match link)
+    ("samawa", "Samawa", "samawa_catalog", "/samawa-catalog/run", "/samawa-catalog/status", "/competitor/match-samawa"),
+    ("on", "Ounass", "ounass_catalog", "/ounass/run", "/ounass/status", "/competitor/match-on"),
+    ("vp", "V Perfumes", "vperfumes_catalog", "/vperfumes/run", "/vperfumes/status", "/competitor/match-vp"),
+    ("am", "Amberiya", "amberiya_catalog", "/amberiya/run", "/amberiya/status", "/competitor/match-am"),
+    ("aj", "Al Injaz", "alinjaz_catalog", "/alinjaz/run", "/alinjaz/status", "/competitor/match-aj"),
+    ("ng", "Niche Gallerie", "nichegallerie_catalog", "/nichegallerie/run", "/nichegallerie/status",
+     "/competitor/match-ng"),
 ]
+RUN2_LABELS = {k: label for k, label, *_ in RUN2_SHOPS}
 
 
 def log(*a):
@@ -214,8 +181,8 @@ def _write_state(state):
     conn.commit()
     cur.close()
     conn.close()
-    log(f"[STATE] Saved: daily {state.get('daily_status', '-')} ({', '.join(state.get('brands') or [])}) | "
-        f"weekly {state.get('weekly_status', '-')}")
+    log(f"[STATE] Saved ({STATE_KEY}): daily {state.get('daily_status', '-')} ({', '.join(state.get('brands') or [])})"
+        + (f" | run 2 {state.get('weekly_status')}" if STATE_KEY == RUN2_STATE_KEY else ""))
 
 
 def table_exists(cur, t):
@@ -554,29 +521,7 @@ def start_and_wait(path, status_path, label):
     return wait_render(status_path, label)
 
 
-# ---------------------------------------------------------------- weekly full lists
-def weekly_due(cur, state, forced):
-    """Due on the weekly day (Settings -> Automate) once; if the PC was off that day -> the next run catches up."""
-    try:
-        day = int(read_setting(cur, WEEKLY_DAY_KEY) or DEFAULT_WEEKLY_DAY)
-    except ValueError:
-        day = DEFAULT_WEEKLY_DAY
-    if day not in WORK_DAYS:
-        day = DEFAULT_WEEKLY_DAY                         # an old Saturday / Sunday setting -> Friday
-    last = state.get("weekly_date")
-    today = date.today()
-    since = (today - date.fromisoformat(last)).days if last else None
-    if FULL_LISTS_EVERY_DAY:                             # every working day, once (a finished day is not repeated)
-        due = forced or last is None or since > 0
-        log(f"[WEEKLY] Full lists EVERY working day | last full lists: {last or 'never'} -> "
-            f"{'RUN TODAY' if due else 'already done today'}")
-        return due
-    due = forced or last is None or (today.weekday() == day and since > 0) or since >= 8
-    log(f"[WEEKLY] Weekly day: {DAYS[day]} | last full lists: {last or 'never'} -> "
-        f"{'RUN TODAY' if due else 'not today'}")
-    return due
-
-
+# ---------------------------------------------------------------- RUN 2: one shop's whole product list
 def max_row_id(table):
     """Highest row number in a shop's table before its download (0 = table empty / missing)."""
     conn = db()
@@ -592,9 +537,9 @@ def max_row_id(table):
 
 
 def remove_new_products(table, label, before_id):
-    """WEEKLY_SAVE_NEW = False only: rows added by this download (row number above the old highest) are deleted again.
-    WEEKLY_SAVE_NEW = True: new products are kept -> only counted and logged."""
-    if WEEKLY_SAVE_NEW:
+    """RUN2_SAVE_NEW = False only: rows added by this download (row number above the old highest) are deleted again.
+    RUN2_SAVE_NEW = True: new products are kept -> only counted and logged."""
+    if RUN2_SAVE_NEW:
         conn = db()
         cur = conn.cursor()
         try:
@@ -603,10 +548,10 @@ def remove_new_products(table, label, before_id):
         finally:
             cur.close()
             conn.close()
-        log(f"[WEEKLY] {label}: {n} NEW products SAVED (they are matched to our products next)")
+        log(f"[RUN2] {label}: {n} NEW products SAVED (they are matched to our products next)")
         return n
     if not before_id:
-        log(f"[WEEKLY] {label}: table was empty before -> nothing removed (first download keeps everything)")
+        log(f"[RUN2] {label}: table was empty before -> nothing removed (first download keeps everything)")
         return 0
     conn = db()
     cur = conn.cursor()
@@ -617,7 +562,7 @@ def remove_new_products(table, label, before_id):
     finally:
         cur.close()
         conn.close()
-    log(f"[WEEKLY] {label}: {n} NEW products removed again (only current products are kept and updated)")
+    log(f"[RUN2] {label}: {n} NEW products removed again (only current products are kept and updated)")
     return n
 
 
@@ -635,7 +580,7 @@ def restore_details(table, label):
             return 0
         cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s ORDER BY ordinal_position",
                     (table,))
-        cols = [c for (c,) in cur.fetchall() if c != "id" and c not in WEEKLY_UPDATE_COLUMNS]
+        cols = [c for (c,) in cur.fetchall() if c != "id" and c not in RUN2_UPDATE_COLUMNS]
         n = 0
         if cols:
             sets = ", ".join(f"{c} = k.{c}" for c in cols)
@@ -645,7 +590,7 @@ def restore_details(table, label):
             n = cur.rowcount
         cur.execute(f"DROP TABLE {keep}")
         conn.commit()
-        log(f"[WEEKLY] {label}: only price + stock kept from the download - other details put back on {n} products "
+        log(f"[RUN2] {label}: only price + stock kept from the download - other details put back on {n} products "
             f"({', '.join(cols)})")
         return n
     finally:
@@ -665,60 +610,38 @@ def keep_details(table, label):
         cur.execute(f"CREATE TABLE {keep} AS SELECT * FROM {table}")
         n = cur.rowcount
         conn.commit()
-        log(f"[WEEKLY] {label}: copy of {n} products made ({keep}) - after the download only price + stock change")
+        log(f"[RUN2] {label}: copy of {n} products made ({keep}) - after the download only price + stock change")
         return True
     finally:
         cur.close()
         conn.close()
 
 
-def run_weekly(state, only=None):
-    """Whole product list of the 6 shops, then matching on Render (one shop after another).
-    New products are saved (WEEKLY_SAVE_NEW); products already saved only get new price + stock (WEEKLY_ONLY_PRICE_STOCK)."""
-    results = dict(state.get("weekly_results") or {})   # keeps French Fragrance / BP / Essenzi "new products" info
-    env = dict(os.environ)
-    for key, label, dl, scraper, status, match in WEEKLY_SHOPS:
-        if only is not None and key not in only:        # Render run: samawa/am/vp/ng | PC run: aj/on
-            continue
-        log(f"\n[WEEKLY] ===== {label}: full product list =====")
-        table = WEEKLY_TABLES[key]
-        before_id = max_row_id(table)                    # everything above this after the download = new products
-        log(f"[WEEKLY] {label}: highest row in {table} before the download = {before_id}")
-        if WEEKLY_ONLY_PRICE_STOCK:
-            keep_details(table, label)                   # names / brands / GTINs / links are put back afterwards
-        if dl:
-            res = start_and_wait(dl, status, f"{label} download")
-        else:
-            path = os.path.join(HERE, scraper)
-            if not os.path.exists(path):
-                log(f"[WEEKLY] {scraper} not found next to daily_update.py -> {label} skipped")
-                results[label] = {"error": f"{scraper} missing"}
-                continue
-            # PC scraper (aj_scraper.py / ng_scraper.py / on_scraper.py) - same as running it by hand
-            log(f"[WEEKLY] Running {scraper} (this can take a while, its output is summarised below)")
-            started = time.time()
-            p = subprocess.run([sys.executable, path], cwd=HERE, env=env, capture_output=True, text=True,
-                               encoding="utf-8", errors="replace")
-            tail = [ln for ln in (p.stdout or "").splitlines() if ln.strip()][-3:]
-            for ln in tail:
-                log(f"[WEEKLY] {scraper}: {ln}")
-            if p.returncode != 0:
-                log(f"[WEEKLY] {scraper} failed: {(p.stderr or '')[-300:]}")
-            res = {"exit": p.returncode, "minutes": round((time.time() - started) / 60, 1), "last_line": tail[-1:] }
-        n_new = remove_new_products(table, label, before_id)   # WEEKLY_SAVE_NEW = True -> kept (and counted)
-        if WEEKLY_SAVE_NEW:
-            # shown on the shop's page: "N new products added" (+ filter: rows with id above new_after_id)
-            res["new_added"], res["new_after_id"], res["date"] = n_new, before_id or 0, date.today().isoformat()
-        else:
-            res["new_removed"] = n_new
-        if WEEKLY_ONLY_PRICE_STOCK:
-            res["details_restored"] = restore_details(table, label)          # only price + stock changed
-        log(f"[WEEKLY] {label}: matching to our products on Render")
-        res["match"] = start_and_wait(match, "/samawa/status", f"{label} match")      # all matches use /samawa/status
-        results[label] = res
-        state["weekly_results"] = results
-        write_state(state)
-    return results
+def run2_shop(state, shop):
+    """RUN 2 for ONE shop: download its whole list on Render -> new products saved -> details of saved products put
+    back (only price + stock change) -> matching on Render. Result saved in state["weekly_results"][label]
+    (key name kept: the shop pages read it for "N new products added")."""
+    results = state.setdefault("weekly_results", {})
+    key, label, table, dl, status, match = next(x for x in RUN2_SHOPS if x[0] == shop)
+    log(f"\n[RUN2] ===== {label}: full product list =====")
+    before_id = max_row_id(table)                        # everything above this after the download = new products
+    log(f"[RUN2] {label}: highest row in {table} before the download = {before_id}")
+    if RUN2_ONLY_PRICE_STOCK:
+        keep_details(table, label)                       # names / brands / GTINs / links are put back afterwards
+    res = start_and_wait(dl, status, f"{label} download")
+    n_new = remove_new_products(table, label, before_id)  # RUN2_SAVE_NEW = True -> kept (and counted)
+    if RUN2_SAVE_NEW:
+        # shown on the shop's page: "N new products added" (+ filter: rows with id above new_after_id)
+        res["new_added"], res["new_after_id"], res["date"] = n_new, before_id or 0, date.today().isoformat()
+    else:
+        res["new_removed"] = n_new
+    if RUN2_ONLY_PRICE_STOCK:
+        res["details_restored"] = restore_details(table, label)          # only price + stock changed
+    log(f"[RUN2] {label}: matching to our products on Render")
+    res["match"] = start_and_wait(match, "/samawa/status", f"{label} match")      # all matches use /samawa/status
+    results[label] = res
+    write_state(state)
+    return res
 
 
 # ---------------------------------------------------------------- NEW French Fragrance products (every working day)
@@ -929,7 +852,7 @@ def chrome(pw):
     raise RuntimeError("could not start / connect to Chrome on port 9222")
 
 
-# ---------------------------------------------------------------- RUN 2 on Render (no PC)
+# ---------------------------------------------------------------- RUN 2 scheduler (inside the website on Render)
 def india_now():
     """Current India time (Render's clock is UTC; the website's own clock is not changed)."""
     return datetime.utcnow() + timedelta(hours=5, minutes=30)
@@ -957,7 +880,7 @@ def render_full_lists(args, quiet=False, restart_stopped=False):
     only price + stock), matching, then least / suggested price. Progress in app_settings 'full_lists'.
     Returns True when it ran. quiet=True (scheduler): no 'waiting' lines every minute."""
     global STATE_KEY
-    STATE_KEY = RENDER_STATE_KEY                         # never touches the PC run's progress ('daily_update')
+    STATE_KEY = RUN2_STATE_KEY                           # never touches RUN 1's progress ('daily_update')
     now = india_now()
     today = now.date().isoformat()
     if now.weekday() not in RUN2_DAYS and not args.force:
@@ -993,22 +916,20 @@ def render_full_lists(args, quiet=False, restart_stopped=False):
         state.update({"weekly_date": today, "today_shop": None, "next_info": why})
         write_state(state)                               # 'checked today' -> not asked again until tomorrow
         return False
-    label = next(lbl for k, lbl, *_ in WEEKLY_SHOPS if k == shop)
+    label = RUN2_LABELS[shop]
     log("=" * 70)
     log(f"[RUN2] Started {now:%d %b %Y %H:%M} India time - today: {label} ({why})")
     state.update({"weekly_status": "running", "weekly_started": now.isoformat(timespec="minutes"), "today_shop": label})
     write_state(state)
-    run_weekly(state, only=[shop])                       # download -> new products saved -> details kept -> match
+    run2_shop(state, shop)                               # download -> new products saved -> details kept -> match
     res = state.setdefault("weekly_results", {}).setdefault(label, {})
     res["done_on"] = today                               # shown on the Automate page: last update of this shop
     idx = RUN2_ORDER.index(shop) + 1
     if idx < len(RUN2_ORDER):
-        nxt_key = RUN2_ORDER[idx]
-        nxt = next(lbl for k, lbl, *_ in WEEKLY_SHOPS if k == nxt_key)
-        state["next_info"] = f"tomorrow: {nxt}"
+        state["next_info"] = f"tomorrow: {RUN2_LABELS[RUN2_ORDER[idx]]}"
     else:
         nr = date.fromisoformat(state["round_start"]) + timedelta(days=RUN2_ROUND_DAYS)
-        state["next_info"] = f"round complete - next round ({RUN2_ORDER[0]} first) on {nr.isoformat()}"
+        state["next_info"] = f"round complete - next round ({RUN2_LABELS[RUN2_ORDER[0]]} first) on {nr.isoformat()}"
     state.update({"next_index": idx, "weekly_status": "done", "weekly_date": today,
                   "weekly_finished": india_now().isoformat(timespec="minutes")})
     r = render_get("/competitor/update-least")           # least price + suggested price + automatic brands
@@ -1043,26 +964,40 @@ def run2_scheduler(check_every=60):
         time.sleep(check_every)
 
 
-# ---------------------------------------------------------------- main
+# ---------------------------------------------------------------- main (RUN 1)
+RUN1_RESULT_SHOPS = ("French Fragrance", "Branded Perfume", "Essenzi")   # "new products" info RUN 1 keeps
+
+
+def clean_old_run2(state):
+    """RUN 1 progress used to hold the PC's old full-list results too. Remove them (RUN 2 has its own progress)."""
+    old = [k for k in ("weekly_status", "weekly_started", "weekly_date", "weekly_finished") if k in state]
+    for k in old:
+        state.pop(k)
+    wr = state.get("weekly_results") or {}
+    gone = [shop for shop in list(wr) if shop not in RUN1_RESULT_SHOPS]
+    for shop in gone:
+        wr.pop(shop)
+    if old or gone:
+        log(f"[RUN] Old PC full-list results removed from RUN 1 progress: {', '.join(gone) or '-'}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--test", action="store_true", help="3 products per shop, print only, nothing saved")
     ap.add_argument("--force", action="store_true", help="run today's brands again")
-    ap.add_argument("--weekly", action="store_true", help="run the weekly full lists now")
-    ap.add_argument("--no-weekly", action="store_true", help="daily part only")
     ap.add_argument("--brands", default="", help='only these brands, e.g. "Dior,Chanel" (daily position unchanged)')
     ap.add_argument("--shop", default="", choices=[""] + list(DAILY_SHOPS), help="daily part for one shop only")
     ap.add_argument("--full-lists", action="store_true",
-                    help="RUN 2 by hand: full lists of " + ", ".join(RENDER_FULL_LISTS) + " (normally the website runs it at RUN2_TIME)")
+                    help="RUN 2 by hand: today's shop (normally the website runs it at RUN2_TIME); add --force")
     args = ap.parse_args()
     if args.full_lists:
         return render_full_lists(args)
-    # where the page readers (bp_scraper.py, es_scraper.py) and PC scrapers are: the folder of this file
+    # where the page readers (bp_scraper.py, es_scraper.py) are: the folder of this file
     sys.path.insert(0, HERE)                             # bp_scraper.py, es_scraper.py ... next to this file
     log("=" * 70)
     log(f"[RUN] Started {datetime.now():%d %b %Y %H:%M}" + (" (TEST - nothing saved)" if args.test else ""))
     log(f"[RUN] Options: {vars(args)} | folder {HERE} | Render {SITE}")
-    if date.today().weekday() not in WORK_DAYS and not (args.force or args.test or args.weekly or args.brands or args.shop):
+    if date.today().weekday() not in WORK_DAYS and not (args.force or args.test or args.brands or args.shop):
         log(f"[RUN] Today is {DAYS[date.today().weekday()]} - no update on Saturday / Sunday "
             f"(use --force to run anyway)")
         return
@@ -1070,6 +1005,7 @@ def main():
     conn = db()
     cur = conn.cursor()
     state = json.loads(read_setting(cur, STATE_KEY) or "{}")
+    clean_old_run2(state)                                # RUN 2 no longer runs on the PC -> its old results removed
     try:
         per_day = max(1, int(float(read_setting(cur, PER_DAY_KEY) or DEFAULT_PER_DAY)))
     except ValueError:
@@ -1084,8 +1020,6 @@ def main():
         log(f"[DAILY] Brands from --brands: {', '.join(brands) or 'none found'} (daily position not changed)")
     else:
         brands = todays_brands(cur, groups, state, per_day, args.force or args.shop or args.test)
-    weekly = (bool(PC_FULL_LISTS) and not args.no_weekly and not args.brands and not args.shop and not args.test
-              and weekly_due(cur, state, args.weekly))
     conn.commit()
     cur.close()
     conn.close()
@@ -1165,16 +1099,6 @@ def main():
     if args.test:
         log("[TEST] Done - nothing was saved, daily position not changed.")
         return
-
-    # ---------------- weekly part: whole lists of Samawa, Amberiya, V Perfumes, Al Injaz, Niche Gallerie, Ounass
-    if weekly:
-        state["weekly_status"] = "running"
-        state["weekly_started"] = datetime.now().isoformat(timespec="minutes")
-        write_state(state)
-        run_weekly(state, only=PC_FULL_LISTS)            # only shops moved back to the PC (normally none)
-        state.update({"weekly_status": "done", "weekly_date": date.today().isoformat(),
-                      "weekly_finished": datetime.now().isoformat(timespec="minutes")})
-        write_state(state)
 
     # ---------------- least price + suggested price + automatic brands (Branded Perfume / Essenzi prices too)
     if not brands and not ff_new_added:
