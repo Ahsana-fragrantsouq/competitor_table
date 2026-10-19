@@ -1860,6 +1860,14 @@ def link_sisters_for(cur, fid):
         cur.execute("SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
                     (table, f"{cp}_title"))
         title_sql = f"COALESCE(s.{cp}_title, f.name)" if cur.fetchone() else "f.name"
+        # 1. clear the OLD link first (same as ct_update_least). Without this, when the new French Fragrance product
+        #    is not on this site, the link of the previous French Fragrance product stayed (Essenzi kept a wrong link).
+        #    A link set by an admin (<p>_confirmed) is kept.
+        cur.execute(f"""UPDATE competitor_table SET {p}_link = NULL, {p}_title = NULL, {p}_price = NULL,
+                               {p}_stock = FALSE
+                        WHERE fi_record_id = %s AND NOT COALESCE({p}_confirmed, FALSE)""", (fid,))
+        cleared = cur.rowcount
+        # 2. take the link from the sister catalog through the (new) French Fragrance link
         cur.execute(f"""
             UPDATE competitor_table c SET
                 {p}_link = s.{cp}_url, {p}_title = {title_sql},
@@ -1868,7 +1876,12 @@ def link_sisters_for(cur, fid):
             WHERE c.fi_record_id = %s AND c.ff_link = f.product_url AND COALESCE(s.{cp}_stock, '') <> 'Not on site'
               AND NOT COALESCE(c.{p}_confirmed, FALSE)          -- link set by an admin -> kept
         """, (fid,))
-        log(f"[SUGGEST] {label} linked for {fid}: {cur.rowcount}")
+        if cur.rowcount:
+            log(f"[SUGGEST] {label} linked for {fid}: follows the French Fragrance link")
+        elif cleared:
+            log(f"[SUGGEST] {label} for {fid}: French Fragrance product not on {label} -> old link removed")
+        else:
+            log(f"[SUGGEST] {label} for {fid}: link set by an admin -> kept")
 
 
 def least_for(cur, fid):
