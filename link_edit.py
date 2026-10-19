@@ -5,8 +5,9 @@ An admin can fix a wrong match by hand:
   Save    -> paste the correct product page of that shop. It must be in the shop's saved product list
              (the same list the matching uses). Its name, price and stock are copied, the link is marked
              CONFIRMED, so later match runs keep it (only price + stock are refreshed).
-  Remove  -> the shop has no such product: the link is removed and remembered as refused, so the next match
-             run does not put it back (app.py ct_match_shop checks <shop>_rejected).
+  Cancel  -> closes the box, nothing is changed.
+  (The route still understands action "remove" - link removed and remembered as refused, app.py ct_match_shop
+   checks <shop>_rejected - but there is no button for it on the page.)
 After either: least + suggested price of the product are recalculated at once (and Airtable for automatic brands
 at the end of the next run). French Fragrance -> Branded Perfume + Essenzi follow at once (same products).
 Branded Perfume / Essenzi cannot be edited here: they always follow the French Fragrance link.
@@ -15,7 +16,7 @@ Non-admins do not see the button, and the server refuses them too (403).
 
 Where things are (change them here):
   SECTION 1  settings      -> SHOP_LISTS (each shop's product list: table, name, price), SAVE_URL
-  SECTION 2  card parts    -> EDIT_CSS, EDIT_HTML (button + box under a competitor link), EDIT_JS (Save / Remove)
+  SECTION 2  card parts    -> EDIT_CSS, EDIT_HTML (button + box under a competitor link), EDIT_JS (Save / Cancel)
   SECTION 3  save (route)  -> POST /competitor/link
   SECTION 4  hooks         -> init(): functions from app.py (database, French Fragrance sisters, recalculation)
 """
@@ -53,7 +54,7 @@ EDIT_CSS = """ /* Edit link (admins only): small button under a competitor link 
                 border-radius:8px;padding:7px 9px;font-size:13px}
  .lnk-box button{border-radius:8px;padding:7px 12px;font-weight:600;cursor:pointer;font-size:13px}
  .lnk-save{background:#f2d675;color:#1c1b19;border:0}
- .lnk-del{background:none;color:#e0806c;border:1px solid #e0806c}
+ .lnk-cancel{background:none;color:var(--muted);border:1px solid var(--line)}
 """
 
 # r = product row, k = shop prefix, label = shop name (inside competitors_page.py shop_block)
@@ -64,7 +65,8 @@ EDIT_HTML = """          {# Edit link: admins only (link_edit.py). Branded Perfu
             <input type="url" id="lnkin-{{ k }}-{{ r.fi }}" value="{{ r[k ~ '_url'] or r[k ~ '_suggestion'] or '' }}"
                    placeholder="Correct {{ label }} product link">
             <button type="button" class="lnk-save" onclick="saveLink('{{ k }}', '{{ r.fi }}', 'save', this)">Save</button>
-            {% if r[k ~ '_url'] %}<button type="button" class="lnk-del" onclick="saveLink('{{ k }}', '{{ r.fi }}', 'remove', this)">Remove</button>{% endif %}
+            {# Cancel = close the box, nothing saved, the old link is put back in the box #}
+            <button type="button" class="lnk-cancel" onclick="cancelLink('{{ k }}', '{{ r.fi }}')">Cancel</button>
           </div>
           <div class="upd-msg" id="lnkmsg-{{ k }}-{{ r.fi }}"></div>
           {% endif %}
@@ -75,6 +77,13 @@ EDIT_JS = """  // ---- Edit link (admins only, link_edit.py): open the box, Save
     var box = document.getElementById("lnk-" + k + "-" + fi);
     box.hidden = !box.hidden;
     if (!box.hidden) document.getElementById("lnkin-" + k + "-" + fi).focus();
+  }
+  function cancelLink(k, fi) {                       // close without saving, old link back in the box
+    var input = document.getElementById("lnkin-" + k + "-" + fi);
+    input.value = input.defaultValue;
+    document.getElementById("lnk-" + k + "-" + fi).hidden = true;
+    document.getElementById("lnkmsg-" + k + "-" + fi).textContent = "";
+    console.log("[LINK-EDIT] cancel " + k + " " + fi);
   }
   async function saveLink(k, fi, action, btn) {
     var url = document.getElementById("lnkin-" + k + "-" + fi).value.trim();
