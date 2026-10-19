@@ -9,12 +9,13 @@ RUN 1 - on YOUR PC, Monday-Friday 11:30 AM India time (Windows Task Scheduler st
     The brand is read from the start of the product name ("Christian Dior Sauvage EDT" -> "Christian Dior").
     Also once a day: NEW French Fragrance products from its sitemap are saved (+ their Branded Perfume / Essenzi rows)
     and matched to our products (FF_NEW_PRODUCTS).
-    Also every PC_LIST_DAYS (14) days: OUNASS whole product list with on_scraper.py in your Chrome (Ounass blocks
-    Render and loads more products only while scrolling) -> new products saved, saved ones get price + stock, matching.
+    Also every PC_LIST_DAYS (14) days: whole product list of OUNASS, AL INJAZ and NICHE GALLERIE in your Chrome
+    (on_scraper.py / aj_scraper.py / ng_scraper.py - these shops block Render) -> new products saved, saved ones
+    get price + stock, then matching.
     Progress: app_settings key 'daily_update' (a stopped run continues with the same brands).
 
 RUN 2 - inside the website on Render (no PC, no cron job), EVERY day at RUN2_TIME (7:00 AM India time):
-    ONE shop a day in RUN2_ORDER: Samawa -> V Perfumes -> Amberiya -> Al Injaz -> Niche Gallerie,
+    ONE shop a day in RUN2_ORDER: Samawa -> V Perfumes -> Amberiya,
     then a pause; a new round starts RUN2_ROUND_DAYS (14) days after the last one began.
     Whole product list of that shop: new products are saved, products already saved only get the new price + stock,
     then matching to our products. app.py starts run2_scheduler() when the website starts.
@@ -23,7 +24,8 @@ RUN 2 - inside the website on Render (no PC, no cron job), EVERY day at RUN2_TIM
 After each run Render recalculates least + suggested price and updates the automatic brands in Airtable
 (/competitor/update-least). Settings -> Automate shows both runs.
 
-BEFORE the first run (once): put this file next to bp_scraper.py, es_scraper.py, on_scraper.py (+ ounass.py),
+BEFORE the first run (once): put this file next to bp_scraper.py, es_scraper.py, on_scraper.py, aj_scraper.py,
+ng_scraper.py (+ ounass.py, alinjaz.py, nichegallerie.py),
 price_triggers.py, suggested_price.py, then fill in daily_update.bat (database URL, RUN_SECRET) and create the scheduled task.
 
 Run by hand (PC):
@@ -32,7 +34,7 @@ Run by hand (PC):
   python daily_update.py --force           -> RUN 1 again for today's brands (also on Saturday / Sunday)
   python daily_update.py --brands "Dior,Chanel"   -> only these brands (does NOT move the daily position)
   python daily_update.py --shop es         -> one shop only (ff, bp, es; daily position not moved)
-  python daily_update.py --ounass         -> Ounass whole list now (even when not due yet)
+  python daily_update.py --ounass         -> Ounass + Al Injaz + Niche Gallerie whole lists now (even when not due)
   python daily_update.py --full-lists --force     -> RUN 2 now (today's shop) - normally the website does this
 Everything is printed AND written to daily_update.log next to this file.
 """
@@ -90,8 +92,9 @@ RUN2_STATE_KEY = "full_lists"  # RUN 2 progress in app_settings (separate from R
 RUN2_TIME = "07:00"            # "HH:MM", 24-hour India time. Example: "06:30", "09:00", "14:00"
 # ONE SHOP PER DAY in this order (day 1 Samawa, day 2 V Perfumes ...). After the last shop the round is complete;
 # the next round starts RUN2_ROUND_DAYS after the start of the last one -> every shop once every 2 weeks.
-# Ounass is NOT here: it runs on the PC (PC_LISTS below). The next shop = the first one not done yet in this round.
-RUN2_ORDER = ["samawa", "vp", "am", "aj", "ng"]
+# Ounass, Al Injaz, Niche Gallerie are NOT here: they block Render (captcha / "too many requests") and run on the
+# PC (PC_LISTS below). The next shop = the first one not done yet in this round.
+RUN2_ORDER = ["samawa", "vp", "am"]
 RUN2_ROUND_DAYS = 14           # a new round every 14 days (7 = every week)
 RUN2_DAYS = range(0, 7)        # 0 = Monday ... 6 = Sunday: Render runs every day
 # RUN2_SAVE_NEW = True  -> NEW products of the shop are SAVED and matched to our products.
@@ -106,9 +109,6 @@ RUN2_SHOPS = [
     ("samawa", "Samawa", "samawa_catalog", "/samawa-catalog/run", "/samawa-catalog/status", "/competitor/match-samawa"),
     ("vp", "V Perfumes", "vperfumes_catalog", "/vperfumes/run", "/vperfumes/status", "/competitor/match-vp"),
     ("am", "Amberiya", "amberiya_catalog", "/amberiya/run", "/amberiya/status", "/competitor/match-am"),
-    ("aj", "Al Injaz", "alinjaz_catalog", "/alinjaz/run", "/alinjaz/status", "/competitor/match-aj"),
-    ("ng", "Niche Gallerie", "nichegallerie_catalog", "/nichegallerie/run", "/nichegallerie/status",
-     "/competitor/match-ng"),
 ]
 RUN2_LABELS = {k: label for k, label, *_ in RUN2_SHOPS}
 
@@ -120,6 +120,8 @@ PC_LIST_DAYS = 14
 PC_LISTS = [
     # (key, label, table, PC scraper next to this file, match link on Render)
     ("on", "Ounass", "ounass_catalog", "on_scraper.py", "/competitor/match-on"),
+    ("aj", "Al Injaz", "alinjaz_catalog", "aj_scraper.py", "/competitor/match-aj"),        # captcha on Render
+    ("ng", "Niche Gallerie", "nichegallerie_catalog", "ng_scraper.py", "/competitor/match-ng"),  # captcha on Render
 ]
 
 
@@ -1008,7 +1010,7 @@ def run2_scheduler(check_every=60):
         time.sleep(check_every)
 
 
-# ---------------------------------------------------------------- whole lists on the PC (Ounass) - part of RUN 1
+# ---------------------------------------------------------------- whole lists on the PC (Ounass, Al Injaz, Niche Gallerie)
 def pc_list_due(state, label, force=False):
     """Due when it never ran, or its last good run is PC_LIST_DAYS days ago or more."""
     last = ((state.get("pc_lists") or {}).get(label) or {}).get("done_on")
@@ -1084,7 +1086,8 @@ def main():
     ap.add_argument("--force", action="store_true", help="run today's brands again")
     ap.add_argument("--brands", default="", help='only these brands, e.g. "Dior,Chanel" (daily position unchanged)')
     ap.add_argument("--shop", default="", choices=[""] + list(DAILY_SHOPS), help="daily part for one shop only")
-    ap.add_argument("--ounass", action="store_true", help="Ounass whole list now (even when not due yet)")
+    ap.add_argument("--ounass", action="store_true",
+                    help="PC whole lists now (Ounass, Al Injaz, Niche Gallerie), even when not due yet")
     ap.add_argument("--full-lists", action="store_true",
                     help="RUN 2 by hand: today's shop (normally the website runs it at RUN2_TIME); add --force")
     args = ap.parse_args()
@@ -1198,7 +1201,7 @@ def main():
         log("[TEST] Done - nothing was saved, daily position not changed.")
         return
 
-    # ---------------- whole lists on the PC (Ounass), once every PC_LIST_DAYS days
+    # ---------------- whole lists on the PC (Ounass, Al Injaz, Niche Gallerie), once every PC_LIST_DAYS days
     pc_ran = False
     if not args.brands and not args.shop:
         pc_ran = run_pc_lists(state, force=args.ounass)

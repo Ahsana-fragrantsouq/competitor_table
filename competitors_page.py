@@ -1385,7 +1385,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
     <div class="runhead"><b>Run 1 &middot; PC</b> <span class="gtin">Monday&ndash;Friday {{ daily.run1_time }}</span></div>
     <p class="hint">French Fragrance, Branded Perfume, Essenzi: price + stock of all products of the next {{ daily.per_day }} brands
        {%- if st and st.total_brands %} ({{ st.total_brands }} brands, one round every {{ (st.total_brands / daily.per_day)|round(0, 'ceil')|int }} working days){% endif %}.
-       New French Fragrance products are saved too. Ounass (it blocks Render): whole list in your Chrome every 2 weeks.</p>
+       New French Fragrance products are saved too. Ounass, Al Injaz, Niche Gallerie (they block Render): whole list in your Chrome every 2 weeks.</p>
     {% if st and st.date %}
     <p class="hint">Last run <b>{{ st.date }}</b> &middot;
        {% if st.daily_status == 'done' %}<span class="okc">done{% if st.finished %} at {{ st.finished[11:16] }}{% endif %}</span>
@@ -1705,8 +1705,7 @@ def run2_rows(rs):
         order = [(k, du.RUN2_LABELS[k]) for k in du.RUN2_ORDER]
     except Exception as ex:                                # daily_update.py missing -> fixed order
         print(f"[RUN2-BOX] daily_update.py not importable ({ex}) -> default shop order", flush=True)
-        order = [("samawa", "Samawa"), ("vp", "V Perfumes"), ("am", "Amberiya"),
-                 ("aj", "Al Injaz"), ("ng", "Niche Gallerie")]
+        order = [("samawa", "Samawa"), ("vp", "V Perfumes"), ("am", "Amberiya")]
     rs = rs or {}
     start = rs.get("round_start")
     results = rs.get("weekly_results") or {}
@@ -1740,13 +1739,13 @@ def run2_rows(rs):
 
 
 def pc_rows(state):
-    """Whole lists run by the PC (Ounass) - shown in the RUN 1 part: last good run, next due, new products / error."""
+    """Whole lists run by the PC (Ounass, Al Injaz, Niche Gallerie) - shown in the RUN 1 part: last good run, next due, new products / error."""
     from datetime import date, timedelta
     try:
         import daily_update as du
         lists, every = [lbl for _, lbl, *_ in du.PC_LISTS], du.PC_LIST_DAYS
     except Exception:
-        lists, every = ["Ounass"], 14
+        lists, every = ["Ounass", "Al Injaz", "Niche Gallerie"], 14
     rows = []
     for label in lists:
         r = ((state or {}).get("pc_lists") or {}).get(label) or {}
