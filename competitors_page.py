@@ -34,6 +34,7 @@ from auth import list_users, is_admin, MIN_PASSWORD      # User management (user
 import discount_rate                                      # Settings -> Auto discount rate (own file: discount_rate.py)
 import price_limits                                       # LOP / MOP boxes on the product card (own file: price_limits.py)
 import link_edit                                          # 'Edit link' for admins on the cards (link_edit.py)
+import barcode_edit                                       # 'Edit' our barcode for admins (barcode_edit.py)
 import skip_auto                                          # 'Skip automatic price' checkbox on the cards (skip_auto.py)
 from discount_rate import get_discount_rate               # kept here so competitors_page.get_discount_rate() still works
 
@@ -537,6 +538,8 @@ HTML = """
  @@SKIP_CSS@@
  /* Edit link (admins): link_edit.py EDIT_CSS */
  @@EDIT_CSS@@
+ /* Edit our barcode (admins): barcode_edit.py BC_CSS */
+ @@BC_CSS@@
  .upd-msg{font-size:13px;margin-top:6px;min-height:16px}
  .sitelink{color:inherit;text-decoration:underline;text-underline-offset:3px}
  .sitelink:hover{color:#f2d675}
@@ -730,8 +733,9 @@ HTML = """
       <span>{{ r.name or r.code or '' }}</span>
       <input type="checkbox" class="pick" data-fi="{{ r.fi }}" onchange="pickChanged()" title="Select"></div>
     <div class="code">{{ r.code or '' }}</div>
-    <div class="meta">{% if r.brand %}Brand <b>{{ r.brand }}</b>{% endif %}{% if r.brand and r.sku %} · {% endif %}{% if r.sku %}SKU <b>{{ r.sku }}</b>{% endif %}{% if r.barcode and (r.brand or r.sku) %} · {% endif %}{% if r.barcode %}Barcode <b>{{ r.barcode }}</b>{% endif %}</div>
-    <div class="least">
+    <div class="meta">{% if r.brand %}Brand <b>{{ r.brand }}</b>{% endif %}{% if r.brand and r.sku %} · {% endif %}{% if r.sku %}SKU <b>{{ r.sku }}</b>{% endif %}{% if r.barcode and (r.brand or r.sku) %} · {% endif %}{% if r.barcode %}Barcode <b>{{ r.barcode }}</b>{% endif %}@@BC_BUTTON@@</div>
+    {# Edit our barcode box (admins only): barcode_edit.py BC_HTML #}
+@@BC_HTML@@    <div class="least">
       {% if r.least_price is not none %}
         <div><div class="plabel">Least price (in stock)</div>
              <span class="price">AED {{ '%.2f' % r.least_price }}</span></div>
@@ -1023,6 +1027,8 @@ HTML = """
   @@SKIP_JS@@
   {# Edit link script (admins): link_edit.py EDIT_JS #}
   @@EDIT_JS@@
+  {# Edit our barcode script (admins): barcode_edit.py BC_JS #}
+  @@BC_JS@@
   async function updatePrice(fi, btn) {
     var input = document.getElementById("sp-" + fi), msg = document.getElementById("msg-" + fi);
     var price = parseFloat(input.value);
@@ -1058,7 +1064,12 @@ HTML = (HTML.replace("@@LIMITS_CSS@@", price_limits.LIMITS_CSS)
             # Edit link for admins (link_edit.py SECTION 2)
             .replace("@@EDIT_CSS@@", link_edit.EDIT_CSS)
             .replace("@@EDIT_HTML@@", link_edit.EDIT_HTML)
-            .replace("@@EDIT_JS@@", link_edit.EDIT_JS))
+            .replace("@@EDIT_JS@@", link_edit.EDIT_JS)
+            # Edit our barcode for admins (barcode_edit.py SECTION 2)
+            .replace("@@BC_CSS@@", barcode_edit.BC_CSS)
+            .replace("@@BC_BUTTON@@", barcode_edit.BC_BUTTON)
+            .replace("@@BC_HTML@@", barcode_edit.BC_HTML)
+            .replace("@@BC_JS@@", barcode_edit.BC_JS))
 
 
 # ============================================================ SECTION 7: competitors page route (/competitors)

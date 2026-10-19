@@ -16,6 +16,7 @@ Files in this project
   suggested_price.py  -> THE suggested price rule as plain functions: cheapest - X%, then <= LOP -> LOP, >= MOP -> MOP
   skip_auto.py        -> 'Skip automatic price' checkbox per product: never changed automatically in Airtable
   link_edit.py        -> 'Edit link' (admins only): set / remove a competitor link on a product card
+  barcode_edit.py     -> 'Edit' barcode (admins only): our barcode -> Airtable French Inventories 'Barcode' + competitor_table
   db_triggers.py      -> Postgres triggers: list price / stock change -> competitor_table -> least + suggested price
   price_triggers.py   -> WHEN one product is recalculated: TRIGGER 1 competitor price / stock changed,
                          TRIGGER 2 admin saved LOP / MOP (recalc_product() = the calculation for one product)
@@ -98,6 +99,8 @@ import skip_auto                                   # 'Skip automatic price' chec
 from skip_auto import skip_bp                      # POST /competitor/no-auto (save the checkbox)
 import link_edit                                   # admins: edit / remove a competitor link on the cards (link_edit.py)
 from link_edit import link_bp                      # POST /competitor/link
+import barcode_edit                                # admins: edit OUR barcode on the cards (barcode_edit.py)
+from barcode_edit import barcode_bp                # POST /competitor/barcode
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
 from vperfumes import vperfumes_bp                 # /vperfumes/test, /vperfumes/run, /vperfumes/status
@@ -121,6 +124,7 @@ app.register_blueprint(discount_bp)                # Settings -> Auto discount r
 app.register_blueprint(limits_bp)                  # LOP / MOP Save on the product cards (price_limits.py)
 app.register_blueprint(skip_bp)                    # 'Skip automatic price' checkbox on the cards (skip_auto.py)
 app.register_blueprint(link_bp)                    # 'Edit link' for admins on the cards (link_edit.py)
+app.register_blueprint(barcode_bp)                 # 'Edit' our barcode for admins (barcode_edit.py)
 app.register_blueprint(branded_perfume_bp)
 app.register_blueprint(essenzi_bp)
 app.register_blueprint(vperfumes_bp)
@@ -1958,6 +1962,26 @@ def airtable_set_prices(good, tag="PRICES"):
     return done, failed
 
 
+def airtable_set_barcode(fid, barcode):
+    """Write OUR barcode to Airtable French Inventories (field F_BARCODE) for ONE product.
+    Used by barcode_edit.py ('Edit' barcode on the cards, admins only). Returns (True, None) or (False, error)."""
+    body = {"records": [{"id": fid, "fields": {F_BARCODE: barcode}}], "typecast": True}
+    try:
+        r = requests.patch(f"{AT_URL}/{FI_TABLE}", headers=AT_HEADERS, timeout=30, json=body)
+        if r.status_code == 429:                       # too many requests -> wait and try once more
+            log("[BARCODE-EDIT] Airtable busy (429) -> waiting 30s")
+            time.sleep(30)
+            r = requests.patch(f"{AT_URL}/{FI_TABLE}", headers=AT_HEADERS, timeout=30, json=body)
+    except requests.RequestException as ex:
+        log(f"[BARCODE-EDIT] Airtable not reachable: {ex}")
+        return False, "not reachable"
+    if not r.ok:
+        log(f"[BARCODE-EDIT] Airtable error {r.status_code}: {r.text[:300]}")
+        return False, f"error {r.status_code}"
+    log(f"[BARCODE-EDIT] Airtable {fid}: {F_BARCODE} = {barcode}")
+    return True, None
+
+
 # ============================================================ SECTION 15: Automate: brands on automatic -> Airtable UAE Price
 # auto_apply() = UAE Price := suggested price for automatic brands | Update price / Update all routes.
 # ---------------------------------------------------------------- Automate (Settings -> Automate)
@@ -2245,6 +2269,7 @@ skip_auto.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Skip automatic
                automatic_brands=auto_brands, push_prices=airtable_set_prices)
 link_edit.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Edit link' for admins (link_edit.py)
                link_sisters=link_sisters_for, recalc_one=least_for)
+barcode_edit.init(connect=pg_conn, airtable_barcode=airtable_set_barcode)   # 'Edit' our barcode (barcode_edit.py)
 
 
 # ---------------------------------------------------------------- database triggers (db_triggers.py)
