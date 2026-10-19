@@ -599,6 +599,11 @@ def pick_by_size(entries, size):
     return entries[0]
 
 
+# A barcode match is only accepted when the perfume names share at least this much (0 = no word in common).
+# "Outlands" vs "Reasons" = 0.0 -> refused, the name match then finds the right product.
+BARCODE_MIN_NAME = 0.3
+
+
 def match_one(fields, brand, brand_entries, by_barcode, trust_barcode=False):
     """THE MATCHING RULES - find ONE French Inventories product on the competitor site.
 
@@ -610,6 +615,8 @@ def match_one(fields, brand, brand_entries, by_barcode, trust_barcode=False):
     Steps:
       1. Remove impossible candidates: different ml size, or men vs women.
       2. Barcode: same barcode AND name looks right -> match.
+         Even a "trusted" barcode (French Fragrance, V Perfumes) needs at least BARCODE_MIN_NAME of the perfume name
+         in common: shops sometimes put one product's barcode on another (Amouage Outlands -> Reasons).
       3. Name: best name_score >= MATCH_THRESHOLD (0.85) -> match.
          EDP vs EDT costs -0.12, so it only matches if the name is almost perfect.
          Two different products with the same score -> "ambiguous" (no match, sent as suggestion).
@@ -651,9 +658,11 @@ def match_one(fields, brand, brand_entries, by_barcode, trust_barcode=False):
     if bc and bc in by_barcode:
         e = by_barcode[bc]
         s = score(e)
-        if s is not None and (trust_barcode or (not fi_tokens) or (s >= 0.6 and s >= top - 0.001)):
+        if s is not None and ((not fi_tokens) or (trust_barcode and s >= BARCODE_MIN_NAME)
+                              or (s >= 0.6 and s >= top - 0.001)):
             return e, method("barcode", e), s, None
-        log(f"[BARCODE-REJECT] {product_name} -> barcode points to '{e['title']}' (score={s}), using name match")
+        log(f"[BARCODE-REJECT] {product_name} -> barcode points to '{e['title']}' (name score={s}, "
+            f"{'trusted shop, ' if trust_barcode else ''}name does not agree) -> using name match instead")
 
     # 2) fuzzy
     if not fi_tokens:
@@ -1285,10 +1294,12 @@ SHOPS = {
                "trust_barcode": False},   # Samawa SKUs are sometimes wrong -> barcode must also look right by name
     "ff": {"label": "French Fragrance", "prefix": "ff", "loader": ff_entries_from_db,
            "empty_hint": "french_fragrance_catalog is empty - load it first",
-           "trust_barcode": True},       # French Fragrance GTINs are reliable -> barcode match is trusted
+           "trust_barcode": True},       # French Fragrance GTINs are mostly reliable -> barcode trusted IF the name
+                                         # shares at least BARCODE_MIN_NAME (else name matching, see match_one)
     "vp": {"label": "V Perfumes", "prefix": "vp", "loader": vp_entries_from_db,
            "empty_hint": "vperfumes_catalog is empty - run /vperfumes/run first",
-           "trust_barcode": True},       # V Perfumes sku = real barcode -> barcode match is trusted
+           "trust_barcode": True},       # V Perfumes sku = real barcode -> trusted IF the name shares at least
+                                         # BARCODE_MIN_NAME (else name matching, see match_one)
     "aj": {"label": "Al Injaz", "prefix": "aj", "loader": aj_entries_from_db,
            "empty_hint": "alinjaz_catalog is empty - run /alinjaz/run first",
            "trust_barcode": False},      # not sure their SKUs are always barcodes -> name must agree too
