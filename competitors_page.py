@@ -693,11 +693,12 @@ HTML = """
             <span class="price">{% if price is not none %}AED {{ '%.2f' % price }}{% else %}No price{% endif %}</span>
             <a class="link plink" href="{{ url }}" target="_blank" title="Open on {{ label }}">{{ r[k ~ '_title'] or ('View on ' ~ label) }}</a>
           </div>
-          {# barcode of the matched product (catalog gtin): green = same as ours, orange = different (check the match) #}
+          {# barcode of the matched product (catalog gtin): green = same as ours, orange = different (check the match).
+             No barcode in that shop -> its own SKU, else "No barcode" #}
           {% set bc = r[k ~ '_gtin'] %}
-          {% if bc %}<div class="bcode">Barcode
+          <div class="bcode">{% if bc %}Barcode
             <span class="{{ 'bc-same' if same_barcode(bc, r.barcode) else ('bc-diff' if r.barcode else '') }}">{{ bc }}</span>
-            {%- if r.barcode and not same_barcode(bc, r.barcode) %} <span class="bc-diff">(ours {{ r.barcode }})</span>{% endif %}</div>{% endif %}
+            {%- elif r[k ~ '_sku'] %}No barcode &middot; SKU {{ r[k ~ '_sku'] }}{% else %}No barcode{% endif %}</div>
           {% if r.uae_price is not none and price is not none %}
             {% set d = price - r.uae_price %}
             <div class="diff {{ 'out' if d < 0 else 'in' }}">{% if d < 0 %}{{ label }} is cheaper by AED {{ '%.2f' % (-d) }}{% elif d > 0 %}We are cheaper by AED {{ '%.2f' % d }}{% else %}Same price{% endif %}</div>
@@ -1049,14 +1050,15 @@ HTML = (HTML.replace("@@LIMITS_CSS@@", price_limits.LIMITS_CSS)
 
 # ============================================================ SECTION 7: competitors page route (/competitors)
 # Reads the rows of the open tab, applies search / filters / paging, then fills HTML (SECTION 6).
-# Barcode under each competitor link on the product cards: (catalog table, link column) per competitor prefix.
-# The barcode itself is the 'gtin' column of each catalog (Ounass has no barcodes -> nothing shown).
+# Barcode under each competitor link on the product cards: (catalog table, link column, SKU column or None).
+# Barcode = the 'gtin' column of each catalog. When a shop has no barcode for the product, its own SKU is shown
+# instead (Al Injaz, Ounass, Amberiya, Niche Gallerie), else "No barcode".
 LINK_BARCODES = {
-    "samawa": ("samawa_catalog", "product_url"), "ff": ("french_fragrance_catalog", "product_url"),
-    "bp": ("branded_perfume_catalog", "bp_url"), "es": ("essenzi_catalog", "es_url"),
-    "vp": ("vperfumes_catalog", "product_url"), "aj": ("alinjaz_catalog", "product_url"),
-    "on": ("ounass_catalog", "product_url"), "am": ("amberiya_catalog", "product_url"),
-    "ng": ("nichegallerie_catalog", "product_url"),
+    "samawa": ("samawa_catalog", "product_url", None), "ff": ("french_fragrance_catalog", "product_url", None),
+    "bp": ("branded_perfume_catalog", "bp_url", None), "es": ("essenzi_catalog", "es_url", None),
+    "vp": ("vperfumes_catalog", "product_url", None), "aj": ("alinjaz_catalog", "product_url", "sku"),
+    "on": ("ounass_catalog", "product_url", "sku"), "am": ("amberiya_catalog", "product_url", "sku"),
+    "ng": ("nichegallerie_catalog", "product_url", "sku"),
 }
 
 
@@ -1064,19 +1066,22 @@ def add_link_barcodes(cur, rows, shops):
     """Card page only: r['<prefix>_gtin'] = barcode of the matched competitor product (one query per shop for the
     whole page), so the card can show it under the link and mark it when it differs from OUR barcode."""
     for _, k in shops:
-        table, link_col = LINK_BARCODES.get(k, (None, None))
+        table, link_col, sku_col = LINK_BARCODES.get(k, (None, None, None))
         links = [r[f"{k}_url"] for r in rows if r.get(f"{k}_url")]
         if not table or not links:
             continue
         try:
-            cur.execute(f"SELECT {link_col} AS link, gtin FROM {table} WHERE {link_col} = ANY(%s)", (links,))
-            found = {x["link"]: x["gtin"] for x in cur.fetchall()}
+            cur.execute(f"SELECT {link_col} AS link, gtin, {sku_col or 'NULL'} AS sku FROM {table} "
+                        f"WHERE {link_col} = ANY(%s)", (links,))
+            found = {x["link"]: x for x in cur.fetchall()}
         except Exception as ex:                            # table / column missing -> no barcodes for this shop
             cur.connection.rollback()
             print(f"[BARCODES] {table}: {str(ex).strip()[:120]}", flush=True)
             continue
         for r in rows:
-            r[f"{k}_gtin"] = found.get(r.get(f"{k}_url"))
+            x = found.get(r.get(f"{k}_url")) or {}
+            r[f"{k}_gtin"] = x.get("gtin")
+            r[f"{k}_sku"] = x.get("sku")                   # shown only when there is no barcode
     print(f"[BARCODES] competitor barcodes added under the links of {len(rows)} products", flush=True)
 
 
