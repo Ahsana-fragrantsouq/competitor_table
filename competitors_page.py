@@ -519,6 +519,9 @@ HTML = """
  .nobtn{background:#e0806c;color:#2a0f09}
  .conf{color:var(--green);font-size:12px;margin-left:6px}
  .plink{text-align:right;max-width:65%}
+ /* barcode under each link (add_link_barcodes): green = same as our barcode, orange = different */
+ .bcode{text-align:right;font-size:12px;color:var(--muted);margin-top:2px}
+ .bc-same{color:#8cc58c} .bc-diff{color:#f2b46c}
  .meta{color:var(--muted);font-size:14px;margin-top:4px}
  .meta b{color:var(--text);font-weight:600}
  .upd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px}
@@ -690,6 +693,11 @@ HTML = """
             <span class="price">{% if price is not none %}AED {{ '%.2f' % price }}{% else %}No price{% endif %}</span>
             <a class="link plink" href="{{ url }}" target="_blank" title="Open on {{ label }}">{{ r[k ~ '_title'] or ('View on ' ~ label) }}</a>
           </div>
+          {# barcode of the matched product (catalog gtin): green = same as ours, orange = different (check the match) #}
+          {% set bc = r[k ~ '_gtin'] %}
+          {% if bc %}<div class="bcode">Barcode
+            <span class="{{ 'bc-same' if same_barcode(bc, r.barcode) else ('bc-diff' if r.barcode else '') }}">{{ bc }}</span>
+            {%- if r.barcode and not same_barcode(bc, r.barcode) %} <span class="bc-diff">(ours {{ r.barcode }})</span>{% endif %}</div>{% endif %}
           {% if r.uae_price is not none and price is not none %}
             {% set d = price - r.uae_price %}
             <div class="diff {{ 'out' if d < 0 else 'in' }}">{% if d < 0 %}{{ label }} is cheaper by AED {{ '%.2f' % (-d) }}{% elif d > 0 %}We are cheaper by AED {{ '%.2f' % d }}{% else %}Same price{% endif %}</div>
@@ -767,7 +775,8 @@ HTML = """
              our_stock = none  -> nothing shown (not on fragrantsouq.com / links not loaded yet) #}
         {% if r.our_link and r.our_stock == false %}<div class="out ourstock">Out of stock</div>{% endif %}
         {% if r.our_link %}<a class="link" href="{{ r.our_link }}" target="_blank" title="Open on fragrantsouq.com">{{ r.our_title or r.name }}</a>
-        {% else %}<span class="gtin">Not on fragrantsouq.com</span>{% endif %}</div>
+        {% else %}<span class="gtin">Not on fragrantsouq.com</span>{% endif %}
+        {% if r.barcode %}<div class="bcode">Barcode {{ r.barcode }}</div>{% endif %}</div>
     </div>
     {# only shops that have this product (a match) or a suggestion to check; "No match" shops are hidden.
          IN-STOCK matches + suggestions are shown; OUT-OF-STOCK matches are hidden under "Show out of stock". #}
@@ -1040,6 +1049,44 @@ HTML = (HTML.replace("@@LIMITS_CSS@@", price_limits.LIMITS_CSS)
 
 # ============================================================ SECTION 7: competitors page route (/competitors)
 # Reads the rows of the open tab, applies search / filters / paging, then fills HTML (SECTION 6).
+# Barcode under each competitor link on the product cards: (catalog table, link column) per competitor prefix.
+# The barcode itself is the 'gtin' column of each catalog (Ounass has no barcodes -> nothing shown).
+LINK_BARCODES = {
+    "samawa": ("samawa_catalog", "product_url"), "ff": ("french_fragrance_catalog", "product_url"),
+    "bp": ("branded_perfume_catalog", "bp_url"), "es": ("essenzi_catalog", "es_url"),
+    "vp": ("vperfumes_catalog", "product_url"), "aj": ("alinjaz_catalog", "product_url"),
+    "on": ("ounass_catalog", "product_url"), "am": ("amberiya_catalog", "product_url"),
+    "ng": ("nichegallerie_catalog", "product_url"),
+}
+
+
+def add_link_barcodes(cur, rows, shops):
+    """Card page only: r['<prefix>_gtin'] = barcode of the matched competitor product (one query per shop for the
+    whole page), so the card can show it under the link and mark it when it differs from OUR barcode."""
+    for _, k in shops:
+        table, link_col = LINK_BARCODES.get(k, (None, None))
+        links = [r[f"{k}_url"] for r in rows if r.get(f"{k}_url")]
+        if not table or not links:
+            continue
+        try:
+            cur.execute(f"SELECT {link_col} AS link, gtin FROM {table} WHERE {link_col} = ANY(%s)", (links,))
+            found = {x["link"]: x["gtin"] for x in cur.fetchall()}
+        except Exception as ex:                            # table / column missing -> no barcodes for this shop
+            cur.connection.rollback()
+            print(f"[BARCODES] {table}: {str(ex).strip()[:120]}", flush=True)
+            continue
+        for r in rows:
+            r[f"{k}_gtin"] = found.get(r.get(f"{k}_url"))
+    print(f"[BARCODES] competitor barcodes added under the links of {len(rows)} products", flush=True)
+
+
+def same_barcode(a, b):
+    """Barcodes equal, ignoring spaces and leading zeros (EAN-13 vs UPC-12)."""
+    a = "".join(ch for ch in str(a or "") if ch.isdigit()).lstrip("0")
+    b = "".join(ch for ch in str(b or "") if ch.isdigit()).lstrip("0")
+    return bool(a) and a == b
+
+
 def last_new_products(cur, label):
     """New products saved for this shop by the last run. Two writers: RUN 1 on the PC (app_settings 'daily_update':
     French Fragrance / Branded Perfume / Essenzi) and RUN 2 on Render ('full_lists': the 6 other shops).
@@ -1182,6 +1229,7 @@ def competitors():
                       f"{sum(1 for r in rows if r['missing'])} of {len(rows)} are missing items", flush=True)
             if src.get("kind") == "competitor":
                 add_next_cheapest(rows, src["shops"])
+                add_link_barcodes(cur, rows, src["shops"])      # barcode under each competitor link
                 # out-of-stock competitors are hidden on the card behind "Show out of stock"
                 hidden = sum(1 for r in rows for _, k in src["shops"] if r.get(f"{k}_url") and not r.get(f"{k}_stock"))
                 print(f"[OUT-OF-STOCK] page {page}: {hidden} out-of-stock competitor(s) hidden "
@@ -1193,7 +1241,7 @@ def competitors():
     active = "competitor" if src["key"] == "competitor" else "shop"
     print(f"[MENU] Showing page '{src['label']}' (menu item: "
           f"{'Competitor table' if active == 'competitor' else 'Competitors'})", flush=True)
-    return render_template_string(HTML, sources=SOURCES, src=src, counts=counts, rows=rows,
+    return render_template_string(HTML, sources=SOURCES, src=src, counts=counts, rows=rows, same_barcode=same_barcode,
                                   nav_html=render_nav(active, src["key"], counts), nav_css=NAV_CSS,
                                   total=total, page=page, pages=pages, q=q, stock=stock, exists=exists,
                                   brands=brands, competitors=list(COMPETITORS), conds=conds,
