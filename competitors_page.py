@@ -76,7 +76,7 @@ SOURCES = [
               "samawa_title": "samawa_title", "ff_title": "ff_title", "bp_title": "bp_title",
               "es_title": "es_title", "vp_title": "vp_title",
               "samawa_confirmed": "samawa_confirmed", "ff_confirmed": "ff_confirmed", "vp_confirmed": "vp_confirmed",
-              "bp_confirmed": None, "es_confirmed": None,
+              "bp_confirmed": "bp_confirmed", "es_confirmed": "es_confirmed",   # set by an admin (link_edit.py)
               "our_link": "our_link", "our_title": "our_title", "our_stock": "our_stock",
               "least_price": "least_price", "least_site": "least_priced_website",
               "suggested_price": "suggested_price", "fi": "fi_record_id",

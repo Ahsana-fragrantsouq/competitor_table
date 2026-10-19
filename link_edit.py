@@ -9,8 +9,9 @@ An admin can fix a wrong match by hand:
   (The route still understands action "remove" - link removed and remembered as refused, app.py ct_match_shop
    checks <shop>_rejected - but there is no button for it on the page.)
 After either: least + suggested price of the product are recalculated at once (and Airtable for automatic brands
-at the end of the next run). French Fragrance -> Branded Perfume + Essenzi follow at once (same products).
-Branded Perfume / Essenzi cannot be edited here: they always follow the French Fragrance link.
+at the end of the next run). French Fragrance -> Branded Perfume + Essenzi follow at once (same products),
+unless their own link was set by an admin: Branded Perfume / Essenzi edited here are CONFIRMED and from then on
+keep their own link (app.py ct_update_least / link_sisters_for skip <bp|es>_confirmed, only price + stock refreshed).
 
 Non-admins do not see the button, and the server refuses them too (403).
 
@@ -37,6 +38,10 @@ SAVE_URL = "/competitor/link"
 SHOP_LISTS = {
     "samawa": ("Samawa", "samawa_catalog", "product_url", "name", "price", "stock"),
     "ff": ("French Fragrance", "french_fragrance_catalog", "product_url", "name", "COALESCE(price_inc_tax, price)", "stock"),
+    "bp": ("Branded Perfume", "branded_perfume_catalog", "bp_url", "COALESCE(bp_title, name)",
+           "COALESCE(bp_price_inc_tax, bp_price)", "bp_stock"),
+    "es": ("Essenzi", "essenzi_catalog", "es_url", "COALESCE(es_title, name)",
+           "COALESCE(es_price_inc_tax, es_price)", "es_stock"),
     "vp": ("V Perfumes", "vperfumes_catalog", "product_url", "name", "COALESCE(price_inc_tax, price)", "stock"),
     "aj": ("Al Injaz", "alinjaz_catalog", "product_url", "name", "COALESCE(price_inc_tax, price)", "stock"),
     "on": ("Ounass", "ounass_catalog", "product_url", "CONCAT_WS(' ', brand, name)", "COALESCE(price_inc_tax, price)", "stock"),
@@ -58,8 +63,8 @@ EDIT_CSS = """ /* Edit link (admins only): small button under a competitor link 
 """
 
 # r = product row, k = shop prefix, label = shop name (inside competitors_page.py shop_block)
-EDIT_HTML = """          {# Edit link: admins only (link_edit.py). Branded Perfume / Essenzi follow French Fragrance -> no button #}
-          {% if admin and k not in ('bp', 'es') %}
+EDIT_HTML = """          {# Edit link: admins only (link_edit.py), every competitor #}
+          {% if admin %}
           <div class="bcode"><button type="button" class="lnk-edit" onclick="openLink('{{ k }}', '{{ r.fi }}')">Edit link</button></div>
           <div class="lnk-box" id="lnk-{{ k }}-{{ r.fi }}" hidden>
             <input type="url" id="lnkin-{{ k }}-{{ r.fi }}" value="{{ r[k ~ '_url'] or r[k ~ '_suggestion'] or '' }}"
@@ -121,7 +126,7 @@ def link_save():
     fid, shop = str(body.get("fi_record_id") or ""), body.get("shop")
     action, url = body.get("action"), str(body.get("url") or "").strip()
     if shop not in SHOP_LISTS or action not in ("save", "remove") or not fid.startswith("rec"):
-        return jsonify({"ok": False, "error": "Wrong request (Branded Perfume / Essenzi follow French Fragrance)"}), 400
+        return jsonify({"ok": False, "error": "Wrong request"}), 400
     if not HOOKS:
         return jsonify({"ok": False, "error": "not ready (app.py did not call link_edit.init)"}), 500
     label, table, link_col, name_sql, price_sql, stock_col = SHOP_LISTS[shop]
@@ -136,6 +141,10 @@ def link_save():
             return jsonify({"ok": False, "error": "Product not found"}), 404
         old = row[0]
 
+        # Branded Perfume / Essenzi have no suggestion / method / score / rejected columns -> only the basic ones
+        sister = shop in ("bp", "es")
+        if action == "remove" and sister:
+            return jsonify({"ok": False, "error": "Remove is not available for Branded Perfume / Essenzi"}), 400
         if action == "remove":
             # removed + remembered as refused -> the next match run will not put it back
             cur.execute(f"""UPDATE competitor_table SET {shop}_link = NULL, {shop}_title = NULL, {shop}_price = NULL,
@@ -153,10 +162,11 @@ def link_save():
                 return jsonify({"ok": False, "error": f"This link is not in the saved {label} product list. Open the "
                                                       f"product on {label} and copy the link from the address bar."}), 400
             link, name, price, stock = item
+            extra = "" if sister else f", {shop}_suggestion = NULL, {shop}_method = 'set by ' || %s, {shop}_score = NULL"
             cur.execute(f"""UPDATE competitor_table SET {shop}_link = %s, {shop}_title = %s, {shop}_price = %s,
-                               {shop}_stock = %s, {shop}_suggestion = NULL, {shop}_confirmed = TRUE,
-                               {shop}_method = 'set by ' || %s, {shop}_score = NULL, updated_at = NOW()
-                            WHERE fi_record_id = %s""", (link, name, price, stock == "In stock", user, fid))
+                               {shop}_stock = %s, {shop}_confirmed = TRUE{extra}, updated_at = NOW()
+                            WHERE fi_record_id = %s""",
+                        (link, name, price, stock == "In stock") + (() if sister else (user,)) + (fid,))
         if shop == "ff":
             HOOKS["link_sisters"](cur, fid)            # Branded Perfume + Essenzi follow the French Fragrance link
         HOOKS["recalc_one"](cur, fid)                  # least + suggested price of this product

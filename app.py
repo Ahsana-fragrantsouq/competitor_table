@@ -890,6 +890,9 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_confirmed BOOLEAN DEFAULT FALSE;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_confirmed BOOLEAN DEFAULT FALSE;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_confirmed BOOLEAN DEFAULT FALSE;
+-- Branded Perfume / Essenzi link set by an admin (link_edit.py) -> no longer follows French Fragrance
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS bp_confirmed BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS es_confirmed BOOLEAN DEFAULT FALSE;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS samawa_rejected TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ff_rejected TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS vp_rejected TEXT;
@@ -1615,9 +1618,16 @@ def ct_update_least():
             if cur.fetchone()[0] is None:
                 log(f"[CT-LEAST] {table} does not exist yet -> {label} skipped")
                 continue
-            # clear old values, then take them from the sister catalog through the French Fragrance match
+            # clear old values, then take them from the sister catalog through the French Fragrance match.
+            # A link set by an admin (<p>_confirmed, link_edit.py) is kept: only its price + stock are refreshed.
             cur.execute(f"UPDATE competitor_table SET {p}_link = NULL, {p}_price = NULL, {p}_stock = FALSE, "
-                        f"{p}_title = NULL")
+                        f"{p}_title = NULL WHERE NOT COALESCE({p}_confirmed, FALSE)")
+            cur.execute(f"""UPDATE competitor_table c SET
+                               {p}_price = COALESCE(s.{cp}_price_inc_tax, s.{cp}_price, c.{p}_price),
+                               {p}_stock = (s.{cp}_stock = 'In stock')
+                            FROM {table} s WHERE c.{p}_confirmed AND c.{p}_link = s.{cp}_url""")
+            if cur.rowcount:
+                log(f"[CT-LEAST] {label}: {cur.rowcount} links set by an admin kept (price + stock refreshed)")
             # product name on that site if the catalog has it (filled by the PC scraper), else French Fragrance name
             cur.execute("SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
                         (table, f"{cp}_title"))
@@ -1632,6 +1642,7 @@ def ct_update_least():
                 JOIN {table} s ON s.ff_id = f.id
                 WHERE c.ff_link = f.product_url
                   AND COALESCE(s.{cp}_stock, '') <> 'Not on site'
+                  AND NOT COALESCE(c.{p}_confirmed, FALSE)
             """)
             result[p] = cur.rowcount
             log(f"[CT-LEAST] {label}: {cur.rowcount} products linked through the French Fragrance match")
@@ -1851,6 +1862,7 @@ def link_sisters_for(cur, fid):
                 {p}_price = COALESCE(s.{cp}_price_inc_tax, s.{cp}_price), {p}_stock = (s.{cp}_stock = 'In stock')
             FROM french_fragrance_catalog f JOIN {table} s ON s.ff_id = f.id
             WHERE c.fi_record_id = %s AND c.ff_link = f.product_url AND COALESCE(s.{cp}_stock, '') <> 'Not on site'
+              AND NOT COALESCE(c.{p}_confirmed, FALSE)          -- link set by an admin -> kept
         """, (fid,))
         log(f"[SUGGEST] {label} linked for {fid}: {cur.rowcount}")
 
