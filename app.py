@@ -15,6 +15,7 @@ Files in this project
   price_limits.py     -> LOP / MOP: lowest / highest allowed suggested price (columns, card boxes, Save)
   suggested_price.py  -> THE suggested price rule as plain functions: cheapest - X%, then <= LOP -> LOP, >= MOP -> MOP
   skip_auto.py        -> 'Skip automatic price' checkbox per product: never changed automatically in Airtable
+  link_edit.py        -> 'Edit link' (admins only): set / remove a competitor link on a product card
   db_triggers.py      -> Postgres triggers: list price / stock change -> competitor_table -> least + suggested price
   price_triggers.py   -> WHEN one product is recalculated: TRIGGER 1 competitor price / stock changed,
                          TRIGGER 2 admin saved LOP / MOP (recalc_product() = the calculation for one product)
@@ -95,6 +96,8 @@ import db_triggers                                 # Postgres triggers: competit
 from price_limits import limits_bp                 # POST /competitor/limits (save LOP / MOP)
 import skip_auto                                   # 'Skip automatic price' checkbox per product (skip_auto.py)
 from skip_auto import skip_bp                      # POST /competitor/no-auto (save the checkbox)
+import link_edit                                   # admins: edit / remove a competitor link on the cards (link_edit.py)
+from link_edit import link_bp                      # POST /competitor/link
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
 from vperfumes import vperfumes_bp                 # /vperfumes/test, /vperfumes/run, /vperfumes/status
@@ -117,6 +120,7 @@ app.register_blueprint(competitors_bp)
 app.register_blueprint(discount_bp)                # Settings -> Auto discount rate (discount_rate.py)
 app.register_blueprint(limits_bp)                  # LOP / MOP Save on the product cards (price_limits.py)
 app.register_blueprint(skip_bp)                    # 'Skip automatic price' checkbox on the cards (skip_auto.py)
+app.register_blueprint(link_bp)                    # 'Edit link' for admins on the cards (link_edit.py)
 app.register_blueprint(branded_perfume_bp)
 app.register_blueprint(essenzi_bp)
 app.register_blueprint(vperfumes_bp)
@@ -1410,6 +1414,10 @@ def ct_match_shop(shop_key):
                     continue
                 e, method, score, guess = match_one(fields, brand, brand_entries, by_barcode,
                                                     trust_barcode=shop["trust_barcode"])
+                if e and e["url"] == rejected.get(fid):
+                    # an admin removed this exact link ("Edit link" -> Remove, link_edit.py) -> never put it back
+                    log(f"[{tag}-REFUSED] {pname} -> {e['title']} was removed by an admin -> no match")
+                    e, method, guess = None, "removed by admin", None
                 if e:
                     summary["matched_barcode" if method.startswith("barcode") else "matched_fuzzy"] += 1
                     log(f"[{tag}-MATCH:{method} {score}] {pname} -> {e['title']} | AED {e['price']} | stock={e['available']}")
@@ -2223,6 +2231,8 @@ price_limits.init(connect=pg_conn, create_sql=CT_CREATE,
                   automatic_brands=auto_brands, push_prices=airtable_set_prices)
 skip_auto.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Skip automatic price' checkbox (skip_auto.py)
                automatic_brands=auto_brands, push_prices=airtable_set_prices)
+link_edit.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Edit link' for admins (link_edit.py)
+               link_sisters=link_sisters_for, recalc_one=least_for)
 
 
 # ---------------------------------------------------------------- database triggers (db_triggers.py)

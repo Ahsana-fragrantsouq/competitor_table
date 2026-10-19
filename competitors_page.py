@@ -33,6 +33,7 @@ from flask import Blueprint, request, render_template_string, g, redirect
 from auth import list_users, is_admin, MIN_PASSWORD      # User management (users are saved by auth.py)
 import discount_rate                                      # Settings -> Auto discount rate (own file: discount_rate.py)
 import price_limits                                       # LOP / MOP boxes on the product card (own file: price_limits.py)
+import link_edit                                          # 'Edit link' for admins on the cards (link_edit.py)
 import skip_auto                                          # 'Skip automatic price' checkbox on the cards (skip_auto.py)
 from discount_rate import get_discount_rate               # kept here so competitors_page.get_discount_rate() still works
 
@@ -534,6 +535,8 @@ HTML = """
  @@LIMITS_CSS@@
  /* Skip automatic price checkbox: skip_auto.py SKIP_CSS */
  @@SKIP_CSS@@
+ /* Edit link (admins): link_edit.py EDIT_CSS */
+ @@EDIT_CSS@@
  .upd-msg{font-size:13px;margin-top:6px;min-height:16px}
  .sitelink{color:inherit;text-decoration:underline;text-underline-offset:3px}
  .sitelink:hover{color:#f2d675}
@@ -699,6 +702,8 @@ HTML = """
           <div class="bcode">{% if bc %}Barcode
             <span class="{{ 'bc-same' if same_barcode(bc, r.barcode) else ('bc-diff' if r.barcode else '') }}">{{ bc }}</span>
             {%- elif r[k ~ '_sku'] %}No barcode &middot; SKU {{ r[k ~ '_sku'] }}{% else %}No barcode{% endif %}</div>
+          {# Edit link (admins only): link_edit.py EDIT_HTML #}
+@@EDIT_HTML@@
           {% if r.uae_price is not none and price is not none %}
             {% set d = price - r.uae_price %}
             <div class="diff {{ 'out' if d < 0 else 'in' }}">{% if d < 0 %}{{ label }} is cheaper by AED {{ '%.2f' % (-d) }}{% elif d > 0 %}We are cheaper by AED {{ '%.2f' % d }}{% else %}Same price{% endif %}</div>
@@ -712,6 +717,8 @@ HTML = """
             <button type="button" class="nobtn" onclick="suggestion('{{ r.fi }}', '{{ k }}', 'notok', this)">Not OK</button>
           </span>{% endif %}</div>
           <div class="upd-msg" id="sg-{{ k }}-{{ r.fi }}"></div>
+          {# no match: admins can paste the right link (link_edit.py EDIT_HTML) #}
+@@EDIT_HTML@@
         {% endif %}
       </div>
 {% endmacro %}
@@ -1014,6 +1021,8 @@ HTML = """
   @@LIMITS_JS@@
   {# Skip automatic price script: skip_auto.py SKIP_JS #}
   @@SKIP_JS@@
+  {# Edit link script (admins): link_edit.py EDIT_JS #}
+  @@EDIT_JS@@
   async function updatePrice(fi, btn) {
     var input = document.getElementById("sp-" + fi), msg = document.getElementById("msg-" + fi);
     var price = parseFloat(input.value);
@@ -1045,7 +1054,11 @@ HTML = (HTML.replace("@@LIMITS_CSS@@", price_limits.LIMITS_CSS)
             # Skip automatic price checkbox (skip_auto.py SECTION 2)
             .replace("@@SKIP_CSS@@", skip_auto.SKIP_CSS)
             .replace("@@SKIP_CARD@@", skip_auto.SKIP_CARD_HTML)
-            .replace("@@SKIP_JS@@", skip_auto.SKIP_JS))
+            .replace("@@SKIP_JS@@", skip_auto.SKIP_JS)
+            # Edit link for admins (link_edit.py SECTION 2)
+            .replace("@@EDIT_CSS@@", link_edit.EDIT_CSS)
+            .replace("@@EDIT_HTML@@", link_edit.EDIT_HTML)
+            .replace("@@EDIT_JS@@", link_edit.EDIT_JS))
 
 
 # ============================================================ SECTION 7: competitors page route (/competitors)
@@ -1247,6 +1260,7 @@ def competitors():
     print(f"[MENU] Showing page '{src['label']}' (menu item: "
           f"{'Competitor table' if active == 'competitor' else 'Competitors'})", flush=True)
     return render_template_string(HTML, sources=SOURCES, src=src, counts=counts, rows=rows, same_barcode=same_barcode,
+                                  admin=is_admin(),             # 'Edit link' buttons only for admins (link_edit.py)
                                   nav_html=render_nav(active, src["key"], counts), nav_css=NAV_CSS,
                                   total=total, page=page, pages=pages, q=q, stock=stock, exists=exists,
                                   brands=brands, competitors=list(COMPETITORS), conds=conds,
