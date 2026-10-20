@@ -341,6 +341,13 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
  /* ---- product card ---- */
  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-bottom:12px}
  .title{font-size:18px;font-weight:600;margin-bottom:6px;line-height:1.35}
+ /* title left, our fragrantsouq.com link right (link from competitor_table.our_link) */
+ .titlerow{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+ .ourlink{text-align:right;font-size:15px;font-weight:500;flex:0 0 auto;white-space:nowrap}
+ .ourlink a{color:var(--gold);text-underline-offset:3px}
+ .ourlink .nolink{color:var(--muted);font-size:14px}
+ .ourlink .out{color:#e0806c;font-size:13px;margin-bottom:3px}
+ @media (max-width:640px){ .titlerow{flex-direction:column} .ourlink{max-width:100%;text-align:left} }
  .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .meta{color:var(--muted);font-size:14px;margin-top:4px}
  .meta b{color:var(--text);font-weight:600}
@@ -392,7 +399,15 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
 {# one card per product. Prices, stock qty and UAE comparison price are NOT on the page (database only) #}
 {% for r in rows %}
 <div class="card">
-  <div class="title">{{ r.product_name or r.perfume_name or r.sku or r.fi_record_id }}</div>
+  <div class="titlerow">
+    <div class="title">{{ r.product_name or r.perfume_name or r.sku or r.fi_record_id }}</div>
+    {# our product page on fragrantsouq.com - same link as on the Competitor table card #}
+    <div class="ourlink">
+      {% if r.our_link and r.our_stock == false %}<div class="out">Out of stock</div>{% endif %}
+      {% if r.our_link %}<a href="{{ r.our_link }}" target="_blank" title="{{ r.our_title or r.our_link }}">View on fragrantsouq.com &#8599;</a>
+      {% else %}<span class="nolink">Not on fragrantsouq.com</span>{% endif %}
+    </div>
+  </div>
   {% if r.item_id %}<div class="code">{{ r.item_id }}</div>{% endif %}
   <div class="meta">{% if r.brand %}Brand <b>{{ r.brand }}</b>{% endif %}{% if r.brand and r.sku %} · {% endif %}{% if r.sku %}SKU <b>{{ r.sku }}</b>{% endif %}{% if r.barcode and (r.brand or r.sku) %} · {% endif %}{% if r.barcode %}Barcode <b>{{ r.barcode }}</b>{% endif %}</div>
 
@@ -485,12 +500,20 @@ def item_master_page():
         counts = competitors_page.tab_counts(cur)          # numbers in the Competitors menu
         where, params = "", []
         if q:
-            where = "WHERE " + " OR ".join(f"{c} ILIKE %s" for c in SEARCH_COLS)
+            where = "WHERE " + " OR ".join(f"im.{c} ILIKE %s" for c in SEARCH_COLS)
             params = [f"%{q}%"] * len(SEARCH_COLS)
-        cur.execute(f"SELECT COUNT(*) AS n FROM item_master {where}", params)
+        cur.execute(f"SELECT COUNT(*) AS n FROM item_master im {where}", params)
         total = cur.fetchone()["n"]
-        cur.execute(f"SELECT fi_record_id, item_id, loaded_at, {', '.join(SHOWN)} FROM item_master {where} "
-                    f"ORDER BY LOWER(brand), LOWER(product_name) LIMIT %s OFFSET %s",
+        # our fragrantsouq.com link comes from competitor_table (same product = same Airtable record id)
+        cur.execute("SELECT to_regclass('competitor_table') IS NOT NULL AS ok")
+        if cur.fetchone()["ok"]:
+            link_cols = "ct.our_link, ct.our_title, ct.our_stock"
+            link_join = "LEFT JOIN competitor_table ct ON ct.fi_record_id = im.fi_record_id"
+        else:                                              # competitor table not created yet -> no links
+            link_cols, link_join = "NULL AS our_link, NULL AS our_title, NULL AS our_stock", ""
+        cur.execute(f"SELECT im.fi_record_id, im.item_id, im.loaded_at, {', '.join('im.' + c for c in SHOWN)}, "
+                    f"{link_cols} FROM item_master im {link_join} {where} "
+                    f"ORDER BY LOWER(im.brand), LOWER(im.product_name) LIMIT %s OFFSET %s",
                     params + [PER_PAGE, (page - 1) * PER_PAGE])
         rows = cur.fetchall()
         for r in rows:
