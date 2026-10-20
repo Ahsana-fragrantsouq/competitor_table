@@ -700,11 +700,11 @@ HTML = """
             <a class="link plink" href="{{ url }}" target="_blank" title="Open on {{ label }}">{{ r[k ~ '_title'] or ('View on ' ~ label) }}</a>
           </div>
           {# barcode of the matched product (catalog gtin): green = same as ours, orange = different (check the match).
-             No barcode in that shop -> its own SKU, else "No barcode" #}
+             No barcode in that shop -> "No barcode" (the shop's SKU is not shown) #}
           {% set bc = r[k ~ '_gtin'] %}
           <div class="bcode">{% if bc %}Barcode
             <span class="{{ 'bc-same' if same_barcode(bc, r.barcode) else ('bc-diff' if r.barcode else '') }}">{{ bc }}</span>
-            {%- elif r[k ~ '_sku'] %}No barcode &middot; SKU {{ r[k ~ '_sku'] }}{% else %}No barcode{% endif %}</div>
+            {%- else %}No barcode{% endif %}</div>
           {# Edit link (admins only): link_edit.py EDIT_HTML #}
 @@EDIT_HTML@@
           {% if r.uae_price is not none and price is not none %}
