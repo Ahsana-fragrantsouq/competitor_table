@@ -9,12 +9,13 @@ What is saved (one row per Airtable record, key = fi_record_id = the Airtable re
   uae_price, asia_price, america_price, kuwait_price, qatar_price, uae_comparison_price, stock_qty
   + airtable_fields  = EVERY field of the record exactly as Airtable gave it (JSON) -> nothing is ever lost
                        (except DROP_FIELDS, e.g. "Item ID": never saved anywhere)
-The page HIDES the prices, stock qty, UAE comparison price and Shopify description; they are only in the database:
+The page HIDES the prices, stock qty, UAE comparison price, Shopify description and Airtable record id;
+they are only in the database:
   python sql.py "SELECT sku, uae_price, asia_price, america_price, kuwait_price, qatar_price,
                  uae_comparison_price, stock_qty FROM item_master WHERE sku = 'AMF1085'"
 
 When it is loaded from Airtable:
-  - automatically once a day (background thread, AUTO_EVERY_HOURS; Render env ITEM_MASTER_AUTO=off switches it off)
+  (NOT automatic: only when someone starts it)
   - admin button "Load from Airtable now" on the page
   - /item-master/load?secret=XXX   (progress: /item-master/status)
 Products deleted in Airtable are deleted from item_master at the next full load.
@@ -24,23 +25,22 @@ spaces do not matter). Fields NOT found are listed on the page and in the log [I
 name to that column's list.
 
 Where things are (change them here):
-  SECTION 1  settings      -> FIELDS (column, type, Airtable names, shown on page?), PER_PAGE, AUTO_EVERY_HOURS
+  SECTION 1  settings      -> FIELDS (column, type, Airtable names, shown on page?), PER_PAGE
   SECTION 2  table         -> IM_CREATE (item_master)
   SECTION 3  Airtable -> values (text / number / brand link)
   SECTION 4  load          -> load_all(): Airtable -> item_master, summary saved in app_settings 'item_master'
-  SECTION 5  daily thread  -> auto_loader()
+  SECTION 5  (removed: there is no automatic daily load)
   SECTION 6  page HTML     -> IM_HTML
   SECTION 7  routes        -> /item-master, /item-master/reload (admin), /item-master/load, /item-master/status
   SECTION 8  hooks         -> init(): Airtable reader + database connection from app.py
 """
 
-import os
 import re
 import json
 import time
 import math
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import psycopg2.extras
 from psycopg2.extras import execute_values
@@ -86,7 +86,7 @@ FIELDS = [
 # Airtable fields NOT saved at all (not as a column, not in airtable_fields). Old saved values are removed at start.
 DROP_FIELDS = ["Item ID"]
 NUMBER_COLS = {c for c, t, _, _ in FIELDS if t.startswith("NUMERIC")}
-SHOWN = [c for c, _, _, shown in FIELDS if shown]              # page columns (+ Airtable record id at the end)
+SHOWN = [c for c, _, _, shown in FIELDS if shown]              # page columns (Airtable record id is not shown)
 LABELS = {"sku": "SKU", "brand": "Brand", "product_type": "Product type", "perfume_name": "Perfume name",
           "type": "Type", "category": "Category", "size": "Size", "barcode": "Barcode", "top_notes": "Top notes",
           "middle_notes": "Middle notes", "base_notes": "Base notes", "shopify_description": "Shopify description",
@@ -94,8 +94,6 @@ LABELS = {"sku": "SKU", "brand": "Brand", "product_type": "Product type", "perfu
 SEARCH_COLS = ["sku", "brand", "perfume_name", "product_name", "barcode", "fi_record_id"]
 
 PER_PAGE = 50
-AUTO_EVERY_HOURS = 24                       # automatic load from Airtable when the last one is this old
-AUTO_ON = os.environ.get("ITEM_MASTER_AUTO", "on").lower() != "off"
 SETTING_KEY = "item_master"                 # app_settings row with the last load summary
 
 
@@ -234,7 +232,7 @@ def load_all(by="auto"):
         for rec in recs:
             seen.update(rec.get("fields", {}).keys())
         found, missing = pick_fields(seen)
-        log(f"[ITEM-MASTER] Fields used: " + ", ".join(f"{c}<-'{n}'" for c, n in found.items()))
+        log("[ITEM-MASTER] Fields used: " + ", ".join(f"{c}<-'{n}'" for c, n in found.items()))
         if missing:
             log(f"[ITEM-MASTER] NOT FOUND in Airtable: {', '.join(missing)} -> add the real field name in "
                 f"item_master.py FIELDS. Airtable field names seen: {', '.join(sorted(seen))}")
@@ -301,25 +299,8 @@ def start_load(by):
     return True
 
 
-# ============================================================ SECTION 5: daily thread (automatic load)
-def auto_loader(check_every=1800):
-    """Every 30 min: when the last finished load is AUTO_EVERY_HOURS old (or never ran) -> load_all()."""
-    time.sleep(120)                                    # let the website start first
-    log(f"[ITEM-MASTER] Automatic load on: every {AUTO_EVERY_HOURS} hours")
-    while True:
-        try:
-            conn = _hooks["connect"]()
-            try:
-                last = read_summary(conn.cursor()).get("finished")
-            finally:
-                conn.close()
-            age = (datetime.utcnow() - datetime.fromisoformat(last.rstrip("Z"))) if last else None
-            if age is None or age >= timedelta(hours=AUTO_EVERY_HOURS):
-                log(f"[ITEM-MASTER] Last load {last or 'never'} -> loading now")
-                load_all("auto")
-        except Exception as ex:                        # never stops the website; tries again later
-            log(f"[ITEM-MASTER] Automatic load check failed: {str(ex)[:200]}")
-        time.sleep(check_every)
+# ============================================================ SECTION 5: no automatic load
+# Loading happens ONLY from the admin button or /item-master/load?secret=... (no daily background load).
 
 
 # ============================================================ SECTION 6: page HTML
@@ -424,7 +405,8 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
     <div><div class="plabel">Base notes</div><div class="pval">{{ r.base_notes or '' }}{% if not r.base_notes %}<span class="none">-</span>{% endif %}</div></div>
   </div>
 
-  <div class="date">Airtable record {{ r.fi_record_id }}{% if r.loaded_at %} · Loaded {{ r.loaded_at.strftime('%d %b, %H:%M') }}{% endif %}</div>
+  {# Airtable record id (fi_record_id) is NOT shown - it is only in the database #}
+  {% if r.loaded_at %}<div class="date">Loaded {{ r.loaded_at.strftime('%d %b, %H:%M') }}</div>{% endif %}
 </div>
 {% endfor %}
 {% if not rows %}<div class="empty">No products{% if not total and not q %} - load from Airtable first{% endif %}.</div>{% endif %}
@@ -535,8 +517,5 @@ def init(connect, read_airtable, fi_table, brands_table, brands_name_field, run_
     read_airtable(table, params)  -> list of Airtable records (app.at_list, handles paging + 429)"""
     _hooks.update(connect=connect, read_airtable=read_airtable, fi_table=fi_table, brands_table=brands_table,
                   brands_name_field=brands_name_field, run_secret=run_secret)
-    log(f"[ITEM-MASTER] Linked to app.py (table {fi_table} -> item_master)")
-    if AUTO_ON:
-        threading.Thread(target=auto_loader, daemon=True, name="item-master-auto").start()
-    else:
-        log("[ITEM-MASTER] Automatic load switched off (ITEM_MASTER_AUTO=off)")
+    log(f"[ITEM-MASTER] Linked to app.py (table {fi_table} -> item_master) - loads only from the button or "
+        f"/item-master/load?secret=...")
