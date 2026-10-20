@@ -47,6 +47,7 @@ from psycopg2.extras import execute_values
 from flask import Blueprint, request, jsonify, render_template_string, redirect, g
 
 import competitors_page                     # menu bar (render_nav, NAV_CSS) + menu counts
+import description_gen                      # 'Create product description' button (description_gen.py)
 from auth import is_admin
 
 item_master_bp = Blueprint("item_master", __name__)
@@ -347,6 +348,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
  .notes{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
  .notes .pval{font-size:15px;font-weight:500;line-height:1.4}
  @media (max-width:640px){ .notes{grid-template-columns:1fr} }
+@@DESC_CSS@@
  .none{color:var(--grey)}
  .date{color:var(--grey);font-size:13px;margin-top:10px}
  .empty{background:var(--card);border:1px dashed var(--line);border-radius:16px;padding:28px 20px;text-align:center;color:var(--muted)}
@@ -387,6 +389,8 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
       {% if r.our_link and r.our_stock == false %}<div class="out">Out of stock</div>{% endif %}
       {% if r.our_link %}<a href="{{ r.our_link }}" target="_blank" title="{{ r.our_title or r.our_link }}">View on fragrantsouq.com &#8599;</a>
       {% else %}<span class="nolink">Not on fragrantsouq.com</span>{% endif %}
+      {# admins: Create product description (description_gen.py DESC_HTML) #}
+      @@DESC_HTML@@
     </div>
   </div>
   <div class="meta">{% if r.brand %}Brand <b>{{ r.brand }}</b>{% endif %}{% if r.brand and r.sku %} · {% endif %}{% if r.sku %}SKU <b>{{ r.sku }}</b>{% endif %}{% if r.barcode and (r.brand or r.sku) %} · {% endif %}{% if r.barcode %}Barcode <b>{{ r.barcode }}</b>{% endif %}</div>
@@ -418,7 +422,13 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
   <a class="pbtn {{ '' if page < pages else 'off' }}" href="?q={{ q|urlencode }}&page={{ page + 1 }}">Next &rarr;</a>
 </div>
 {% endif %}
+<script>
+@@DESC_JS@@
+</script>
 </div></body></html>"""
+# card parts from description_gen.py (button, its look and its script)
+IM_HTML = (IM_HTML.replace("@@DESC_HTML@@", description_gen.DESC_HTML).replace("@@DESC_CSS@@", description_gen.DESC_CSS)
+           .replace("@@DESC_JS@@", description_gen.DESC_JS))
 
 
 # ============================================================ SECTION 7: routes
@@ -463,6 +473,7 @@ def item_master_page():
         else:                                              # competitor table not created yet -> no links
             link_cols, link_join = "NULL AS our_link, NULL AS our_title, NULL AS our_stock", ""
         cur.execute(f"SELECT im.fi_record_id, im.loaded_at, {', '.join('im.' + c for c in SHOWN)}, "
+                    f"(COALESCE(im.shopify_description, '') <> '') AS has_desc, "     # button asks before replacing
                     f"{link_cols} FROM item_master im {link_join} {where} "
                     f"ORDER BY LOWER(im.brand), LOWER(im.product_name) LIMIT %s OFFSET %s",
                     params + [PER_PAGE, (page - 1) * PER_PAGE])
