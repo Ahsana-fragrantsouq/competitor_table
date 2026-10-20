@@ -17,6 +17,7 @@ Files in this project
   skip_auto.py        -> 'Skip automatic price' checkbox per product: never changed automatically in Airtable
   link_edit.py        -> 'Edit link' (admins only): set / remove a competitor link on a product card
   barcode_edit.py     -> 'Edit' barcode (admins only): our barcode -> Airtable French Inventories 'Barcode' + competitor_table
+  item_master.py      -> Item Master page: every French Inventories field copied into table item_master (daily)
   db_triggers.py      -> Postgres triggers: list price / stock change -> competitor_table -> least + suggested price
   price_triggers.py   -> WHEN one product is recalculated: TRIGGER 1 competitor price / stock changed,
                          TRIGGER 2 admin saved LOP / MOP (recalc_product() = the calculation for one product)
@@ -101,6 +102,8 @@ import link_edit                                   # admins: edit / remove a com
 from link_edit import link_bp                      # POST /competitor/link
 import barcode_edit                                # admins: edit OUR barcode on the cards (barcode_edit.py)
 from barcode_edit import barcode_bp                # POST /competitor/barcode
+import item_master                                 # Item Master page: all French Inventories fields (item_master.py)
+from item_master import item_master_bp             # /item-master, /item-master/reload, /load, /status
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
 from vperfumes import vperfumes_bp                 # /vperfumes/test, /vperfumes/run, /vperfumes/status
@@ -125,6 +128,7 @@ app.register_blueprint(limits_bp)                  # LOP / MOP Save on the produ
 app.register_blueprint(skip_bp)                    # 'Skip automatic price' checkbox on the cards (skip_auto.py)
 app.register_blueprint(link_bp)                    # 'Edit link' for admins on the cards (link_edit.py)
 app.register_blueprint(barcode_bp)                 # 'Edit' our barcode for admins (barcode_edit.py)
+app.register_blueprint(item_master_bp)             # Item Master page (item_master.py)
 app.register_blueprint(branded_perfume_bp)
 app.register_blueprint(essenzi_bp)
 app.register_blueprint(vperfumes_bp)
@@ -2283,6 +2287,9 @@ skip_auto.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Skip automatic
 link_edit.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Edit link' for admins (link_edit.py)
                link_sisters=link_sisters_for, recalc_one=least_for)
 barcode_edit.init(connect=pg_conn, airtable_barcode=airtable_set_barcode)   # 'Edit' our barcode (barcode_edit.py)
+item_master.init(connect=pg_conn, read_airtable=at_list,       # Item Master: Airtable -> item_master (item_master.py)
+                 fi_table=FI_TABLE, brands_table=BRANDS_TABLE, brands_name_field=BRANDS_NAME_FIELD,
+                 run_secret=RUN_SECRET)
 
 
 # ---------------------------------------------------------------- database triggers (db_triggers.py)
