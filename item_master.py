@@ -5,10 +5,11 @@ A full copy of every Airtable French Inventories product in the database table i
 
 What is saved (one row per Airtable record, key = fi_record_id = the Airtable record id):
   sku, brand, product_type, perfume_name, product_name, type, category, size, barcode,
-  top_notes, middle_notes, base_notes, shopify_description, item_id,
+  top_notes, middle_notes, base_notes, shopify_description,
   uae_price, asia_price, america_price, kuwait_price, qatar_price, uae_comparison_price, stock_qty
   + airtable_fields  = EVERY field of the record exactly as Airtable gave it (JSON) -> nothing is ever lost
-The page HIDES the prices, stock qty and UAE comparison price; they are only in the database:
+                       (except DROP_FIELDS, e.g. "Item ID": never saved anywhere)
+The page HIDES the prices, stock qty, UAE comparison price and Shopify description; they are only in the database:
   python sql.py "SELECT sku, uae_price, asia_price, america_price, kuwait_price, qatar_price,
                  uae_comparison_price, stock_qty FROM item_master WHERE sku = 'AMF1085'"
 
@@ -37,7 +38,6 @@ import os
 import re
 import json
 import time
-import html
 import math
 import threading
 from datetime import datetime, timedelta
@@ -80,17 +80,18 @@ FIELDS = [
     ("top_notes",            "TEXT",          ["Top Notes", "Top Note"],                               True),
     ("middle_notes",         "TEXT",          ["Middle Notes", "Middle Note", "Heart Notes"],          True),
     ("base_notes",           "TEXT",          ["Base Notes", "Base Note"],                             True),
-    ("shopify_description",  "TEXT",          ["Shopify Description", "Description"],                  True),
+    ("shopify_description",  "TEXT",          ["Shopify Description", "Description"],                  False),
     ("product_name",         "TEXT",          ["Product Name"],                                        True),
-    ("item_id",              "TEXT",          ["Item ID"],                                             False),
 ]
+# Airtable fields NOT saved at all (not as a column, not in airtable_fields). Old saved values are removed at start.
+DROP_FIELDS = ["Item ID"]
 NUMBER_COLS = {c for c, t, _, _ in FIELDS if t.startswith("NUMERIC")}
 SHOWN = [c for c, _, _, shown in FIELDS if shown]              # page columns (+ Airtable record id at the end)
 LABELS = {"sku": "SKU", "brand": "Brand", "product_type": "Product type", "perfume_name": "Perfume name",
           "type": "Type", "category": "Category", "size": "Size", "barcode": "Barcode", "top_notes": "Top notes",
           "middle_notes": "Middle notes", "base_notes": "Base notes", "shopify_description": "Shopify description",
           "product_name": "Product name"}
-SEARCH_COLS = ["sku", "brand", "perfume_name", "product_name", "barcode", "item_id", "fi_record_id"]
+SEARCH_COLS = ["sku", "brand", "perfume_name", "product_name", "barcode", "fi_record_id"]
 
 PER_PAGE = 50
 AUTO_EVERY_HOURS = 24                       # automatic load from Airtable when the last one is this old
@@ -106,7 +107,11 @@ CREATE TABLE IF NOT EXISTS item_master (
     loaded_at        TIMESTAMP DEFAULT NOW()    -- when this row was last copied from Airtable
 );
 """ + "".join(f"ALTER TABLE item_master ADD COLUMN IF NOT EXISTS {c} {t};\n" for c, t, _, _ in FIELDS)
-    + "CREATE INDEX IF NOT EXISTS item_master_sku ON item_master (sku);\n")
+    + "CREATE INDEX IF NOT EXISTS item_master_sku ON item_master (sku);\n"
+    # fields that are not kept any more (DROP_FIELDS): old column + old values inside airtable_fields removed
+    + "ALTER TABLE item_master DROP COLUMN IF EXISTS item_id;\n"
+    + "".join(f"UPDATE item_master SET airtable_fields = airtable_fields - '{n}' WHERE airtable_fields ? '{n}';\n"
+              for n in DROP_FIELDS))
 
 SETTINGS_CREATE = """
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -247,7 +252,8 @@ def load_all(by="auto"):
                     linked_warned.add(col)
                     log(f"[ITEM-MASTER] '{found[col]}' is a linked field -> record ids saved, not names")
                 vals.append(to_number(v) if col in NUMBER_COLS else to_text(v))
-            rows.append((rec["id"], json.dumps(f), *vals))
+            raw = {k: v for k, v in f.items() if k not in DROP_FIELDS}       # "Item ID" is never saved
+            rows.append((rec["id"], json.dumps(raw), *vals))
 
         conn = h["connect"]()
         try:
@@ -348,7 +354,6 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
  .ourlink .nolink{color:var(--muted);font-size:14px}
  .ourlink .out{color:#e0806c;font-size:13px;margin-bottom:3px}
  @media (max-width:640px){ .titlerow{flex-direction:column} .ourlink{max-width:100%;text-align:left} }
- .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
  .meta{color:var(--muted);font-size:14px;margin-top:4px}
  .meta b{color:var(--text);font-weight:600}
  /* gold box: product type | type | category | size | perfume name (like the least-price box) */
@@ -361,11 +366,6 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
  .notes{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
  .notes .pval{font-size:15px;font-weight:500;line-height:1.4}
  @media (max-width:640px){ .notes{grid-template-columns:1fr} }
- .desc{font-size:14px;line-height:1.5;margin-top:4px;overflow-wrap:anywhere}
- .desc[hidden]{display:none}
- .more{background:none;border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:6px 12px;
-       font-size:13px;cursor:pointer;margin-top:8px}
- .more:hover{color:var(--text);border-color:var(--muted)}
  .none{color:var(--grey)}
  .date{color:var(--grey);font-size:13px;margin-top:10px}
  .empty{background:var(--card);border:1px dashed var(--line);border-radius:16px;padding:28px 20px;text-align:center;color:var(--muted)}
@@ -408,7 +408,6 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
       {% else %}<span class="nolink">Not on fragrantsouq.com</span>{% endif %}
     </div>
   </div>
-  {% if r.item_id %}<div class="code">{{ r.item_id }}</div>{% endif %}
   <div class="meta">{% if r.brand %}Brand <b>{{ r.brand }}</b>{% endif %}{% if r.brand and r.sku %} · {% endif %}{% if r.sku %}SKU <b>{{ r.sku }}</b>{% endif %}{% if r.barcode and (r.brand or r.sku) %} · {% endif %}{% if r.barcode %}Barcode <b>{{ r.barcode }}</b>{% endif %}</div>
 
   <div class="facts">
@@ -425,19 +424,6 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
     <div><div class="plabel">Base notes</div><div class="pval">{{ r.base_notes or '' }}{% if not r.base_notes %}<span class="none">-</span>{% endif %}</div></div>
   </div>
 
-  <div class="shop">
-    <div class="plabel">Shopify description</div>
-    {% if r.desc_text %}
-      {% if r.desc_text|length > 220 %}
-      <div class="desc" id="ds-{{ loop.index }}">{{ r.desc_text[:220] }} ...</div>
-      <div class="desc" id="df-{{ loop.index }}" hidden>{{ r.desc_text }}</div>
-      <button type="button" class="more" onclick="toggleDesc({{ loop.index }}, this)">Show more</button>
-      {% else %}
-      <div class="desc">{{ r.desc_text }}</div>
-      {% endif %}
-    {% else %}<div class="desc none">No description</div>{% endif %}
-  </div>
-
   <div class="date">Airtable record {{ r.fi_record_id }}{% if r.loaded_at %} · Loaded {{ r.loaded_at.strftime('%d %b, %H:%M') }}{% endif %}</div>
 </div>
 {% endfor %}
@@ -450,24 +436,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
   <a class="pbtn {{ '' if page < pages else 'off' }}" href="?q={{ q|urlencode }}&page={{ page + 1 }}">Next &rarr;</a>
 </div>
 {% endif %}
-<script>
-  // "Show more" / "Show less" on a long Shopify description
-  function toggleDesc(i, btn) {
-    var full = document.getElementById("df-" + i), short = document.getElementById("ds-" + i);
-    full.hidden = !full.hidden; short.hidden = !full.hidden;
-    btn.textContent = full.hidden ? "Show more" : "Show less";
-    console.log("[ITEM-MASTER] Description " + i + (full.hidden ? " closed" : " opened"));
-  }
-</script>
 </div></body></html>"""
-
-
-def plain_text(s):
-    """Shopify description HTML -> plain text for the page (the database keeps the original)."""
-    if not s:
-        return ""
-    s = re.sub(r"<\s*(br|/p|/li|/div)[^>]*>", " ", s, flags=re.I)
-    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", "", s))).strip()
 
 
 # ============================================================ SECTION 7: routes
@@ -511,13 +480,11 @@ def item_master_page():
             link_join = "LEFT JOIN competitor_table ct ON ct.fi_record_id = im.fi_record_id"
         else:                                              # competitor table not created yet -> no links
             link_cols, link_join = "NULL AS our_link, NULL AS our_title, NULL AS our_stock", ""
-        cur.execute(f"SELECT im.fi_record_id, im.item_id, im.loaded_at, {', '.join('im.' + c for c in SHOWN)}, "
+        cur.execute(f"SELECT im.fi_record_id, im.loaded_at, {', '.join('im.' + c for c in SHOWN)}, "
                     f"{link_cols} FROM item_master im {link_join} {where} "
                     f"ORDER BY LOWER(im.brand), LOWER(im.product_name) LIMIT %s OFFSET %s",
                     params + [PER_PAGE, (page - 1) * PER_PAGE])
         rows = cur.fetchall()
-        for r in rows:
-            r["desc_text"] = plain_text(r.get("shopify_description"))
         last = read_summary(cur)
     finally:
         conn.close()
