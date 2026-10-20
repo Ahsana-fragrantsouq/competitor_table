@@ -1106,7 +1106,21 @@ def add_link_barcodes(cur, rows, shops):
             x = found.get(r.get(f"{k}_url")) or {}
             r[f"{k}_gtin"] = x.get("gtin")
             r[f"{k}_sku"] = x.get("sku")                   # shown only when there is no barcode
-    print(f"[BARCODES] competitor barcodes added under the links of {len(rows)} products", flush=True)
+    # OUR barcode empty + every competitor that has a barcode shows the SAME one -> put it in the admin's
+    # 'Add barcode' box (barcode_edit.py), so it only needs checking + Save. Different barcodes -> box stays empty.
+    suggested = 0
+    for r in rows:
+        r["bc_suggest"] = None
+        if r.get("barcode"):
+            continue
+        codes = [r.get(f"{k}_gtin") for _, k in shops if r.get(f"{k}_url") and r.get(f"{k}_gtin")]
+        codes = ["".join(ch for ch in str(c) if ch.isdigit()) for c in codes]
+        codes = [c for c in codes if 8 <= len(c) <= 14]
+        if codes and all(same_barcode(c, codes[0]) for c in codes):
+            r["bc_suggest"] = max(codes, key=len)          # longest form (EAN-13 rather than UPC-12)
+            suggested += 1
+    print(f"[BARCODES] competitor barcodes added under the links of {len(rows)} products; "
+          f"{suggested} without our barcode get the competitors' barcode in the Add barcode box", flush=True)
 
 
 def same_barcode(a, b):

@@ -42,15 +42,19 @@ BC_CSS = """ /* Edit our barcode (admins only, barcode_edit.py) */
  .bc-box button{border-radius:8px;padding:7px 12px;font-weight:600;cursor:pointer;font-size:13px}
  .bc-save{background:#f2d675;color:#1c1b19;border:0}
  .bc-cancel{background:none;color:var(--muted);border:1px solid var(--line)}
+ .bc-hint{align-self:center;color:var(--muted);font-size:12px}
 """
 
 # r = product row (inside the card, right after the Brand / SKU / Barcode line)
 BC_HTML = """    {# Edit our barcode: admins only (barcode_edit.py) - Airtable first, then this table #}
     {% if admin %}
     <div class="bc-box" id="bcbox-{{ r.fi }}" hidden>
-      <input type="text" inputmode="numeric" id="bcin-{{ r.fi }}" value="{{ r.barcode or '' }}" placeholder="Barcode (8-14 digits)">
+      {# our barcode; when empty and all competitors show the same barcode -> that one (competitors_page.py
+         add_link_barcodes, r.bc_suggest): check it, then Save, or change it first #}
+      <input type="text" inputmode="numeric" id="bcin-{{ r.fi }}" value="{{ r.barcode or r.bc_suggest or '' }}" placeholder="Barcode (8-14 digits)">
       <button type="button" class="bc-save" onclick="saveBarcode('{{ r.fi }}', this)">Save</button>
       <button type="button" class="bc-cancel" onclick="cancelBarcode('{{ r.fi }}')">Cancel</button>
+      {% if not r.barcode and r.bc_suggest %}<span class="bc-hint">Same barcode on all competitors - check it, then Save</span>{% endif %}
     </div>
     <div class="upd-msg" id="bcmsg-{{ r.fi }}"></div>
     {% endif %}
