@@ -506,6 +506,8 @@ def build_index(catalog):
             bc = norm_barcode(v.get("sku"))
             if bc:
                 by_barcode[bc] = e
+                e["barcode"] = bc
+            e["barcode"] = bc                     # used by match_one: barcode differs -> no name match
     log(f"[INDEX] {len(entries)} variants, {len(by_barcode)} barcodes, {len(by_handle)} handles")
     return entries, by_barcode, by_handle
 
@@ -618,6 +620,10 @@ def pick_by_size(entries, size):
 # A barcode match is only accepted when the perfume names share at least this much (0 = no word in common).
 # "Outlands" vs "Reasons" = 0.0 -> refused, the name match then finds the right product.
 BARCODE_MIN_NAME = 0.3
+# Name match when BOTH barcodes are known and DIFFERENT: only accepted when the names are (almost) the same.
+# Below this -> no match, the product becomes a SUGGESTION (OK / Not OK) instead.
+# "Scent Of Peace For Him" vs "Scent Of Peace Natura" (other barcode) = 0.9 -> suggestion, not a link.
+BARCODE_CONFLICT_MIN = 0.95
 
 
 def match_one(fields, brand, brand_entries, by_barcode, trust_barcode=False):
@@ -636,6 +642,9 @@ def match_one(fields, brand, brand_entries, by_barcode, trust_barcode=False):
       3. Name: best name_score >= MATCH_THRESHOLD (0.85) -> match.
          EDP vs EDT costs -0.12, so it only matches if the name is almost perfect.
          Two different products with the same score -> "ambiguous" (no match, sent as suggestion).
+      4. Barcode check on the name match: our barcode and theirs both known but DIFFERENT -> only accepted
+         when the name score >= BARCODE_CONFLICT_MIN (0.95), else no match + suggestion (another version of the
+         perfume usually has its own barcode: "For Him" vs "Natura").
 
     Returns (match, method, score, guess)
       match  = competitor product or None
@@ -696,6 +705,11 @@ def match_one(fields, brand, brand_entries, by_barcode, trust_barcode=False):
             log(f"[DUPLICATE] {product_name}: {len(tied)} listings, picked '{best['title']}'")
         else:
             return None, f"ambiguous ({tied[0]['title']} | {tied[1]['title']})", best_score, tied[0]
+    # 4) barcode check: both barcodes known and different -> the name must be (almost) the same
+    if bc and best.get("barcode") and best["barcode"] != bc and best_score < BARCODE_CONFLICT_MIN:
+        log(f"[BARCODE-CONFLICT] {product_name} -> '{best['title']}' has another barcode "
+            f"({best['barcode']} vs ours {bc}), name score {best_score} < {BARCODE_CONFLICT_MIN} -> suggestion only")
+        return None, f"barcode differs (best: {best['title']})", best_score, best
     return best, method("fuzzy", best), best_score, None
 
 
@@ -1119,6 +1133,7 @@ def sm_entries_from_db(cur):
         bc = norm_barcode(gtin)
         if bc:
             by_barcode[bc] = e
+            e["barcode"] = bc                     # used by match_one: barcode differs -> no name match
     log(f"[CT-MATCH] {len(entries)} Samawa variants loaded from samawa_catalog | {len(by_barcode)} with barcode")
     return entries, by_barcode
 
@@ -1150,6 +1165,7 @@ def ff_entries_from_db(cur):
         bc = norm_barcode(gtin)
         if bc:
             by_barcode[bc] = e
+            e["barcode"] = bc                     # used by match_one: barcode differs -> no name match
     log(f"[CT-MATCH] {len(entries)} French Fragrance products loaded from french_fragrance_catalog "
         f"| {len(by_barcode)} with GTIN")
     return entries, by_barcode
@@ -1186,6 +1202,7 @@ def vp_entries_from_db(cur):
         bc = norm_barcode(gtin)
         if bc:
             by_barcode[bc] = e
+            e["barcode"] = bc                     # used by match_one: barcode differs -> no name match
     log(f"[CT-MATCH] {len(entries)} V Perfumes products loaded from vperfumes_catalog | {len(by_barcode)} with barcode")
     return entries, by_barcode
 
@@ -1212,6 +1229,7 @@ def aj_entries_from_db(cur):
         bc = norm_barcode(gtin)
         if bc:
             by_barcode[bc] = e
+            e["barcode"] = bc                     # used by match_one: barcode differs -> no name match
     log(f"[CT-MATCH] {len(entries)} Al Injaz products loaded from alinjaz_catalog | {len(by_barcode)} with barcode")
     return entries, by_barcode
 
@@ -1275,6 +1293,7 @@ def am_entries_from_db(cur):
         bc = norm_barcode(gtin)
         if bc:
             by_barcode[bc] = e
+            e["barcode"] = bc                     # used by match_one: barcode differs -> no name match
     log(f"[CT-MATCH] {len(entries)} Amberiya variants loaded from amberiya_catalog | {len(by_barcode)} with barcode")
     return entries, by_barcode
 
@@ -1300,6 +1319,7 @@ def ng_entries_from_db(cur):
         bc = norm_barcode(gtin)
         if bc:
             by_barcode[bc] = e
+            e["barcode"] = bc                     # used by match_one: barcode differs -> no name match
     log(f"[CT-MATCH] {len(entries)} Niche Gallerie products loaded from nichegallerie_catalog | {len(by_barcode)} with barcode")
     return entries, by_barcode
 
