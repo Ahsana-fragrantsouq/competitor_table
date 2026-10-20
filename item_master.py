@@ -319,42 +319,59 @@ def auto_loader(check_every=1800):
 # ============================================================ SECTION 6: page HTML
 IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{# Same look as the Competitor table cards (competitors_page.py SECTION 6a) #}
 <style>
- :root{--bg:#1c1b19;--card:#252420;--line:#3a3833;--text:#f2efe9;--muted:#a9a397;--gold:#d8b76e}
+ :root{--bg:#1c1b19;--card:#252420;--line:#3a3833;--text:#f2efe9;--muted:#a9a397;--gold:#d8b76e;--grey:#8b877f}
  *{box-sizing:border-box}
  body{margin:0;background:var(--bg);color:var(--text);font-family:Roboto,-apple-system,Segoe UI,Arial,sans-serif}
- .page{max-width:1500px;margin:0 auto;padding:22px 18px 40px}
+ .page{max-width:920px;margin:0 auto;padding:22px 18px 40px}
  h1{font-size:26px;margin:4px 0 18px}
  .topbar{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
  .who{color:var(--muted);font-size:14px} .who b{color:var(--text)} .who a{color:var(--gold)}
  {{ nav_css|safe }}
- .bar{display:flex;gap:8px;margin:14px 0 8px;flex-wrap:wrap}
- .bar input{flex:1;min-width:220px;background:var(--card);color:var(--text);border:1px solid var(--line);
-            border-radius:12px;padding:12px 14px;font-size:16px}
- .bar button,.load button{background:#f2d675;color:#1c1b19;border:0;border-radius:12px;padding:11px 20px;
-            font-size:15px;font-weight:700;cursor:pointer}
- .info{color:var(--muted);font-size:14px;margin:6px 2px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+ .bar{display:flex;gap:8px;margin:14px 0 6px;flex-wrap:wrap}
+ .bar input{flex:1;min-width:0;background:var(--card);color:var(--text);border:1px solid var(--line);
+            border-radius:12px;padding:13px 14px;font-size:16px}
+ .bar button,.load button{background:#f2d675;color:#1c1b19;border:0;border-radius:12px;padding:0 18px;
+            font-size:16px;font-weight:600;cursor:pointer;min-height:48px}
+ .load button{min-height:0;padding:9px 16px;font-size:14px}
+ .info{color:var(--muted);font-size:14px;margin:6px 2px 14px;display:flex;justify-content:space-between;
+       align-items:center;gap:12px;flex-wrap:wrap}
  .info b{color:var(--text)} .warn{color:#e0a36c} .err{color:#e0806c} .ok{color:#8cc58c}
- .wrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--card);margin-top:8px}
- table{border-collapse:collapse;font-size:13px;min-width:1400px;width:100%}
- th,td{padding:8px 10px;border-top:1px solid var(--line);text-align:left;vertical-align:top}
- th{position:sticky;top:0;background:#2d2b26;color:var(--muted);font-weight:600;white-space:nowrap;border-top:0}
- td.nw{white-space:nowrap}
- td.notes{min-width:150px}
- td.desc{min-width:280px;max-width:420px;overflow-wrap:anywhere}
- td.desc details summary{cursor:pointer;color:var(--text);list-style:none}
- td.desc details summary::-webkit-details-marker{display:none}
- td.desc details[open] summary{color:var(--muted)}
- .rec{font-family:monospace;color:var(--muted)}
- .pager{display:flex;gap:8px;justify-content:center;align-items:center;margin:16px 0;color:var(--muted)}
- .pager a{color:var(--gold);text-decoration:none;border:1px solid var(--line);border-radius:10px;padding:7px 12px}
+ /* ---- product card ---- */
+ .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-bottom:12px}
+ .title{font-size:18px;font-weight:600;margin-bottom:6px;line-height:1.35}
+ .code{color:var(--muted);font-size:14px;font-family:Consolas,monospace}
+ .meta{color:var(--muted);font-size:14px;margin-top:4px}
+ .meta b{color:var(--text);font-weight:600}
+ /* gold box: product type | type | category | size | perfume name (like the least-price box) */
+ .facts{display:flex;flex-wrap:wrap;gap:10px 28px;margin:12px 0 2px;padding:10px 14px;border:1px solid #f2d675;border-radius:12px}
+ .plabel{color:var(--muted);font-size:13px}
+ .pval{font-size:17px;font-weight:600;margin-top:2px}
+ .pval.gold{color:#f2d675}
+ /* one section per line: notes, description (like one competitor shop) */
+ .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
+ .notes{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+ .notes .pval{font-size:15px;font-weight:500;line-height:1.4}
+ @media (max-width:640px){ .notes{grid-template-columns:1fr} }
+ .desc{font-size:14px;line-height:1.5;margin-top:4px;overflow-wrap:anywhere}
+ .desc[hidden]{display:none}
+ .more{background:none;border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:6px 12px;
+       font-size:13px;cursor:pointer;margin-top:8px}
+ .more:hover{color:var(--text);border-color:var(--muted)}
+ .none{color:var(--grey)}
+ .date{color:var(--grey);font-size:13px;margin-top:10px}
+ .empty{background:var(--card);border:1px dashed var(--line);border-radius:16px;padding:28px 20px;text-align:center;color:var(--muted)}
+ .pager{display:flex;justify-content:space-between;align-items:center;margin-top:16px;color:var(--muted)}
+ .pbtn{background:#f2d675;color:#1c1b19;text-decoration:none;border-radius:12px;padding:12px 18px;font-weight:600}
+ .pbtn.off{visibility:hidden}
 </style></head><body><div class="page">
 <div class="topbar"><h1>Item Master</h1>
   {% if g.user %}<span class="who">Logged in as <b>{{ g.user }}</b> · <a href="/logout">Log out</a></span>{% endif %}</div>
 {{ nav_html|safe }}
 
 <form class="bar" method="get" action="/item-master">
-  <input name="q" value="{{ q }}" placeholder="Search SKU, brand, perfume name, product name, barcode, record id">
+  <input name="q" value="{{ q }}" placeholder="Filter by SKU, brand, perfume name, product name, barcode">
   <button type="submit">Go</button>
 </form>
 
@@ -372,32 +389,61 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
 {% if last.missing %}<div class="info warn">Not found in Airtable (left empty): {{ last.missing|join(', ') }}
   - tell Claude the real Airtable field names.</div>{% endif %}
 
-<div class="wrap"><table>
-  <tr>{% for c in shown %}<th>{{ labels[c] }}</th>{% endfor %}<th>Airtable record id</th></tr>
-  {% for r in rows %}
-  <tr>
-    {% for c in shown %}
-      {% if c == 'shopify_description' %}
-      <td class="desc">{% if r.desc_text %}<details><summary>{{ r.desc_text[:110] }}{% if r.desc_text|length > 110 %} ... <u>more</u>{% endif %}</summary>{{ r.desc_text[110:] }}</details>{% endif %}</td>
-      {% elif c in ('top_notes', 'middle_notes', 'base_notes', 'product_name', 'perfume_name') %}
-      <td class="notes">{{ r[c] or '' }}</td>
+{# one card per product. Prices, stock qty and UAE comparison price are NOT on the page (database only) #}
+{% for r in rows %}
+<div class="card">
+  <div class="title">{{ r.product_name or r.perfume_name or r.sku or r.fi_record_id }}</div>
+  {% if r.item_id %}<div class="code">{{ r.item_id }}</div>{% endif %}
+  <div class="meta">{% if r.brand %}Brand <b>{{ r.brand }}</b>{% endif %}{% if r.brand and r.sku %} · {% endif %}{% if r.sku %}SKU <b>{{ r.sku }}</b>{% endif %}{% if r.barcode and (r.brand or r.sku) %} · {% endif %}{% if r.barcode %}Barcode <b>{{ r.barcode }}</b>{% endif %}</div>
+
+  <div class="facts">
+    <div><div class="plabel">Perfume name</div><div class="pval gold">{{ r.perfume_name or '-' }}</div></div>
+    <div><div class="plabel">Product type</div><div class="pval">{{ r.product_type or '-' }}</div></div>
+    <div><div class="plabel">Type</div><div class="pval">{{ r.type or '-' }}</div></div>
+    <div><div class="plabel">Category</div><div class="pval">{{ r.category or '-' }}</div></div>
+    <div><div class="plabel">Size</div><div class="pval">{{ r.size or '-' }}</div></div>
+  </div>
+
+  <div class="shop notes">
+    <div><div class="plabel">Top notes</div><div class="pval">{{ r.top_notes or '' }}{% if not r.top_notes %}<span class="none">-</span>{% endif %}</div></div>
+    <div><div class="plabel">Middle notes</div><div class="pval">{{ r.middle_notes or '' }}{% if not r.middle_notes %}<span class="none">-</span>{% endif %}</div></div>
+    <div><div class="plabel">Base notes</div><div class="pval">{{ r.base_notes or '' }}{% if not r.base_notes %}<span class="none">-</span>{% endif %}</div></div>
+  </div>
+
+  <div class="shop">
+    <div class="plabel">Shopify description</div>
+    {% if r.desc_text %}
+      {% if r.desc_text|length > 220 %}
+      <div class="desc" id="ds-{{ loop.index }}">{{ r.desc_text[:220] }} ...</div>
+      <div class="desc" id="df-{{ loop.index }}" hidden>{{ r.desc_text }}</div>
+      <button type="button" class="more" onclick="toggleDesc({{ loop.index }}, this)">Show more</button>
       {% else %}
-      <td class="nw">{{ r[c] or '' }}</td>
+      <div class="desc">{{ r.desc_text }}</div>
       {% endif %}
-    {% endfor %}
-    <td class="rec nw">{{ r.fi_record_id }}</td>
-  </tr>
-  {% endfor %}
-  {% if not rows %}<tr><td colspan="{{ shown|length + 1 }}">No products{% if not total and not q %} - load from Airtable first{% endif %}.</td></tr>{% endif %}
-</table></div>
+    {% else %}<div class="desc none">No description</div>{% endif %}
+  </div>
+
+  <div class="date">Airtable record {{ r.fi_record_id }}{% if r.loaded_at %} · Loaded {{ r.loaded_at.strftime('%d %b, %H:%M') }}{% endif %}</div>
+</div>
+{% endfor %}
+{% if not rows %}<div class="empty">No products{% if not total and not q %} - load from Airtable first{% endif %}.</div>{% endif %}
 
 {% if pages > 1 %}
 <div class="pager">
-  {% if page > 1 %}<a href="?q={{ q|urlencode }}&page={{ page - 1 }}">&larr; Previous</a>{% endif %}
+  <a class="pbtn {{ '' if page > 1 else 'off' }}" href="?q={{ q|urlencode }}&page={{ page - 1 }}">&larr; Previous</a>
   <span>Page {{ page }} of {{ pages }}</span>
-  {% if page < pages %}<a href="?q={{ q|urlencode }}&page={{ page + 1 }}">Next &rarr;</a>{% endif %}
+  <a class="pbtn {{ '' if page < pages else 'off' }}" href="?q={{ q|urlencode }}&page={{ page + 1 }}">Next &rarr;</a>
 </div>
 {% endif %}
+<script>
+  // "Show more" / "Show less" on a long Shopify description
+  function toggleDesc(i, btn) {
+    var full = document.getElementById("df-" + i), short = document.getElementById("ds-" + i);
+    full.hidden = !full.hidden; short.hidden = !full.hidden;
+    btn.textContent = full.hidden ? "Show more" : "Show less";
+    console.log("[ITEM-MASTER] Description " + i + (full.hidden ? " closed" : " opened"));
+  }
+</script>
 </div></body></html>"""
 
 
@@ -443,7 +489,7 @@ def item_master_page():
             params = [f"%{q}%"] * len(SEARCH_COLS)
         cur.execute(f"SELECT COUNT(*) AS n FROM item_master {where}", params)
         total = cur.fetchone()["n"]
-        cur.execute(f"SELECT fi_record_id, {', '.join(SHOWN)} FROM item_master {where} "
+        cur.execute(f"SELECT fi_record_id, item_id, loaded_at, {', '.join(SHOWN)} FROM item_master {where} "
                     f"ORDER BY LOWER(brand), LOWER(product_name) LIMIT %s OFFSET %s",
                     params + [PER_PAGE, (page - 1) * PER_PAGE])
         rows = cur.fetchall()
