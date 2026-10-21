@@ -4,24 +4,23 @@
 Same fields as the Airtable form "New Perfume Entry", WITHOUT the prices, + Product type:
   Brand (required, pick one or "+ Add brand") · Perfume Name (required) · Size · Type · Category · Product type · Barcode
 Saved straight into OUR database (table item_master) - NOT in Airtable.
-Made automatically (like Airtable did), shown live on the form before Submit:
-  * SKU          = the brand's SKU prefix + next free number      e.g. ASQ1047 is the highest ASQ -> ASQ1048
-                   (prefix = the letters of that brand's existing SKUs; a NEW brand -> type its prefix)
+Made automatically on Submit (like Airtable did) - NOT shown on the form:
   * Product Name = Brand + Perfume Name + Size + Type + Category + Product type
                    e.g. "Abdul Samad Al Qurashi Amber touch 30 ml EDP Unisex Spray"
 The new row: id "new" + 14 letters/digits (Airtable ids start with "rec"), source = 'website'
--> "Load from Airtable now" never deletes or changes it. After saving, the Item Master shows it and
+-> "Load from Airtable now" never deletes or changes it. SKU: NOT made yet (saved empty) - added later. After saving, the Item Master shows it and
 "Create product description" / "Create in website" work for it like for every other product.
 
 Where things are (change them here):
-  SECTION 1  settings      -> SELECT_COLS (dropdown boxes), FIRST_NUMBER (first SKU number of a new prefix)
-  SECTION 2  page HTML     -> NEW_HTML (form + live SKU / product name preview)
-  SECTION 3  database      -> brand_skus(), choices(), next_sku(), product_name(), save_item()
+  SECTION 1  settings      -> SELECT_COLS (dropdown boxes)
+  SECTION 2  page HTML     -> NEW_HTML (the form; product name is NOT shown, made on Submit)
+  SECTION 3  database      -> choices(), product_name(), clean_form(), save_item()
   SECTION 4  routes        -> GET / POST /item-master/new
   SECTION 5  hooks         -> init(connect)
 """
 
 import re
+from urllib.parse import urlencode
 import secrets
 import string
 
@@ -43,9 +42,7 @@ def log(*a):
 # ============================================================ SECTION 1: settings
 # dropdown boxes: (item_master column, label). Their choices = the values already used in Item Master.
 SELECT_COLS = [("size", "Size"), ("type", "Type"), ("category", "Category"), ("product_type", "Product type")]
-FIRST_NUMBER = 1001                          # first SKU number for a brand-new prefix (ACF1007, ATR1002 ...)
 SOURCE_SQL = "ALTER TABLE item_master ADD COLUMN IF NOT EXISTS source TEXT;"   # 'website' = made by this form
-SKU_RE = re.compile(r"^([A-Z]+)(\d+)$")      # "ASQ1047" -> prefix "ASQ", number 1047
 
 
 # ============================================================ SECTION 2: page HTML
@@ -73,12 +70,9 @@ NEW_HTML = """<!doctype html><html><head><title>Create a new item - Item Master<
  input:focus,select:focus{outline:2px solid var(--gold);outline-offset:1px}
  .addbrand{background:none;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px 12px;
            font-size:13px;cursor:pointer;margin-top:8px}
- .newbrand{display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-top:8px}
+ .newbrand{margin-top:8px}
  .newbrand[hidden]{display:none}
  .small{color:var(--muted);font-size:12px;margin-top:4px}
- .preview{background:var(--bg);border:1px solid #f2d675;border-radius:12px;padding:12px 14px;margin:6px 0 16px}
- .preview div{margin:2px 0} .preview .lbl{color:var(--muted);font-size:13px;display:inline-block;width:110px}
- .preview b{color:#f2d675}
  .actions{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--line);padding-top:14px}
  .clear{background:none;border:0;color:var(--gold);font-size:14px;cursor:pointer}
  .save{background:#f2d675;color:#1c1b19;border:0;border-radius:10px;padding:11px 22px;font-size:15px;font-weight:700;cursor:pointer}
@@ -103,9 +97,7 @@ NEW_HTML = """<!doctype html><html><head><title>Create a new item - Item Master<
     <button type="button" class="addbrand" id="addbrand">+ Add brand</button>
     <div class="newbrand" id="newbrand" {% if not v.new_brand %}hidden{% endif %}>
       <input name="new_brand" id="f-newbrand" placeholder="New brand name" value="{{ v.new_brand or '' }}">
-      <input name="new_prefix" id="f-newprefix" placeholder="SKU prefix e.g. ABC" value="{{ v.new_prefix or '' }}" maxlength="6">
     </div>
-    <div class="small" id="newbrandhint" {% if not v.new_brand %}hidden{% endif %}>New brand: its SKUs will start with the prefix you type (letters only).</div>
   </div>
 
   <div class="f"><label for="f-perfume">Perfume Name <span class="req">*</span></label>
@@ -122,10 +114,6 @@ NEW_HTML = """<!doctype html><html><head><title>Create a new item - Item Master<
   <div class="f"><label for="f-barcode">Barcode</label>
     <input id="f-barcode" name="barcode" inputmode="numeric" placeholder="8-14 digits" value="{{ v.barcode or '' }}"></div>
 
-  <div class="preview">
-    <div><span class="lbl">SKU</span><b id="pv-sku">-</b></div>
-    <div><span class="lbl">Product name</span><b id="pv-name">-</b></div>
-  </div>
 
   <div class="actions">
     <button type="button" class="clear" id="clearform">&#8634; Clear form</button>
@@ -133,30 +121,14 @@ NEW_HTML = """<!doctype html><html><head><title>Create a new item - Item Master<
   </div>
 </form>
 <script>
-  // ---- Create a new item: live SKU + product name preview (the server makes the real ones on Submit) ----
-  var SKUS = {{ sku_info|tojson }};          // brand -> [prefix, next number]
-  var ORDER = ["perfume_name", "size", "type", "category", "product_type"];
+  // ---- Create a new item: "+ Add brand" switch + Clear form (product name is made on Submit) ----
   function el(id) { return document.getElementById(id); }
-  function brandNow() { return el("newbrand").hidden ? el("f-brand").value : el("f-newbrand").value.trim(); }
-  function preview() {
-    var brand = brandNow(), sku = "-";
-    if (!el("newbrand").hidden) {
-      var p = el("f-newprefix").value.toUpperCase().replace(/[^A-Z]/g, "");
-      sku = p ? p + "{{ first_number }}" : "(type the SKU prefix)";
-    } else if (brand) {
-      sku = SKUS[brand] ? SKUS[brand][0] + SKUS[brand][1] : "(this brand has no SKU yet - use + Add brand to give a prefix)";
-    }
-    var parts = [brand].concat(ORDER.map(function (k) { var x = el(k === "perfume_name" ? "f-perfume" : "f-" + k); return x.value.trim(); }));
-    el("pv-sku").textContent = sku;
-    el("pv-name").textContent = parts.filter(Boolean).join(" ") || "-";
-  }
   el("addbrand").addEventListener("click", function () {
-    var nb = el("newbrand"); nb.hidden = !nb.hidden; el("newbrandhint").hidden = nb.hidden;
+    var nb = el("newbrand"); nb.hidden = !nb.hidden;
     el("f-brand").disabled = !nb.hidden;
     el("addbrand").textContent = nb.hidden ? "+ Add brand" : "Choose an existing brand instead";
-    if (!nb.hidden) el("f-newbrand").focus(); else { el("f-newbrand").value = ""; el("f-newprefix").value = ""; }
+    if (!nb.hidden) el("f-newbrand").focus(); else el("f-newbrand").value = "";
     console.log("[NEW-ITEM] " + (nb.hidden ? "existing brand" : "adding a new brand"));
-    preview();
   });
   el("clearform").addEventListener("click", function () {
     if (!confirm("Clear the whole form?")) return;
@@ -164,12 +136,8 @@ NEW_HTML = """<!doctype html><html><head><title>Create a new item - Item Master<
     el("newform").querySelectorAll("select").forEach(function (s) { s.selectedIndex = 0; });
     if (!el("newbrand").hidden) el("addbrand").click();
     console.log("[NEW-ITEM] form cleared");
-    preview();
   });
-  el("newform").addEventListener("input", preview);
-  el("newform").addEventListener("change", preview);
   if (!el("newbrand").hidden) { el("f-brand").disabled = true; el("addbrand").textContent = "Choose an existing brand instead"; }
-  preview();
 </script>
 {% endif %}
 </div></body></html>"""
@@ -193,29 +161,6 @@ def _conn():
     return conn
 
 
-def brand_skus(cur):
-    """{brand: [prefix, next free number]} from the SKUs already in Item Master.
-    prefix = the letters most used in that brand's SKUs; next = highest number with that prefix (any brand) + 1."""
-    cur.execute("SELECT brand, UPPER(TRIM(sku)) FROM item_master WHERE COALESCE(brand, '') <> '' AND sku IS NOT NULL")
-    per_brand, highest = {}, {}
-    for brand, sku in cur.fetchall():
-        m = SKU_RE.match(sku or "")
-        if not m:
-            continue
-        p, n = m.group(1), int(m.group(2))
-        per_brand.setdefault(brand, {}).setdefault(p, 0)
-        per_brand[brand][p] += 1
-        highest[p] = max(highest.get(p, 0), n)
-    return {b: [max(ps, key=ps.get), highest[max(ps, key=ps.get)] + 1] for b, ps in per_brand.items()}
-
-
-def next_for_prefix(cur, prefix):
-    """Next free number for a SKU prefix (FIRST_NUMBER when the prefix is new)."""
-    cur.execute("SELECT UPPER(TRIM(sku)) FROM item_master WHERE UPPER(TRIM(sku)) LIKE %s", (prefix + "%",))
-    nums = [int(m.group(2)) for (s,) in cur.fetchall() if (m := SKU_RE.match(s or "")) and m.group(1) == prefix]
-    return max(nums) + 1 if nums else FIRST_NUMBER
-
-
 def choices(cur):
     """Brands + values already used for each dropdown box (like Airtable's single-select options)."""
     out = {}
@@ -236,20 +181,15 @@ def new_id():
     return "new" + "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(14))
 
 
-def clean_form(form, opts, sku_info):
-    """Form -> (values, problems). Brand: an existing one, or a new one + its SKU prefix."""
+def clean_form(form, opts):
+    """Form -> (values, problems). Brand: an existing one, or a new one typed after '+ Add brand'."""
     v = {k: (form.get(k) or "").strip() for k in
-         ["brand", "new_brand", "new_prefix", "perfume_name", "barcode"] + [c for c, _ in SELECT_COLS]}
+         ["brand", "new_brand", "perfume_name", "barcode"] + [c for c, _ in SELECT_COLS]}
     errors = []
     if v["new_brand"]:
-        v["new_prefix"] = re.sub(r"[^A-Z]", "", v["new_prefix"].upper())
-        if not v["new_prefix"]:
-            errors.append("New brand: type its SKU prefix (letters, e.g. ABC)")
         same = next((b for b in opts["brand"] if b.lower() == v["new_brand"].lower()), None)
-        if same and same in sku_info:                   # existing brand WITH a SKU prefix -> pick it from the list
+        if same:
             errors.append(f"Brand '{same}' already exists - choose it from the list")
-        elif same:                                      # existing brand without SKU yet -> keep its spelling
-            v["new_brand"] = same
         v["brand"] = v["new_brand"]
     elif not v["brand"]:
         errors.append("Brand is required")
@@ -263,34 +203,28 @@ def clean_form(form, opts, sku_info):
     return v, errors
 
 
-def save_item(v, sku_info, user):
-    """Make SKU + product name, check SKU / barcode not used yet, insert. Returns (sku, None) or (None, problem)."""
+def save_item(v, user):
+    """Make the product name, check the barcode is not used yet, insert (no SKU yet).
+    Returns (new id, product name, None) or (None, None, problem)."""
     conn = _conn()
     try:
         cur = conn.cursor()
-        if v["new_brand"]:
-            prefix = v["new_prefix"]
-        elif v["brand"] in sku_info:
-            prefix = sku_info[v["brand"]][0]
-        else:
-            return None, (f"Brand '{v['brand']}' has no SKU yet - click '+ Add brand', type '{v['brand']}' "
-                          f"and its SKU prefix")
-        sku = f"{prefix}{next_for_prefix(cur, prefix)}"             # read again now: never a used number
         if v["barcode"]:
             cur.execute("SELECT sku, product_name FROM item_master WHERE barcode = %s LIMIT 1", (v["barcode"],))
             same = cur.fetchone()
             if same:
-                return None, f"Barcode {v['barcode']} is already used by {same[0]} '{same[1]}'"
+                return None, None, f"Barcode {v['barcode']} is already used by " + " ".join(
+                    x for x in [same[0], f"'{same[1]}'"] if x)
         name = product_name(v)
         fid = new_id()
-        cur.execute("""INSERT INTO item_master (fi_record_id, source, loaded_at, sku, brand, perfume_name, size, type,
+        cur.execute("""INSERT INTO item_master (fi_record_id, source, loaded_at, brand, perfume_name, size, type,
                                                 category, product_type, barcode, product_name)
-                       VALUES (%s, 'website', NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (fid, sku, v["brand"], v["perfume_name"], v["size"] or None, v["type"] or None,
+                       VALUES (%s, 'website', NOW(), %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (fid, v["brand"], v["perfume_name"], v["size"] or None, v["type"] or None,
                      v["category"] or None, v["product_type"] or None, v["barcode"] or None, name))
         conn.commit()
-        log(f"[NEW-ITEM] {user} created {sku} '{name}' -> item_master {fid}")
-        return sku, None
+        log(f"[NEW-ITEM] {user} created '{name}' (no SKU yet) -> item_master {fid}")
+        return fid, name, None
     finally:
         conn.close()
 
@@ -303,13 +237,11 @@ def _page(v=None, errors=None, status=200):
         counts = competitors_page.tab_counts(cur)
         plain = conn.cursor()
         opts = choices(plain) if is_admin() else {}
-        sku_info = brand_skus(plain) if is_admin() else {}
     finally:
         conn.close()
     return render_template_string(NEW_HTML, nav_html=competitors_page.render_nav("item", "im-new", counts),
                                   nav_css=competitors_page.NAV_CSS, admin=is_admin(), v=v or {}, errors=errors or [],
-                                  brands=opts.get("brand", []), choices=opts, selects=SELECT_COLS,
-                                  sku_info=sku_info, first_number=FIRST_NUMBER), status
+                                  brands=opts.get("brand", []), choices=opts, selects=SELECT_COLS), status
 
 
 @new_item_bp.route("/item-master/new", methods=["GET", "POST"])
@@ -324,18 +256,18 @@ def new_item():
     conn = _conn()
     try:
         cur = conn.cursor()
-        opts, sku_info = choices(cur), brand_skus(cur)
+        opts = choices(cur)
     finally:
         conn.close()
-    v, errors = clean_form(request.form, opts, sku_info)
+    v, errors = clean_form(request.form, opts)
     if not errors:
-        sku, problem = save_item(v, sku_info, g.get("user"))
+        fid, name, problem = save_item(v, g.get("user"))
         if problem:
             errors.append(problem)
     if errors:
         log(f"[NEW-ITEM] Not saved for {g.get('user')}: {errors}")
         return _page(v, errors, status=400)
-    return redirect(f"/item-master?q={sku}&msg=New+item+{sku}+created.")
+    return redirect("/item-master?" + urlencode({"q": fid, "msg": f"New item created: {name}"}))
 
 
 # ============================================================ SECTION 5: hooks (called once from app.py)
