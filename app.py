@@ -23,6 +23,7 @@ Files in this project
   run_history.py      -> Run history of those 2 buttons (every click + steps, input / output) -> /item-master/history
   item_create.py      -> Item Master -> Create a new item: form (no prices) -> new product in item_master (no Airtable)
   brand_sku.py        -> SKU Prefix + Next SKU number per brand (copied from Airtable brands) -> Settings -> Automate
+  safe_output.py      -> print / log lines written without a buffer lock (a stuck stdout gave error 500 on every page)
   db_triggers.py      -> Postgres triggers: list price / stock change -> competitor_table -> least + suggested price
   price_triggers.py   -> WHEN one product is recalculated: TRIGGER 1 competitor price / stock changed,
                          TRIGGER 2 admin saved LOP / MOP (recalc_product() = the calculation for one product)
@@ -74,6 +75,9 @@ Environment variables (Render -> Environment)
   BRANDS_NAME_FIELD  brand name field in the Airtable brands table ("Brand Name")
   MATCH_THRESHOLD    minimum name score to count as a match (default 0.85)
 """
+
+import safe_output                                 # FIRST: logs can never get stuck / break pages (safe_output.py)
+safe_output.install()
 
 import os
 import re
