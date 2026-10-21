@@ -18,8 +18,8 @@ Files in this project
   link_edit.py        -> 'Edit link' (admins only): set / remove a competitor link on a product card
   barcode_edit.py     -> 'Edit' barcode (admins only): our barcode -> Airtable French Inventories 'Barcode' + competitor_table
   item_master.py      -> Item Master page: every French Inventories field copied into table item_master
-  description_gen.py  -> 'Create product description' (admins, Item Master): notes -> AI API -> Airtable + database
-  shopify_create.py   -> 'Create in website' (admins, Item Master, only with a description): -> create-shopify-item API
+  description_gen.py  -> 'Create product description' (admins, Item Master): item_master notes -> AI API -> item_master (no Airtable)
+  shopify_create.py   -> 'Create in website' (admins, Item Master, only with a description): item_master -> create-shopify-item API (no Airtable)
   run_history.py      -> Run history of those 2 buttons (every click + steps, input / output) -> /item-master/history
   db_triggers.py      -> Postgres triggers: list price / stock change -> competitor_table -> least + suggested price
   price_triggers.py   -> WHEN one product is recalculated: TRIGGER 1 competitor price / stock changed,
@@ -2342,10 +2342,9 @@ barcode_edit.init(connect=pg_conn, airtable_barcode=airtable_set_barcode)   # 'E
 item_master.init(connect=pg_conn, read_airtable=at_list,       # Item Master: Airtable -> item_master (item_master.py)
                  fi_table=FI_TABLE, brands_table=BRANDS_TABLE, brands_name_field=BRANDS_NAME_FIELD,
                  run_secret=RUN_SECRET)
-description_gen.init(connect=pg_conn, read_airtable=at_list,     # 'Create product description' (description_gen.py)
-                     write_airtable=lambda fid, fields: airtable_update_fields(fid, fields, "DESC"),
-                     fi_table=FI_TABLE)
-shopify_create.init()                                          # 'Create in website' (shopify_create.py)
+description_gen.init(connect=pg_conn,                           # 'Create product description' (description_gen.py)
+                     write_airtable=lambda fid, fields: airtable_update_fields(fid, fields, "DESC"))  # only if ALSO_WRITE_AIRTABLE
+shopify_create.init(connect=pg_conn)                           # 'Create in website' (shopify_create.py)
 run_history.init(connect=pg_conn)                              # Run history of the buttons (run_history.py)
 
 

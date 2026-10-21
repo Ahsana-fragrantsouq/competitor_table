@@ -7,6 +7,9 @@ What is saved (one row per Airtable record, key = fi_record_id = the Airtable re
   sku, brand, product_type, perfume_name, product_name, type, category, size, barcode,
   top_notes, middle_notes, base_notes, shopify_description,
   uae_price, asia_price, america_price, kuwait_price, qatar_price, uae_comparison_price, stock_qty
+  shopify_id, image_urls (one link per line), gift_items (one per line), desc_created_at
+  -> everything the Item Master buttons need is in OUR database, they never read Airtable
+     (so Airtable can be removed later; "Load from Airtable" is then only an import)
   + airtable_fields  = EVERY field of the record exactly as Airtable gave it (JSON) -> nothing is ever lost
                        (except DROP_FIELDS, e.g. "Item ID": never saved anywhere)
 The page HIDES the prices, stock qty, UAE comparison price, Shopify description and Airtable record id;
@@ -19,6 +22,8 @@ When it is loaded from Airtable:
   - admin button "Load from Airtable now" on the page
   - /item-master/load?secret=XXX   (progress: /item-master/status)
 Products deleted in Airtable are deleted from item_master at the next full load.
+What our website created is never overwritten by a load: shopify_id (Create in website) and a description made by
+Create product description (desc_created_at set) - see WEBSITE_COLS_SQL.
 
 Airtable field names: FIELDS below lists, per column, the Airtable names that are tried (upper / lower case and
 spaces do not matter). Fields NOT found are listed on the page and in the log [ITEM-MASTER] -> add the real
@@ -84,7 +89,22 @@ FIELDS = [
     ("base_notes",           "TEXT",          ["Base Notes", "Base Note"],                             True),
     ("shopify_description",  "TEXT",          ["Shopify Description", "Description"],                  False),
     ("product_name",         "TEXT",          ["Product Name"],                                        True),
+    # needed by the Item Master buttons, so they never have to read Airtable (later Airtable can be removed):
+    ("shopify_id",           "TEXT",          ["ShopifyID"],                                           False),
+    ("image_urls",           "TEXT",          ["Image URLs"],                                          False),
+    ("gift_items",           "TEXT",          ["Items in Gift Set"],                                   False),
 ]
+# Linked Airtable fields: record ids are turned into real values while loading (SECTION 4), one per line:
+#   image_urls <- "Image URLs" table, field "Name" (= the image link)   gift_items <- the linked products' Product Name
+LINKED_COLS = {"image_urls": ("Image URLs", "Name"), "gift_items": (None, "Product Name")}   # None = French Inventories
+# Columns OUR WEBSITE writes. "Load from Airtable" never overwrites them once our website has set them:
+#   shopify_id           set by 'Create in website'        -> Airtable value only used while ours is empty
+#   shopify_description  set by 'Create product description' (desc_created_at filled) -> Airtable value ignored
+WEBSITE_COLS_SQL = {
+    "shopify_id": "COALESCE(NULLIF(item_master.shopify_id, ''), EXCLUDED.shopify_id)",
+    "shopify_description": "CASE WHEN item_master.desc_created_at IS NOT NULL THEN item_master.shopify_description "
+                           "ELSE EXCLUDED.shopify_description END",
+}
 # Airtable fields NOT saved at all (not as a column, not in airtable_fields). Old saved values are removed at start.
 DROP_FIELDS = ["Item ID"]
 NUMBER_COLS = {c for c, t, _, _ in FIELDS if t.startswith("NUMERIC")}
@@ -110,6 +130,8 @@ CREATE TABLE IF NOT EXISTS item_master (
     + "CREATE INDEX IF NOT EXISTS item_master_sku ON item_master (sku);\n"
     # fields that are not kept any more (DROP_FIELDS): old column + old values inside airtable_fields removed
     + "ALTER TABLE item_master DROP COLUMN IF EXISTS item_id;\n"
+    # when 'Create product description' (description_gen.py) wrote shopify_description -> Load keeps it
+    + "ALTER TABLE item_master ADD COLUMN IF NOT EXISTS desc_created_at TIMESTAMP;\n"
     + "".join(f"UPDATE item_master SET airtable_fields = airtable_fields - '{n}' WHERE airtable_fields ? '{n}';\n"
               for n in DROP_FIELDS))
 
@@ -234,6 +256,22 @@ def load_all(by="auto"):
         for rec in recs:
             seen.update(rec.get("fields", {}).keys())
         found, missing = pick_fields(seen)
+
+        # linked fields -> real values: {column: {record id: value}}
+        linked = {}
+        for col, (table, field) in LINKED_COLS.items():
+            if col not in found:
+                continue
+            if table is None:                                  # links to other French Inventories products
+                linked[col] = {r["id"]: to_text(r.get("fields", {}).get(field)) for r in recs}
+            else:
+                try:
+                    linked[col] = {r["id"]: to_text(r.get("fields", {}).get(field))
+                                   for r in h["read_airtable"](table, {"fields[]": [field]})}
+                except Exception as ex:                        # table missing / no access -> ids are kept
+                    log(f"[ITEM-MASTER] Could not read Airtable table '{table}' ({str(ex)[:120]}) -> {col} keeps record ids")
+                    linked[col] = {}
+            log(f"[ITEM-MASTER] {col}: {len(linked[col])} linked records read to turn ids into values")
         log("[ITEM-MASTER] Fields used: " + ", ".join(f"{c}<-'{n}'" for c, n in found.items()))
         if missing:
             log(f"[ITEM-MASTER] NOT FOUND in Airtable: {', '.join(missing)} -> add the real field name in "
@@ -248,6 +286,11 @@ def load_all(by="auto"):
                 v = f.get(found[col]) if col in found else None
                 if col == "brand" and isinstance(v, list) and v and is_record_id(v[0]):
                     v = [brand_names.get(b, b) for b in v]            # linked brand -> brand name
+                elif col in LINKED_COLS:                                # image links / gift items: one per line
+                    items = v if isinstance(v, list) else ([] if v in (None, "") else [v])
+                    items = [linked.get(col, {}).get(x) or x if is_record_id(x) else to_text(x) for x in items]
+                    vals.append("\n".join(i for i in items if i) or None)
+                    continue
                 elif isinstance(v, list) and v and is_record_id(v[0]) and col not in linked_warned:
                     linked_warned.add(col)
                     log(f"[ITEM-MASTER] '{found[col]}' is a linked field -> record ids saved, not names")
@@ -262,7 +305,7 @@ def load_all(by="auto"):
             conn.commit()
             sql = (f"INSERT INTO item_master (fi_record_id, airtable_fields, {', '.join(cols)}, loaded_at) VALUES %s "
                    f"ON CONFLICT (fi_record_id) DO UPDATE SET airtable_fields = EXCLUDED.airtable_fields, "
-                   + ", ".join(f"{c} = EXCLUDED.{c}" for c in cols) + ", loaded_at = NOW()")
+                   + ", ".join(f"{c} = {WEBSITE_COLS_SQL.get(c, 'EXCLUDED.' + c)}" for c in cols) + ", loaded_at = NOW()")
             template = "(" + ", ".join(["%s"] * (len(cols) + 2)) + ", NOW())"
             for i in range(0, len(rows), 500):
                 execute_values(cur, sql, rows[i:i + 500], template=template)
