@@ -83,6 +83,8 @@ DESC_JS = """  // ---- Create product description (admins only, description_gen.
       msg.className = "desc-msg ok";
       msg.textContent = "Description created (" + d.chars + " characters) and saved in Airtable + database.";
       btn.dataset.has = "1";
+      var web = document.getElementById("webbtn-" + fi);   // 'Create in website' needs a description -> now on
+      if (web) { web.disabled = false; web.title = ""; }
       console.log("[DESC] " + fi + ": done, " + d.chars + " characters");
     } catch (e) {
       msg.className = "desc-msg err"; msg.textContent = "Not created: " + e.message;
@@ -97,12 +99,16 @@ DESC_JS = """  // ---- Create product description (admins only, description_gen.
 _hooks = {}                          # filled by init() (SECTION 5)
 
 
-def read_product(fid):
-    """THIS record from Airtable, every value as text (cellFormat=string = Airtable's getCellValueAsString),
-    so Brand / Items in Gift Set come back as names, not record ids. Returns the fields dict or None."""
+def read_product(fid, as_text=True):
+    """THIS record from Airtable. as_text=True: every value as text (cellFormat=string = Airtable's
+    getCellValueAsString), so Brand / Items in Gift Set come back as names, not record ids.
+    as_text=False: values as Airtable stores them (numbers stay numbers = getCellValue). Also used by
+    shopify_create.py. Returns the fields dict or None."""
     formula = "RECORD_ID()='" + fid.replace("'", "") + "'"
-    recs = _hooks["read_airtable"](_hooks["fi_table"], {"filterByFormula": formula, "cellFormat": "string",
-                                                         "timeZone": AT_TIMEZONE, "userLocale": AT_LOCALE})
+    params = {"filterByFormula": formula}
+    if as_text:
+        params.update({"cellFormat": "string", "timeZone": AT_TIMEZONE, "userLocale": AT_LOCALE})
+    recs = _hooks["read_airtable"](_hooks["fi_table"], params)
     return recs[0].get("fields", {}) if recs else None
 
 

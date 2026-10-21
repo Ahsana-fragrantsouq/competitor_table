@@ -19,6 +19,7 @@ Files in this project
   barcode_edit.py     -> 'Edit' barcode (admins only): our barcode -> Airtable French Inventories 'Barcode' + competitor_table
   item_master.py      -> Item Master page: every French Inventories field copied into table item_master
   description_gen.py  -> 'Create product description' (admins, Item Master): notes -> AI API -> Airtable + database
+  shopify_create.py   -> 'Create in website' (admins, Item Master, only with a description): -> create-shopify-item API
   db_triggers.py      -> Postgres triggers: list price / stock change -> competitor_table -> least + suggested price
   price_triggers.py   -> WHEN one product is recalculated: TRIGGER 1 competitor price / stock changed,
                          TRIGGER 2 admin saved LOP / MOP (recalc_product() = the calculation for one product)
@@ -107,6 +108,8 @@ import item_master                                 # Item Master page: all Frenc
 from item_master import item_master_bp             # /item-master, /item-master/reload, /load, /status
 import description_gen                             # 'Create product description' on Item Master (description_gen.py)
 from description_gen import desc_bp                # POST /item-master/description
+import shopify_create                              # 'Create in website' on Item Master (shopify_create.py)
+from shopify_create import web_bp                  # POST /item-master/create-in-website
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
 from vperfumes import vperfumes_bp                 # /vperfumes/test, /vperfumes/run, /vperfumes/status
@@ -133,6 +136,7 @@ app.register_blueprint(link_bp)                    # 'Edit link' for admins on t
 app.register_blueprint(barcode_bp)                 # 'Edit' our barcode for admins (barcode_edit.py)
 app.register_blueprint(item_master_bp)             # Item Master page (item_master.py)
 app.register_blueprint(desc_bp)                    # 'Create product description' button (description_gen.py)
+app.register_blueprint(web_bp)                     # 'Create in website' button (shopify_create.py)
 app.register_blueprint(branded_perfume_bp)
 app.register_blueprint(essenzi_bp)
 app.register_blueprint(vperfumes_bp)
@@ -2337,6 +2341,7 @@ item_master.init(connect=pg_conn, read_airtable=at_list,       # Item Master: Ai
 description_gen.init(connect=pg_conn, read_airtable=at_list,     # 'Create product description' (description_gen.py)
                      write_airtable=lambda fid, fields: airtable_update_fields(fid, fields, "DESC"),
                      fi_table=FI_TABLE)
+shopify_create.init()                                          # 'Create in website' (shopify_create.py)
 
 
 # ---------------------------------------------------------------- database triggers (db_triggers.py)

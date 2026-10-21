@@ -48,6 +48,7 @@ from flask import Blueprint, request, jsonify, render_template_string, redirect,
 
 import competitors_page                     # menu bar (render_nav, NAV_CSS) + menu counts
 import description_gen                      # 'Create product description' button (description_gen.py)
+import shopify_create                       # 'Create in website' button (shopify_create.py)
 from auth import is_admin
 
 item_master_bp = Blueprint("item_master", __name__)
@@ -349,6 +350,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
  .notes .pval{font-size:15px;font-weight:500;line-height:1.4}
  @media (max-width:640px){ .notes{grid-template-columns:1fr} }
 @@DESC_CSS@@
+@@WEB_CSS@@
  .none{color:var(--grey)}
  .date{color:var(--grey);font-size:13px;margin-top:10px}
  .empty{background:var(--card);border:1px dashed var(--line);border-radius:16px;padding:28px 20px;text-align:center;color:var(--muted)}
@@ -391,6 +393,8 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
       {% else %}<span class="nolink">Not on fragrantsouq.com</span>{% endif %}
       {# admins: Create product description (description_gen.py DESC_HTML) #}
       @@DESC_HTML@@
+      {# admins: Create in website - only ON when there is a description (shopify_create.py WEB_HTML) #}
+      @@WEB_HTML@@
     </div>
   </div>
   <div class="meta">{% if r.brand %}Brand <b>{{ r.brand }}</b>{% endif %}{% if r.brand and r.sku %} · {% endif %}{% if r.sku %}SKU <b>{{ r.sku }}</b>{% endif %}{% if r.barcode and (r.brand or r.sku) %} · {% endif %}{% if r.barcode %}Barcode <b>{{ r.barcode }}</b>{% endif %}</div>
@@ -424,11 +428,14 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
 {% endif %}
 <script>
 @@DESC_JS@@
+@@WEB_JS@@
 </script>
 </div></body></html>"""
 # card parts from description_gen.py (button, its look and its script)
 IM_HTML = (IM_HTML.replace("@@DESC_HTML@@", description_gen.DESC_HTML).replace("@@DESC_CSS@@", description_gen.DESC_CSS)
-           .replace("@@DESC_JS@@", description_gen.DESC_JS))
+           .replace("@@DESC_JS@@", description_gen.DESC_JS)
+           .replace("@@WEB_HTML@@", shopify_create.WEB_HTML).replace("@@WEB_CSS@@", shopify_create.WEB_CSS)
+           .replace("@@WEB_JS@@", shopify_create.WEB_JS))
 
 
 # ============================================================ SECTION 7: routes
