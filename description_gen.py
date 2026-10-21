@@ -160,7 +160,7 @@ def create_description():
         log(f"[DESC] Refused: {g.get('user')} is not an admin")
         return jsonify({"ok": False, "error": "admins only"}), 403
     fid = ((request.get_json(silent=True) or {}).get("fi_record_id") or "").strip()
-    if not fid.startswith("rec"):
+    if not fid.startswith(("rec", "new")):            # rec = from Airtable, new = Create a new item
         return jsonify({"ok": False, "error": "no product given"}), 400
     log(f"[DESC] {g.get('user')} -> create description for {fid}")
     run = run_history.Run("description", fid, g.get("user"))

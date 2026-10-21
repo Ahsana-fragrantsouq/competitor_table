@@ -132,6 +132,8 @@ CREATE TABLE IF NOT EXISTS item_master (
     + "ALTER TABLE item_master DROP COLUMN IF EXISTS item_id;\n"
     # when 'Create product description' (description_gen.py) wrote shopify_description -> Load keeps it
     + "ALTER TABLE item_master ADD COLUMN IF NOT EXISTS desc_created_at TIMESTAMP;\n"
+    # 'website' = made with Item Master -> Create a new item (item_create.py) -> Load from Airtable never deletes it
+    + "ALTER TABLE item_master ADD COLUMN IF NOT EXISTS source TEXT;\n"
     + "".join(f"UPDATE item_master SET airtable_fields = airtable_fields - '{n}' WHERE airtable_fields ? '{n}';\n"
               for n in DROP_FIELDS))
 
@@ -312,7 +314,8 @@ def load_all(by="auto"):
                 conn.commit()
                 log(f"[ITEM-MASTER] Saved {min(i + 500, len(rows))}/{len(rows)}")
             # products deleted in Airtable -> deleted here too (only after a full download)
-            cur.execute("DELETE FROM item_master WHERE NOT (fi_record_id = ANY(%s))", ([r[0] for r in rows],))
+            cur.execute("DELETE FROM item_master WHERE NOT (fi_record_id = ANY(%s)) "
+                        "AND COALESCE(source, '') <> 'website'", ([r[0] for r in rows],))   # our own new items stay
             deleted = cur.rowcount
             conn.commit()
         finally:

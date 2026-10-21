@@ -286,7 +286,7 @@ def create_in_website():
         return jsonify({"ok": False, "error": "admins only"}), 403
     body = request.get_json(silent=True) or {}
     fid = (body.get("fi_record_id") or "").strip()
-    if not fid.startswith("rec"):
+    if not fid.startswith(("rec", "new")):            # rec = from Airtable, new = Create a new item
         return jsonify({"ok": False, "error": "no product given"}), 400
     log(f"[WEB-CREATE] {g.get('user')} -> create on website: {fid}" + (" (again, confirmed)" if body.get("force") else ""))
     run = run_history.Run("website", fid, g.get("user"))
