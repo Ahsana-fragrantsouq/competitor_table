@@ -19,7 +19,7 @@ Files in this project
   barcode_edit.py     -> 'Edit' barcode (admins only): our barcode -> Airtable French Inventories 'Barcode' + competitor_table
   item_master.py      -> Item Master page: every French Inventories field copied into table item_master
   description_gen.py  -> 'Create product description' (admins, Item Master): item_master notes -> AI API -> item_master (no Airtable)
-  shopify_create.py   -> 'Create in website' (admins, Item Master, only with a description): item_master -> create-shopify-item API (no Airtable)
+  shopify_create.py   -> 'Create in website' (admins, Item Master, only with a description): item_master -> Shopify directly (no Airtable)
   run_history.py      -> Run history of those 2 buttons (every click + steps, input / output) -> /item-master/history
   db_triggers.py      -> Postgres triggers: list price / stock change -> competitor_table -> least + suggested price
   price_triggers.py   -> WHEN one product is recalculated: TRIGGER 1 competitor price / stock changed,
