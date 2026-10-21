@@ -332,6 +332,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
  .title{font-size:18px;font-weight:600;margin-bottom:6px;line-height:1.35}
  /* title left, our fragrantsouq.com link right (link from competitor_table.our_link) */
  .titlerow{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+ .titlerow .title{flex:1 1 auto;min-width:0}               /* title takes all the free space on the left */
  .ourlink{text-align:right;font-size:15px;font-weight:500;flex:0 0 auto;white-space:nowrap}
  .ourlink a{color:var(--gold);text-underline-offset:3px}
  .ourlink .nolink{color:var(--muted);font-size:14px}
@@ -351,6 +352,14 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
  @media (max-width:640px){ .notes{grid-template-columns:1fr} }
 @@DESC_CSS@@
 @@WEB_CSS@@
+ /* button row: Create in website first (left), Create product description (right), messages on their own line */
+ .btnrow{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:8px;margin-top:8px}
+ .btnrow .desc-btn{margin:0}
+ .btnrow .web-btn{order:1}
+ .btnrow .desc-btn:not(.web-btn){order:2}
+ .btnrow .desc-msg{order:3;flex-basis:100%;text-align:right;margin-top:0}
+ .btnrow .desc-msg:empty{display:none}
+ @media (max-width:640px){ .btnrow{justify-content:flex-start} .btnrow .desc-msg{text-align:left} }
  .none{color:var(--grey)}
  .date{color:var(--grey);font-size:13px;margin-top:10px}
  .empty{background:var(--card);border:1px dashed var(--line);border-radius:16px;padding:28px 20px;text-align:center;color:var(--muted)}
@@ -391,10 +400,13 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
       {% if r.our_link and r.our_stock == false %}<div class="out">Out of stock</div>{% endif %}
       {% if r.our_link %}<a href="{{ r.our_link }}" target="_blank" title="{{ r.our_title or r.our_link }}">View on fragrantsouq.com &#8599;</a>
       {% else %}<span class="nolink">Not on fragrantsouq.com</span>{% endif %}
-      {# admins: Create product description (description_gen.py DESC_HTML) #}
+      {# admins: the 2 buttons on ONE line - [Create in website] [Create product description], messages below #}
+      <div class="btnrow">
+      {# Create product description (description_gen.py DESC_HTML) #}
       @@DESC_HTML@@
-      {# admins: Create in website - only ON when there is a description (shopify_create.py WEB_HTML) #}
+      {# Create in website - only ON when there is a description (shopify_create.py WEB_HTML) #}
       @@WEB_HTML@@
+      </div>
     </div>
   </div>
   <div class="meta">{% if r.brand %}Brand <b>{{ r.brand }}</b>{% endif %}{% if r.brand and r.sku %} · {% endif %}{% if r.sku %}SKU <b>{{ r.sku }}</b>{% endif %}{% if r.barcode and (r.brand or r.sku) %} · {% endif %}{% if r.barcode %}Barcode <b>{{ r.barcode }}</b>{% endif %}</div>
