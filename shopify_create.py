@@ -106,7 +106,7 @@ WEB_JS = """  // ---- Create in website (admins only, shopify_create.py) ----
       runId = d.run_id;
       if (d.already) {                 // already has a Shopify ID -> ask before making a duplicate
         again = confirm("This product already has Shopify ID: " + d.shopify_id +
-                        "\n\nIt is probably on the website already. Create it AGAIN?");
+                        "\\n\\nIt is probably on the website already. Create it AGAIN?");
         if (!again) { msg.textContent = "Not created (already on the website)."; webRunLink(msg, runId);
                       console.log("[WEB-CREATE] " + fi + ": cancelled"); }
       } else if (!d.ok) {
