@@ -551,7 +551,7 @@ def item_master_page():
     pages = max(1, math.ceil(total / PER_PAGE))
     log(f"[ITEM-MASTER] Page shown to {g.get('user')}: search {q!r}, page {page}/{pages}, {total} products")
     return render_template_string(
-        IM_HTML, nav_html=competitors_page.render_nav("item", None, counts), nav_css=competitors_page.NAV_CSS,
+        IM_HTML, nav_html=competitors_page.render_nav("item", "im-list", counts), nav_css=competitors_page.NAV_CSS,
         rows=rows, total=total, q=q, page=page, pages=pages, shown=SHOWN, labels=LABELS, last=last,
         running=_load_lock.locked(), admin=is_admin(), msg=request.args.get("msg"))
 

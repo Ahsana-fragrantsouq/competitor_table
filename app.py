@@ -21,6 +21,7 @@ Files in this project
   description_gen.py  -> 'Create product description' (admins, Item Master): item_master notes -> AI API -> item_master (no Airtable)
   shopify_create.py   -> 'Create in website' (admins, Item Master, only with a description): item_master -> Shopify directly (no Airtable)
   run_history.py      -> Run history of those 2 buttons (every click + steps, input / output) -> /item-master/history
+  item_create.py      -> Item Master -> Create a new item (/item-master/new) - empty page, content later
   db_triggers.py      -> Postgres triggers: list price / stock change -> competitor_table -> least + suggested price
   price_triggers.py   -> WHEN one product is recalculated: TRIGGER 1 competitor price / stock changed,
                          TRIGGER 2 admin saved LOP / MOP (recalc_product() = the calculation for one product)
@@ -112,6 +113,8 @@ from description_gen import desc_bp                # POST /item-master/descripti
 import shopify_create                              # 'Create in website' on Item Master (shopify_create.py)
 from shopify_create import web_bp                  # POST /item-master/create-in-website
 import run_history                                 # Run history of the Item Master buttons (run_history.py)
+import item_create                                 # Item Master -> Create a new item (item_create.py)
+from item_create import new_item_bp                # /item-master/new (empty for now)
 from run_history import history_bp                 # /item-master/history
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
@@ -141,6 +144,7 @@ app.register_blueprint(item_master_bp)             # Item Master page (item_mast
 app.register_blueprint(desc_bp)                    # 'Create product description' button (description_gen.py)
 app.register_blueprint(web_bp)                     # 'Create in website' button (shopify_create.py)
 app.register_blueprint(history_bp)                 # Run history page of those buttons (run_history.py)
+app.register_blueprint(new_item_bp)                # Create a new item page (item_create.py)
 app.register_blueprint(branded_perfume_bp)
 app.register_blueprint(essenzi_bp)
 app.register_blueprint(vperfumes_bp)
@@ -2346,6 +2350,7 @@ description_gen.init(connect=pg_conn,                           # 'Create produc
                      write_airtable=lambda fid, fields: airtable_update_fields(fid, fields, "DESC"))  # only if ALSO_WRITE_AIRTABLE
 shopify_create.init(connect=pg_conn)                           # 'Create in website' (shopify_create.py)
 run_history.init(connect=pg_conn)                              # Run history of the buttons (run_history.py)
+item_create.init(connect=pg_conn)                              # Create a new item (item_create.py)
 
 
 # ---------------------------------------------------------------- database triggers (db_triggers.py)

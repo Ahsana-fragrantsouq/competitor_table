@@ -134,7 +134,7 @@ SOURCE_BY_KEY = {s["key"]: s for s in SOURCES}
 # ============================================================ SECTION 3: menu bar + Settings menu
 # Menu look = NAV_CSS / NAV_HTML. New Settings page = one line in SETTINGS_OPTIONS + one block in SECTION 8.
 # (menu bar like fragrantsouq.com)
-# Competitor table | Competitors ▾ (every shop's own table) | Settings | Item Master (item_master.py)
+# Competitor table | Competitors ▾ (every shop's own table) | Settings ▾ | Item Master ▾ (list / Create a new item / Run history)
 NAV_CSS = """
  .menu{display:flex;gap:6px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line);
        margin:0 0 6px;padding:0 0 10px}
@@ -175,8 +175,15 @@ NAV_HTML = """
       {% endfor %}
     </div>
   </details>
-  {# Item Master: every Airtable French Inventories product (item_master.py) #}
-  <a href="/item-master" class="{{ 'on' if active == 'item' else '' }}">Item Master</a>
+  {# Item Master dropdown: product list (item_master.py), new item form (item_create.py), button runs (run_history.py) #}
+  <details class="dd" id="ddItem">
+    <summary class="{{ 'on' if active == 'item' else '' }}">Item Master<span class="car">&#9662;</span></summary>
+    <div class="ddmenu">
+      {% for key, url, label in item_options %}
+      <a href="{{ url }}" class="{{ 'cur' if key == cur_key else '' }}"><span>{{ label }}</span></a>
+      {% endfor %}
+    </div>
+  </details>
 </nav>
 <script>
   // Menu logs: open the browser console (F12 -> Console) to see them
@@ -184,7 +191,7 @@ NAV_HTML = """
     var dds = Array.prototype.slice.call(document.querySelectorAll(".menu details.dd"));
     console.log("[MENU] Page loaded: " + location.pathname + location.search);
     dds.forEach(function (d) {
-      var name = d.querySelector("summary").firstChild.textContent.trim();     // "Competitors" / "Settings"
+      var name = d.querySelector("summary").firstChild.textContent.trim();     // "Competitors" / "Settings" / "Item Master"
       d.addEventListener("toggle", function () {
         console.log("[MENU] " + name + " dropdown " + (d.open ? "opened" : "closed"));
         if (d.open) dds.forEach(function (o) { if (o !== d) o.removeAttribute("open"); });   // only one open
@@ -215,6 +222,13 @@ NAV_HTML = """
 """
 
 
+# Item Master dropdown: (key = cur_key of that page, link, text)
+ITEM_OPTIONS = [
+    ("im-list", "/item-master", "Item Master"),
+    ("im-new", "/item-master/new", "Create a new item"),
+    ("im-history", "/item-master/history", "Run history"),
+]
+
 # Settings options (pages are empty for now - content will be added later)
 SETTINGS_OPTIONS = [
     ("users", "User management", "Admin creates users and manages them (add, change password, remove)."),
@@ -229,7 +243,7 @@ def render_nav(active, cur_key, counts):
     print(f"[MENU] Building menu: active={active!r} current page={cur_key!r} | "
           f"Competitors dropdown has {len(shops)} shops: {', '.join(shops)}", flush=True)
     return render_template_string(NAV_HTML, active=active, cur_key=cur_key, counts=counts or {}, sources=SOURCES,
-                                  settings_options=SETTINGS_OPTIONS)
+                                  settings_options=SETTINGS_OPTIONS, item_options=ITEM_OPTIONS)
 # competitor names for the "Competitor" filter: "Samawa" -> column prefix "samawa" (samawa_link, samawa_stock ...)
 # ============================================================ SECTION 4: competitor table filters
 # Price / stock filters = PRICE_FILTERS, Airtable-style filter fields = FILTER_FIELDS, SQL = filter_sql().

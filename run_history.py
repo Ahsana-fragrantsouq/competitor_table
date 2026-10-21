@@ -291,7 +291,7 @@ def history_page():
     pages = max(1, -(-total // PER_PAGE))
     log(f"[RUN-HISTORY] Page shown to {g.get('user')}: {total} runs" + (f" for {fi}" if fi else "")
         + (f", run {open_run} opened" if open_run else ""))
-    return render_template_string(HIST_HTML, nav_html=competitors_page.render_nav("item", None, counts),
+    return render_template_string(HIST_HTML, nav_html=competitors_page.render_nav("item", "im-history", counts),
                                   nav_css=competitors_page.NAV_CSS, runs=runs, total=total, fi=fi, open_run=open_run,
                                   page=page, pages=pages, actions=ACTIONS, now=datetime.utcnow())
 
