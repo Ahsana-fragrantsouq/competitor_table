@@ -360,6 +360,9 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
  .btnrow .desc-msg{order:3;flex-basis:100%;text-align:right;margin-top:0}
  .btnrow .desc-msg:empty{display:none}
  @media (max-width:640px){ .btnrow{justify-content:flex-start} .btnrow .desc-msg{text-align:left} }
+ .loadrow{display:flex;align-items:center;gap:14px}
+ .histlink{color:var(--gold);font-size:14px}
+ .date .histlink{font-size:13px;color:var(--grey)}
  .none{color:var(--grey)}
  .date{color:var(--grey);font-size:13px;margin-top:10px}
  .empty{background:var(--card);border:1px dashed var(--line);border-radius:16px;padding:28px 20px;text-align:center;color:var(--muted)}
@@ -384,7 +387,8 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
     {% if last.error %}<span class="err">Last load failed: {{ last.error }}</span>{% endif %}
     {% if msg %}<span class="ok">{{ msg }}</span>{% endif %}</span>
   {% if admin %}
-  <form class="load" method="post" action="/item-master/reload"><button type="submit">Load from Airtable now</button></form>
+  <span class="loadrow"><a class="histlink" href="/item-master/history">Run history</a>
+  <form class="load" method="post" action="/item-master/reload"><button type="submit">Load from Airtable now</button></form></span>
   {% endif %}
 </div>
 {% if last.missing %}<div class="info warn">Not found in Airtable (left empty): {{ last.missing|join(', ') }}
@@ -426,7 +430,8 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
   </div>
 
   {# Airtable record id (fi_record_id) is NOT shown - it is only in the database #}
-  {% if r.loaded_at %}<div class="date">Loaded {{ r.loaded_at.strftime('%d %b, %H:%M') }}</div>{% endif %}
+  <div class="date">{% if r.loaded_at %}Loaded {{ r.loaded_at.strftime('%d %b, %H:%M') }}{% endif %}
+    {% if admin %}· <a class="histlink" href="/item-master/history?fi={{ r.fi_record_id }}">Run history</a>{% endif %}</div>
 </div>
 {% endfor %}
 {% if not rows %}<div class="empty">No products{% if not total and not q %} - load from Airtable first{% endif %}.</div>{% endif %}
