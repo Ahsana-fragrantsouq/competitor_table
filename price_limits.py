@@ -161,7 +161,7 @@ def limits_save():
         return v
     try:
         lop, mop = number(body.get("lop"), "LOP"), number(body.get("mop"), "MOP")
-        if not fid.startswith("rec"):
+        if not fid.startswith(("rec", "new")):
             raise ValueError("Wrong product")
         if lop is not None and mop is not None and lop > mop:
             raise ValueError("LOP cannot be higher than MOP")

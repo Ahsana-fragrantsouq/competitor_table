@@ -125,7 +125,7 @@ def link_save():
     body = request.get_json(silent=True) or {}
     fid, shop = str(body.get("fi_record_id") or ""), body.get("shop")
     action, url = body.get("action"), str(body.get("url") or "").strip()
-    if shop not in SHOP_LISTS or action not in ("save", "remove") or not fid.startswith("rec"):
+    if shop not in SHOP_LISTS or action not in ("save", "remove") or not fid.startswith(("rec", "new")):
         return jsonify({"ok": False, "error": "Wrong request"}), 400
     if not HOOKS:
         return jsonify({"ok": False, "error": "not ready (app.py did not call link_edit.init)"}), 500

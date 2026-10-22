@@ -3,7 +3,9 @@
 =============================================================================================
 Same fields as the Airtable form "New Perfume Entry", WITHOUT the prices, + Product type:
   Brand (required, pick one or "+ Add brand") · Perfume Name (required) · Size · Type · Category · Product type · Barcode
-Saved straight into OUR database (table item_master) - NOT in Airtable.
+Saved straight into OUR database - NOT in Airtable - in BOTH tables (one transaction):
+  item_master (Item Master page) + competitor_table (Competitor table page; next match runs find its prices).
+  Not in Airtable -> every Airtable write skips it (app.py in_airtable()); its prices stay in our database.
 Made automatically on Submit (like Airtable did) - NOT shown on the form:
   * SKU          = the brand's SKU Prefix + Next SKU number (table brand_sku, Settings -> Automate), then that
                    brand's Next SKU number + 1. e.g. Afnan AFN 1057 -> SKU AFN1057, Afnan's next = 1058.
@@ -161,9 +163,38 @@ def _conn():
         cur.execute(item_master.IM_CREATE)
         cur.execute(SOURCE_SQL)
         cur.execute(brand_sku.BRAND_SKU_CREATE)          # SKU prefixes table (brand_sku.py)
+        # items made here BEFORE they were also saved in competitor_table -> copy them in once
+        cur.execute("SELECT to_regclass('competitor_table') IS NOT NULL")
+        if cur.fetchone()[0]:
+            cur.execute(f"""INSERT INTO competitor_table ({CT_COLS})
+                            SELECT fi_record_id, {CT_CODE_SQL}, sku, product_name, brand, barcode, perfume_name
+                            FROM item_master im WHERE source = 'website'
+                              AND NOT EXISTS (SELECT 1 FROM competitor_table c WHERE c.fi_record_id = im.fi_record_id)""")
+            if cur.rowcount:
+                log(f"[NEW-ITEM] {cur.rowcount} item(s) made earlier on the website copied into competitor_table")
         conn.commit()
         _ready = True
     return conn
+
+
+# the same product also goes into competitor_table (the Competitor table page) - same database, its own table.
+# french_inventory_code = "SKU/Product name" like Airtable's Item ID (e.g. "AFN1057/Afnan 9 PM 100 ml ...")
+CT_COLS = "fi_record_id, french_inventory_code, sku, product_name, brand, barcode, perfume_name"
+CT_CODE_SQL = "CASE WHEN COALESCE(sku, '') <> '' THEN sku || '/' || product_name ELSE product_name END"
+
+
+def add_to_competitor_table(cur, fid):
+    """Copy the new item_master row into competitor_table (same transaction as the item). Next match runs then
+    find its competitor prices like for every other product. Prices go to OUR database only (not in Airtable)."""
+    cur.execute("SELECT to_regclass('competitor_table') IS NOT NULL")
+    if not cur.fetchone()[0]:
+        log("[NEW-ITEM] competitor_table does not exist yet -> not added there")
+        return 0
+    cur.execute(f"""INSERT INTO competitor_table ({CT_COLS})
+                    SELECT fi_record_id, {CT_CODE_SQL}, sku, product_name, brand, barcode, perfume_name
+                    FROM item_master WHERE fi_record_id = %s
+                    ON CONFLICT (fi_record_id) DO NOTHING""", (fid,))
+    return cur.rowcount
 
 
 def choices(cur):
@@ -257,7 +288,9 @@ def save_item(v, user):
                        VALUES (%s, 'website', NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (fid, sku, v["brand"], v["perfume_name"], v["size"] or None, v["type"] or None,
                      v["category"] or None, v["product_type"] or None, v["barcode"] or None, name))
-        conn.commit()                                    # product + brand's Next SKU number together
+        in_ct = add_to_competitor_table(cur, fid)        # also on the Competitor table page
+        conn.commit()                                    # product (both tables) + brand's Next SKU number together
+        log(f"[NEW-ITEM] {fid}: saved in item_master" + (" + competitor_table" if in_ct else ""))
         log(f"[NEW-ITEM] {user} created {sku or '(no SKU)'} '{name}' -> item_master {fid}")
         return fid, name, sku, None
     except Exception:

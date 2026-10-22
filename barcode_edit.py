@@ -107,7 +107,7 @@ def barcode_save():
     body = request.get_json(silent=True) or {}
     fid = str(body.get("fi_record_id") or "").strip()
     bc = re.sub(r"\s", "", str(body.get("barcode") or ""))
-    if not fid.startswith("rec"):
+    if not fid.startswith(("rec", "new")):
         return jsonify({"ok": False, "error": "Wrong product"}), 400
     if not re.fullmatch(rf"\d{{{MIN_DIGITS},{MAX_DIGITS}}}", bc):
         return jsonify({"ok": False, "error": f"Barcode must be {MIN_DIGITS} to {MAX_DIGITS} digits"}), 400

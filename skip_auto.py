@@ -97,7 +97,7 @@ def no_auto_save():
     if not HOOKS:
         log("[SKIP-AUTO] init() was not called by app.py -> cannot save")
         return jsonify({"ok": False, "error": "not ready (app.py did not call skip_auto.init)"}), 500
-    if not fid.startswith("rec"):
+    if not fid.startswith(("rec", "new")):
         return jsonify({"ok": False, "error": "Wrong product"}), 400
 
     conn = HOOKS["connect"]()

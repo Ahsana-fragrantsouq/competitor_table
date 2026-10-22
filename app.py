@@ -1945,7 +1945,7 @@ def ct_suggestion_route():
     Body (JSON): {"fi_record_id": "recXXX", "shop": "samawa" | "ff" | "vp", "action": "ok" | "notok"}"""
     body = request.get_json(silent=True) or {}
     fid, shop, action = str(body.get("fi_record_id") or ""), body.get("shop"), body.get("action")
-    if shop not in SUGGESTION_SHOPS or action not in ("ok", "notok") or not fid.startswith("rec"):
+    if shop not in SUGGESTION_SHOPS or action not in ("ok", "notok") or not fid.startswith(OWN_ID_PREFIXES):
         return jsonify({"ok": False, "error": "wrong request"}), 400
     label, catalog_sql = SUGGESTION_SHOPS[shop]
     conn = pg_conn()
@@ -1987,10 +1987,24 @@ def ct_suggestion_route():
         conn.close()
 
 
+# Products made with Item Master -> Create a new item (item_create.py) have ids "new..." and are NOT in Airtable.
+# Every Airtable write skips them (one unknown id makes Airtable refuse a whole batch of 10); our database is updated.
+OWN_ID_PREFIXES = ("rec", "new")             # ids a route accepts: rec = from Airtable, new = Create a new item
+
+
+def in_airtable(fid):
+    """True for products that exist in Airtable (record id rec...)."""
+    return str(fid).startswith("rec")
+
+
 def airtable_set_prices(good, tag="PRICES"):
     """Write UAE Price to Airtable for many products ({fi_record_id: price}), 10 per request (Airtable limit),
-    then save our new price + least price in Postgres. Returns (done_ids, failed {id: error})."""
-    fids = list(good)
+    then save our new price + least price in Postgres. Returns (done_ids, failed {id: error}).
+    Products not in Airtable (new...) skip the Airtable part - only our database is updated."""
+    local = [f for f in good if not in_airtable(f)]
+    if local:
+        log(f"[{tag}] {len(local)} product(s) made on our website (not in Airtable) -> price saved in our database only")
+    fids = [f for f in good if in_airtable(f)]
     failed = {}
     for i in range(0, len(fids), 10):
         chunk = fids[i:i + 10]
@@ -2008,7 +2022,7 @@ def airtable_set_prices(good, tag="PRICES"):
             log(f"[{tag}] Airtable updated {i + len(chunk)}/{len(fids)}")
         time.sleep(0.25)                               # Airtable allows 5 requests per second
 
-    done = [f for f in fids if f not in failed]
+    done = [f for f in fids if f not in failed] + local
     conn = pg_conn()
     cur = conn.cursor()
     try:
@@ -2026,6 +2040,9 @@ def airtable_set_prices(good, tag="PRICES"):
 def airtable_set_barcode(fid, barcode):
     """Write OUR barcode to Airtable French Inventories (field F_BARCODE) for ONE product.
     Used by barcode_edit.py ('Edit' barcode on the cards, admins only). Returns (True, None) or (False, error)."""
+    if not in_airtable(fid):                           # made on our website -> only our database (barcode_edit.py)
+        log(f"[BARCODE-EDIT] {fid} is not in Airtable -> Airtable skipped")
+        return True, None
     body = {"records": [{"id": fid, "fields": {F_BARCODE: barcode}}], "typecast": True}
     try:
         r = requests.patch(f"{AT_URL}/{FI_TABLE}", headers=AT_HEADERS, timeout=30, json=body)
@@ -2046,6 +2063,9 @@ def airtable_set_barcode(fid, barcode):
 def airtable_update_fields(fid, fields, tag="AIRTABLE"):
     """Write any fields of ONE French Inventories record, e.g. {"Shopify Description": "..."}.
     Used by description_gen.py ('Create product description'). Returns (True, None) or (False, error)."""
+    if not in_airtable(fid):                           # made on our website -> nothing to write in Airtable
+        log(f"[{tag}] {fid} is not in Airtable -> Airtable skipped")
+        return True, None
     body = {"records": [{"id": fid, "fields": fields}], "typecast": True}
     try:
         r = requests.patch(f"{AT_URL}/{FI_TABLE}", headers=AT_HEADERS, timeout=30, json=body)
@@ -2166,7 +2186,7 @@ def ct_update_prices_route():
             price = round(float(it.get("price")), 2)
         except (TypeError, ValueError):
             skipped.append(fid); continue
-        if fid.startswith("rec") and 0 < price < 100000:
+        if fid.startswith(OWN_ID_PREFIXES) and 0 < price < 100000:
             good[fid] = price
         else:
             skipped.append(fid)
@@ -2312,17 +2332,20 @@ def ct_update_price_route():
         price = round(float(body.get("price")), 2)
     except (TypeError, ValueError):
         return jsonify({"ok": False, "error": "Price must be a number"}), 400
-    if not fid.startswith("rec") or not (0 < price < 100000):
+    if not fid.startswith(OWN_ID_PREFIXES) or not (0 < price < 100000):
         return jsonify({"ok": False, "error": "Wrong product or price (must be between 0 and 100,000)"}), 400
     log(f"[PRICE] Update requested: {fid} -> AED {price}")
 
     # 1) Airtable: French Inventories -> UAE Price (needs data.records:write on the token)
-    r = requests.patch(f"{AT_URL}/{FI_TABLE}/{fid}", headers=AT_HEADERS,
-                       json={"fields": {F_UAE_PRICE: price}, "typecast": True}, timeout=30)
-    if not r.ok:
-        log(f"[PRICE] Airtable error {r.status_code}: {r.text[:300]}")
-        return jsonify({"ok": False, "error": f"Airtable {r.status_code}: {r.text[:200]}"}), 502
-    log(f"[PRICE] Airtable updated: {fid} UAE Price = {price}")
+    if in_airtable(fid):
+        r = requests.patch(f"{AT_URL}/{FI_TABLE}/{fid}", headers=AT_HEADERS,
+                           json={"fields": {F_UAE_PRICE: price}, "typecast": True}, timeout=30)
+        if not r.ok:
+            log(f"[PRICE] Airtable error {r.status_code}: {r.text[:300]}")
+            return jsonify({"ok": False, "error": f"Airtable {r.status_code}: {r.text[:200]}"}), 502
+        log(f"[PRICE] Airtable updated: {fid} UAE Price = {price}")
+    else:
+        log(f"[PRICE] {fid} made on our website (not in Airtable) -> price saved in our database only")
 
     # 2) Postgres: our price + least price / least priced website for the page
     conn = pg_conn()
