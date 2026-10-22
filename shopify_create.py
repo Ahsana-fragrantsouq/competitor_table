@@ -74,6 +74,17 @@ SHOPIFY_ID_SQL = "ALTER TABLE item_master ADD COLUMN IF NOT EXISTS shopify_id TE
 WEB_CSS = """ /* Create in website button (admins only, shopify_create.py) */
  .web-btn:disabled{opacity:.45;cursor:not-allowed}
  .web-btn.busy:disabled{cursor:wait}
+ /* "Create this product ...?" box with the "Perfume images uploaded" checkbox (OK is off until it is ticked) */
+ .webask-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:1000}
+ .webask{background:#fff;color:#1c1b19;border-radius:14px;padding:22px 24px;width:min(440px,calc(100vw - 32px));
+         box-shadow:0 10px 40px rgba(0,0,0,.4);font-size:15px}
+ .webask p{margin:0 0 14px}
+ .webask label{display:flex;gap:8px;align-items:center;font-weight:600;cursor:pointer}
+ .webask label input{width:18px;height:18px}
+ .webask .btns{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
+ .webask button{border:0;border-radius:18px;padding:8px 20px;font-weight:600;font-size:14px;cursor:pointer}
+ .webask .ok{background:#0b57d0;color:#fff} .webask .ok:disabled{opacity:.4;cursor:not-allowed}
+ .webask .no{background:#dfe5f3;color:#0b57d0}
 """
 
 # r = product row; goes under the "Create product description" button. OFF while there is no description.
@@ -93,16 +104,38 @@ WEB_JS = """  // ---- Create in website (admins only, shopify_create.py) ----
     a.style.color = "inherit";
     msg.appendChild(document.createTextNode(" · ")); msg.appendChild(a);
   }
+  // "Create this product ...?" box: OK only works after "Perfume images uploaded" is ticked -> Promise true / false
+  function webAsk() {
+    return new Promise(function (done) {
+      var bg = document.createElement("div");
+      bg.className = "webask-bg";
+      bg.innerHTML = '<div class="webask" role="dialog"><p>Create this product on fragrantsouq.com (Shopify) now?</p>' +
+        '<label><input type="checkbox" class="imgs"> Perfume images uploaded</label>' +
+        '<div class="btns"><button type="button" class="ok" disabled>OK</button>' +
+        '<button type="button" class="no">Cancel</button></div></div>';
+      var box = bg.querySelector(".imgs"), ok = bg.querySelector(".ok");
+      box.onchange = function () { ok.disabled = !box.checked; };          // OK on/off with the checkbox
+      function close(v) { document.removeEventListener("keydown", esc); bg.remove(); done(v); }
+      function esc(e) { if (e.key === "Escape") close(false); }
+      ok.onclick = function () { if (box.checked) close(true); };
+      bg.querySelector(".no").onclick = function () { close(false); };
+      bg.onclick = function (e) { if (e.target === bg) close(false); };   // click outside = Cancel
+      document.addEventListener("keydown", esc);
+      document.body.appendChild(bg);
+      box.focus();
+    });
+  }
   async function createWeb(fi, btn, force) {
     var msg = document.getElementById("webmsg-" + fi);
-    if (!force && !confirm("Create this product on fragrantsouq.com (Shopify) now?")) return;
+    if (!force && !(await webAsk())) { console.log("[WEB-CREATE] " + fi + ": cancelled"); return; }
+    console.log("[WEB-CREATE] " + fi + ": admin ticked 'Perfume images uploaded'");
     btn.disabled = true; btn.classList.add("busy"); btn.textContent = "Creating ... (up to 2 min)";
     msg.className = "desc-msg"; msg.textContent = "";
     console.log("[WEB-CREATE] " + fi + ": sending to the Shopify API" + (force ? " (again)" : ""));
     var again = false, runId = null;
     try {
       var r = await fetch("@@SAVE_URL@@", {method: "POST", headers: {"Content-Type": "application/json"},
-                                            body: JSON.stringify({fi_record_id: fi, force: !!force})});
+                                            body: JSON.stringify({fi_record_id: fi, force: !!force, images_uploaded: true})});
       var d = await r.json().catch(function () { return {ok: false, error: "HTTP " + r.status}; });
       runId = d.run_id;
       if (d.already) {                 // already has a Shopify ID -> ask before making a duplicate
@@ -307,6 +340,9 @@ def create_in_website():
     fid = (body.get("fi_record_id") or "").strip()
     if not fid.startswith(("rec", "new")):            # rec = from Airtable, new = Create a new item
         return jsonify({"ok": False, "error": "no product given"}), 400
+    if body.get("images_uploaded") is not True:       # the box's "Perfume images uploaded" must be ticked
+        log(f"[WEB-CREATE] {fid}: refused - 'Perfume images uploaded' not ticked")
+        return jsonify({"ok": False, "error": "tick 'Perfume images uploaded' first"}), 400
     link = our_link(fid)                               # already on fragrantsouq.com -> never create it again
     if link:
         log(f"[WEB-CREATE] {fid}: refused - already on our website ({link})")
