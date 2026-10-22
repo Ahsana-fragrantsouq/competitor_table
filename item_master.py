@@ -540,6 +540,7 @@ def item_master_page():
             link_cols, link_join = "NULL AS our_link, NULL AS our_title, NULL AS our_stock", ""
         cur.execute(f"SELECT im.fi_record_id, im.loaded_at, {', '.join('im.' + c for c in SHOWN)}, "
                     f"(COALESCE(im.shopify_description, '') <> '') AS has_desc, "     # button asks before replacing
+                    f"(TRIM(CONCAT(im.top_notes, im.middle_notes, im.base_notes)) <> '') AS has_notes, "  # no notes -> description button off
                     f"{link_cols} FROM item_master im {link_join} {where} "
                     f"ORDER BY LOWER(im.brand), LOWER(im.product_name) LIMIT %s OFFSET %s",
                     params + [PER_PAGE, (page - 1) * PER_PAGE])

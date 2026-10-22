@@ -52,6 +52,7 @@ DESC_CSS = """ /* Create product description button (admins only, description_ge
  .desc-btn{display:block;margin:8px 0 0 auto;background:#f2d675;color:#1c1b19;border:0;border-radius:10px;padding:8px 14px;
            font-weight:600;font-size:14px;cursor:pointer}
  .desc-btn:disabled{opacity:.6;cursor:wait}
+ .desc-btn:disabled[title]{opacity:.45;cursor:not-allowed}     /* off: product has no notes */
  .desc-msg{font-size:13px;margin-top:6px;max-width:320px;margin-left:auto}
  .desc-msg.ok{color:#8cc58c} .desc-msg.err{color:#e0806c}
  .desc-msg{white-space:normal}
@@ -61,6 +62,7 @@ DESC_CSS = """ /* Create product description button (admins only, description_ge
 # r = product row; goes right under the "View on fragrantsouq.com" link
 DESC_HTML = """{% if admin %}
       <button type="button" class="desc-btn" data-has="{{ 1 if r.has_desc else 0 }}"
+              {% if not r.has_notes %}disabled title="Add the notes (top / middle / base) first"{% endif %}
               onclick="createDesc('{{ r.fi_record_id }}', this)">Create product description</button>
       <div class="desc-msg" id="descmsg-{{ r.fi_record_id }}"></div>
       {% endif %}"""
@@ -172,6 +174,9 @@ def create_description():
                 raise RuntimeError("product not in Item Master - click 'Load from Airtable now' first")
             st["output"] = f
             run.product = f.get("product_name") or None
+        if not any((f.get(k) or "").strip() for k in ("top_notes", "middle_notes", "base_notes")):
+            log(f"[DESC] {fid}: refused - top / middle / base notes are all empty")
+            raise RuntimeError("Top, middle and base notes are empty in Item Master - add the notes first")
         payload = {"perfume_name": (f.get("product_name") or "").strip(), "brand_name": (f.get("brand") or "").strip(),
                    "top_notes": (f.get("top_notes") or "").strip(), "middle_notes": (f.get("middle_notes") or "").strip(),
                    "base_notes": (f.get("base_notes") or "").strip(), "gift_items_list": gift_list(f.get("gift_items"))}
