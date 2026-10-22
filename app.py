@@ -121,7 +121,7 @@ import run_history                                 # Run history of the Item Mas
 import item_create                                 # Item Master -> Create a new item (item_create.py)
 from item_create import new_item_bp                # /item-master/new
 import brand_sku                                   # SKU Prefix + Next SKU number per brand (brand_sku.py)
-from brand_sku import brand_sku_bp                 # POST /settings/brand-sku/load, GET /brand-sku/load
+from brand_sku import brand_sku_bp                 # GET /brand-sku/load?secret= (no page button)
 from run_history import history_bp                 # /item-master/history
 from branded_perfume import branded_perfume_bp     # /branded-perfume/test, /load, /run, /status
 from essenzi import essenzi_bp                     # /essenzi/load, /essenzi/status
@@ -152,7 +152,7 @@ app.register_blueprint(desc_bp)                    # 'Create product description
 app.register_blueprint(web_bp)                     # 'Create in website' button (shopify_create.py)
 app.register_blueprint(history_bp)                 # Run history page of those buttons (run_history.py)
 app.register_blueprint(new_item_bp)                # Create a new item form (item_create.py)
-app.register_blueprint(brand_sku_bp)               # Load SKU prefixes from Airtable (brand_sku.py)
+app.register_blueprint(brand_sku_bp)               # /brand-sku/load?secret= (brand_sku.py)
 app.register_blueprint(branded_perfume_bp)
 app.register_blueprint(essenzi_bp)
 app.register_blueprint(vperfumes_bp)
