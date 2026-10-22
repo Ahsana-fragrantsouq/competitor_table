@@ -5,16 +5,19 @@ Same fields as the Airtable form "New Perfume Entry", WITHOUT the prices, + Prod
   Brand (required, pick one or "+ Add brand") · Perfume Name (required) · Size · Type · Category · Product type · Barcode
 Saved straight into OUR database (table item_master) - NOT in Airtable.
 Made automatically on Submit (like Airtable did) - NOT shown on the form:
-  * Product Name = Brand + Perfume Name + Size + Type + Category + Product type
+  * SKU          = the brand's SKU Prefix + Next SKU number (table brand_sku, Settings -> Automate), then that
+                   brand's Next SKU number + 1. e.g. Afnan AFN 1057 -> SKU AFN1057, Afnan's next = 1058.
+                   Brand without a prefix (e.g. added with "+ Add brand") -> saved without SKU.
+  * Product Name = Brand + Perfume Name + Size + Category + Type + Product type
                    e.g. "Abdul Samad Al Qurashi Amber touch 30 ml EDP Unisex Spray"
 The new row: id "new" + 14 letters/digits (Airtable ids start with "rec"), source = 'website'
--> "Load from Airtable now" never deletes or changes it. SKU: NOT made yet (saved empty) - added later. After saving, the Item Master shows it and
+-> "Load from Airtable now" never deletes or changes it. After saving, the Item Master shows it and
 "Create product description" / "Create in website" work for it like for every other product.
 
 Where things are (change them here):
   SECTION 1  settings      -> SELECT_COLS (dropdown boxes)
   SECTION 2  page HTML     -> NEW_HTML (the form; product name is NOT shown, made on Submit)
-  SECTION 3  database      -> choices(), product_name(), clean_form(), save_item()
+  SECTION 3  database      -> choices(), product_name(), take_sku(), clean_form(), save_item()
   SECTION 4  routes        -> GET / POST /item-master/new
   SECTION 5  hooks         -> init(connect)
 """
@@ -29,6 +32,7 @@ from flask import Blueprint, request, render_template_string, redirect, g
 
 import competitors_page                     # menu bar (render_nav, NAV_CSS) + menu counts
 import item_master                          # IM_CREATE (table + columns)
+import brand_sku                            # SKU Prefix + Next SKU number per brand (brand_sku.py)
 from auth import is_admin
 
 new_item_bp = Blueprint("item_create", __name__)
@@ -156,6 +160,7 @@ def _conn():
         cur = conn.cursor()
         cur.execute(item_master.IM_CREATE)
         cur.execute(SOURCE_SQL)
+        cur.execute(brand_sku.BRAND_SKU_CREATE)          # SKU prefixes table (brand_sku.py)
         conn.commit()
         _ready = True
     return conn
@@ -171,9 +176,35 @@ def choices(cur):
 
 
 def product_name(v):
-    """Brand + Perfume Name + Size + Type + Category + Product type (empty ones left out)."""
-    return " ".join(x for x in [v.get("brand"), v.get("perfume_name"), v.get("size"), v.get("type"),
-                                v.get("category"), v.get("product_type")] if x)
+    """Brand + Perfume Name + Size + Category + Type + Product type (empty ones left out)."""
+    return " ".join(x for x in [v.get("brand"), v.get("perfume_name"), v.get("size"), v.get("category"),
+                                v.get("type"), v.get("product_type")] if x)
+
+
+def take_sku(cur, brand):
+    """SKU for a new product of this brand = SKU prefix + Next SKU number from brand_sku (brand_sku.py),
+    then Next SKU number + 1 in brand_sku. e.g. Afnan: AFN + 1057 -> SKU AFN1057, Afnan's next becomes 1058.
+    The brand row is LOCKED (FOR UPDATE) until the caller commits -> two people saving at the same time never
+    get the same SKU. A number already used in Item Master is skipped. Returns (sku, None) or (None, reason)."""
+    cur.execute("SELECT brand, sku_prefix, next_sku_number FROM brand_sku WHERE LOWER(brand) = LOWER(%s) FOR UPDATE",
+                (brand,))
+    row = cur.fetchone()
+    if not row:
+        return None, f"brand '{brand}' is not in the brand table (Settings -> Automate -> Load SKU prefixes)"
+    _, prefix, nxt = row
+    if not prefix or nxt is None:
+        return None, f"brand '{brand}' has no SKU Prefix / Next SKU number"
+    n = int(nxt)
+    while True:                                          # never give a SKU that is already used
+        cur.execute("SELECT 1 FROM item_master WHERE UPPER(TRIM(sku)) = %s LIMIT 1", (f"{prefix}{n}".upper(),))
+        if not cur.fetchone():
+            break
+        log(f"[NEW-ITEM] SKU {prefix}{n} is already used -> trying {prefix}{n + 1}")
+        n += 1
+    cur.execute("UPDATE brand_sku SET next_sku_number = %s, updated_at = NOW() WHERE LOWER(brand) = LOWER(%s)",
+                (n + 1, brand))
+    log(f"[NEW-ITEM] SKU {prefix}{n} for brand '{brand}' -> its Next SKU number is now {n + 1}")
+    return f"{prefix}{n}", None
 
 
 def new_id():
@@ -204,8 +235,9 @@ def clean_form(form, opts):
 
 
 def save_item(v, user):
-    """Make the product name, check the barcode is not used yet, insert (no SKU yet).
-    Returns (new id, product name, None) or (None, None, problem)."""
+    """Make the product name + SKU (take_sku), check the barcode is not used yet, insert - ONE transaction:
+    the new product and the brand's new Next SKU number are saved together or not at all.
+    Returns (new id, product name, sku or None, None) or (None, None, None, problem)."""
     conn = _conn()
     try:
         cur = conn.cursor()
@@ -213,18 +245,24 @@ def save_item(v, user):
             cur.execute("SELECT sku, product_name FROM item_master WHERE barcode = %s LIMIT 1", (v["barcode"],))
             same = cur.fetchone()
             if same:
-                return None, None, f"Barcode {v['barcode']} is already used by " + " ".join(
+                return None, None, None, f"Barcode {v['barcode']} is already used by " + " ".join(
                     x for x in [same[0], f"'{same[1]}'"] if x)
         name = product_name(v)
+        sku, why = take_sku(cur, v["brand"])
+        if not sku:                                      # e.g. a brand added with "+ Add brand": no prefix yet
+            log(f"[NEW-ITEM] No SKU for '{name}': {why} -> saved without SKU")
         fid = new_id()
-        cur.execute("""INSERT INTO item_master (fi_record_id, source, loaded_at, brand, perfume_name, size, type,
+        cur.execute("""INSERT INTO item_master (fi_record_id, source, loaded_at, sku, brand, perfume_name, size, type,
                                                 category, product_type, barcode, product_name)
-                       VALUES (%s, 'website', NOW(), %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (fid, v["brand"], v["perfume_name"], v["size"] or None, v["type"] or None,
+                       VALUES (%s, 'website', NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (fid, sku, v["brand"], v["perfume_name"], v["size"] or None, v["type"] or None,
                      v["category"] or None, v["product_type"] or None, v["barcode"] or None, name))
-        conn.commit()
-        log(f"[NEW-ITEM] {user} created '{name}' (no SKU yet) -> item_master {fid}")
-        return fid, name, None
+        conn.commit()                                    # product + brand's Next SKU number together
+        log(f"[NEW-ITEM] {user} created {sku or '(no SKU)'} '{name}' -> item_master {fid}")
+        return fid, name, sku, None
+    except Exception:
+        conn.rollback()                                  # nothing half-saved
+        raise
     finally:
         conn.close()
 
@@ -261,13 +299,14 @@ def new_item():
         conn.close()
     v, errors = clean_form(request.form, opts)
     if not errors:
-        fid, name, problem = save_item(v, g.get("user"))
+        fid, name, sku, problem = save_item(v, g.get("user"))
         if problem:
             errors.append(problem)
     if errors:
         log(f"[NEW-ITEM] Not saved for {g.get('user')}: {errors}")
         return _page(v, errors, status=400)
-    return redirect("/item-master?" + urlencode({"q": fid, "msg": f"New item created: {name}"}))
+    msg = f"New item {sku} created: {name}" if sku else f"New item created (no SKU - brand has no SKU prefix): {name}"
+    return redirect("/item-master?" + urlencode({"q": sku or fid, "msg": msg}))
 
 
 # ============================================================ SECTION 5: hooks (called once from app.py)

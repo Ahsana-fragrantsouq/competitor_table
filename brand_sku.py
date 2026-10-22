@@ -4,24 +4,26 @@ Brand SKU prefix + next SKU number  (shown on Settings -> Automate, next to each
 OUR copy (table brand_sku) of the Airtable "brands" table fields "SKU Prefix" and "Next sku number",
 so new SKUs can later be made from our database instead of Airtable.
   brand_sku: brand (as written in Airtable) · sku_prefix (e.g. AAK) · next_sku_number (e.g. 1005)
-Filled by "Load SKU prefixes from Airtable" on the Automate page (admins) or /brand-sku/load?secret=XXX.
-Every load copies ALL brands again (Airtable values replace ours) - safe to repeat.
+Filled from Airtable ONCE (done). The Automate page button was removed - our table is the master now; it is
+changed by Create a new item (Next SKU number + 1). Re-copy from Airtable only if ever needed: /brand-sku/load?secret=XXX
+Every load copies ALL brands again - safe to repeat. Next SKU number: the HIGHER of ours / Airtable's is kept
+(Create a new item raises ours when it makes a SKU - an older Airtable number never brings it back down).
 Read it with:  python sql.py "SELECT * FROM brand_sku ORDER BY brand"
 
 Where things are (change them here):
   SECTION 1  settings      -> Airtable field names (F_PREFIX, F_NEXT)
   SECTION 2  table         -> BRAND_SKU_CREATE
-  SECTION 3  load + read   -> load_from_airtable(), get_map() (used by competitors_page.py Automate page)
-  SECTION 4  routes        -> POST /settings/brand-sku/load (admin button), GET /brand-sku/load?secret=
+  SECTION 3  load + read   -> load_from_airtable(), get_map() (used by competitors_page.py Automate page;
+                              by name, else by Airtable brand record id when the brand was renamed)
+  SECTION 4  routes        -> GET /brand-sku/load?secret= (no page button)
   SECTION 5  hooks         -> init(): database + Airtable reader from app.py
 """
 
 import re
 import time
 
-from flask import Blueprint, request, jsonify, redirect, g
+from flask import Blueprint, request, jsonify, g
 
-from auth import is_admin
 
 brand_sku_bp = Blueprint("brand_sku", __name__)
 
@@ -89,7 +91,9 @@ def load_from_airtable():
             cur.execute("""INSERT INTO brand_sku (brand, sku_prefix, next_sku_number, airtable_id, updated_at)
                            VALUES (%s, %s, %s, %s, NOW())
                            ON CONFLICT ((LOWER(brand))) DO UPDATE SET brand = EXCLUDED.brand,
-                               sku_prefix = EXCLUDED.sku_prefix, next_sku_number = EXCLUDED.next_sku_number,
+                               sku_prefix = EXCLUDED.sku_prefix,
+                               -- keep the HIGHER number: our website already raised it when it made SKUs
+                               next_sku_number = GREATEST(brand_sku.next_sku_number, EXCLUDED.next_sku_number),
                                airtable_id = EXCLUDED.airtable_id, updated_at = NOW()""", (brand, prefix, nxt, rid))
         conn.commit()
     finally:
@@ -100,37 +104,42 @@ def load_from_airtable():
     return summary
 
 
+def _vals(r):
+    return list(r.values()) if isinstance(r, dict) else list(r)
+
+
 def get_map(cur):
-    """{brand lower case: (sku_prefix, next_sku_number)} for the Automate page ({} when never loaded)."""
-    cur.execute("SELECT to_regclass('brand_sku') IS NOT NULL")
-    row = cur.fetchone()
-    if not (row[0] if not isinstance(row, dict) else list(row.values())[0]):
+    """{brand lower case: (sku_prefix, next_sku_number, airtable_name)} for the Automate page ({} = never loaded).
+    1. by NAME (brand_sku.brand = competitor_table.brand, any case)          -> airtable_name None
+    2. name not found (brand renamed in Airtable after the last load-fi, e.g. "Al Majed for Oud" -> "Al Majed Oud"):
+       by the Airtable BRAND RECORD ID, which never changes: competitor_table product -> item_master.airtable_fields
+       "Brand" (record id) -> brand_sku.airtable_id                       -> airtable_name = the current Airtable name"""
+    cur.execute("SELECT to_regclass('brand_sku') IS NOT NULL AS a, to_regclass('item_master') IS NOT NULL AS b, "
+                "to_regclass('competitor_table') IS NOT NULL AS c")       # named: a dict cursor needs names
+    has_sku, has_im, has_ct = _vals(cur.fetchone())
+    if not has_sku:
         return {}
-    cur.execute("SELECT LOWER(brand), sku_prefix, next_sku_number FROM brand_sku")
-    out = {}
-    for r in cur.fetchall():
-        vals = list(r.values()) if isinstance(r, dict) else r
-        out[vals[0]] = (vals[1], vals[2])
+    cur.execute("SELECT LOWER(brand) AS k, sku_prefix, next_sku_number FROM brand_sku")
+    out = {v[0]: (v[1], v[2], None) for v in map(_vals, cur.fetchall())}
+    if has_im and has_ct:
+        cur.execute("""SELECT DISTINCT ON (LOWER(ct.brand)) LOWER(ct.brand) AS k, bs.sku_prefix, bs.next_sku_number,
+                              bs.brand AS at_name
+                       FROM competitor_table ct
+                       JOIN item_master im ON im.fi_record_id = ct.fi_record_id
+                       JOIN brand_sku bs ON bs.airtable_id = im.airtable_fields->'Brand'->>0
+                       WHERE COALESCE(ct.brand, '') <> ''
+                       ORDER BY LOWER(ct.brand), bs.brand""")
+        renamed = 0
+        for key, prefix, nxt, at_name in map(_vals, cur.fetchall()):
+            if key not in out:
+                out[key] = (prefix, nxt, at_name)
+                renamed += 1
+        if renamed:
+            log(f"[BRAND-SKU] {renamed} brand(s) found by Airtable record id (name changed in Airtable since load-fi)")
     return out
 
 
 # ============================================================ SECTION 4: routes
-@brand_sku_bp.post("/settings/brand-sku/load")
-def brand_sku_load_button():
-    """Automate page button (admins): load from Airtable, back to the page with a message."""
-    if not is_admin():
-        log(f"[BRAND-SKU] Refused: {g.get('user')} is not an admin")
-        return jsonify({"error": "admins only"}), 403
-    try:
-        s = load_from_airtable()
-        msg = f"SKU prefixes loaded from Airtable: {s['brands']} brands ({s['with_prefix']} with a prefix)."
-    except Exception as ex:
-        log(f"[BRAND-SKU] Load failed: {ex}")
-        msg = f"SKU prefixes NOT loaded: {str(ex)[:150]}"
-    log(f"[BRAND-SKU] {g.get('user')}: {msg}")
-    return redirect("/settings/automate?msg=" + msg.replace(" ", "+").replace("&", "and"))
-
-
 @brand_sku_bp.get("/brand-sku/load")
 def brand_sku_load_url():
     """/brand-sku/load?secret=XXX -> same load (for scripts)."""
