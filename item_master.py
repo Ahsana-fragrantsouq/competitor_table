@@ -19,8 +19,7 @@ they are only in the database:
 
 When it is loaded from Airtable:
   (NOT automatic: only when someone starts it)
-  - admin button "Load from Airtable now" on the page
-  - /item-master/load?secret=XXX   (progress: /item-master/status)
+  - /item-master/load?secret=XXX   (progress: /item-master/status)   (the page button was removed)
 Products deleted in Airtable are deleted from item_master at the next full load.
 What our website created is never overwritten by a load: shopify_id (Create in website) and a description made by
 Create product description (desc_created_at set) - see WEBSITE_COLS_SQL.
@@ -36,7 +35,7 @@ Where things are (change them here):
   SECTION 4  load          -> load_all(): Airtable -> item_master, summary saved in app_settings 'item_master'
   SECTION 5  (removed: there is no automatic daily load)
   SECTION 6  page HTML     -> IM_HTML
-  SECTION 7  routes        -> /item-master, /item-master/reload (admin), /item-master/load, /item-master/status
+  SECTION 7  routes        -> /item-master, /item-master/load, /item-master/status
   SECTION 8  hooks         -> init(): Airtable reader + database connection from app.py
 """
 
@@ -49,7 +48,7 @@ from datetime import datetime
 
 import psycopg2.extras
 from psycopg2.extras import execute_values
-from flask import Blueprint, request, jsonify, render_template_string, redirect, g
+from flask import Blueprint, request, jsonify, render_template_string, g
 
 import competitors_page                     # menu bar (render_nav, NAV_CSS) + menu counts
 import description_gen                      # 'Create product description' button (description_gen.py)
@@ -367,9 +366,8 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
  .bar{display:flex;gap:8px;margin:14px 0 6px;flex-wrap:wrap}
  .bar input{flex:1;min-width:0;background:var(--card);color:var(--text);border:1px solid var(--line);
             border-radius:12px;padding:13px 14px;font-size:16px}
- .bar button,.load button{background:#f2d675;color:#1c1b19;border:0;border-radius:12px;padding:0 18px;
+ .bar button{background:#f2d675;color:#1c1b19;border:0;border-radius:12px;padding:0 18px;
             font-size:16px;font-weight:600;cursor:pointer;min-height:48px}
- .load button{min-height:0;padding:9px 16px;font-size:14px}
  .info{color:var(--muted);font-size:14px;margin:6px 2px 14px;display:flex;justify-content:space-between;
        align-items:center;gap:12px;flex-wrap:wrap}
  .info b{color:var(--text)} .warn{color:#e0a36c} .err{color:#e0806c} .ok{color:#8cc58c}
@@ -429,10 +427,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
     {% if running %}<span class="ok">Loading from Airtable now ... reload this page in a minute.</span>{% endif %}
     {% if last.error %}<span class="err">Last load failed: {{ last.error }}</span>{% endif %}
     {% if msg %}<span class="ok">{{ msg }}</span>{% endif %}</span>
-  {% if admin %}
-  {# Run history is in the menu: Item Master -> Run history #}
-  <form class="load" method="post" action="/item-master/reload"><button type="submit">Load from Airtable now</button></form>
-  {% endif %}
+  {# "Load from Airtable now" button REMOVED - load only with /item-master/load?secret=XXX #}
 </div>
 {% if last.missing %}<div class="info warn">Not found in Airtable (left empty): {{ last.missing|join(', ') }}
   - tell Claude the real Airtable field names.</div>{% endif %}
@@ -556,21 +551,9 @@ def item_master_page():
         running=_load_lock.locked(), admin=is_admin(), msg=request.args.get("msg"))
 
 
-@item_master_bp.post("/item-master/reload")
-def item_master_reload():
-    """Admin button 'Load from Airtable now' -> background load, back to the page."""
-    if not is_admin():
-        log(f"[ITEM-MASTER] Load refused: {g.get('user')} is not an admin")
-        return jsonify({"error": "admins only"}), 403
-    started = start_load(g.get("user") or "admin")
-    log(f"[ITEM-MASTER] Load button by {g.get('user')}: {'started' if started else 'already running'}")
-    msg = "Loading from Airtable started." if started else "A load is already running."
-    return redirect("/item-master?msg=" + msg.replace(" ", "+"))
-
-
 @item_master_bp.get("/item-master/load")
 def item_master_load_url():
-    """/item-master/load?secret=XXX -> background load (same as the admin button)."""
+    """/item-master/load?secret=XXX -> background load (the only way to load - no page button)."""
     secret = _hooks.get("run_secret")
     if not g.get("user") and (not secret or request.args.get("secret") != secret):
         return jsonify({"error": "unauthorized"}), 401
