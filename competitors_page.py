@@ -591,6 +591,9 @@ HTML = """
  .newcount a{color:#6cc98c}
  a.link{color:var(--gold)}
  .in{color:var(--green)} .out{color:var(--red)} .gone{color:var(--grey)}
+ /* "New" tag above the stock of products added by the last run (shop tabs) */
+ .stockbox{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+ .newtag{padding:1px 9px;border-radius:10px;background:rgba(108,201,140,.18);color:#6cc98c;font-size:12px;font-weight:700}
  .date{color:var(--grey);font-size:13px;margin-top:8px}
  .empty{background:var(--card);border:1px dashed var(--line);border-radius:16px;padding:28px 20px;text-align:center;color:var(--muted)}
  .pager{display:flex;justify-content:space-between;align-items:center;margin-top:16px}
@@ -656,7 +659,7 @@ HTML = """
       <option value="Not on site" {% if stock=='Not on site' %}selected{% endif %}>Not on site</option>
       {# products not linked to any of our products #}
       <option value="missing" {% if stock=='missing' %}selected{% endif %}>Missing items</option>
-      {% if new_info %}<option value="new" {% if stock=='new' %}selected{% endif %}>New products</option>{% endif %}
+      {% if src.kind != 'competitor' %}<option value="new" {% if stock=='new' %}selected{% endif %}>New products</option>{% endif %}
     </select>{% endif %}
     {% if src.kind == 'competitor' %}
     <button type="button" class="fbtn {% if conds %}on{% endif %}" onclick="toggleFilter()">
@@ -840,7 +843,11 @@ HTML = """
     <div class="sub">{{ src.label }}{% if r.volume %} · {{ r.volume }}{% endif %}</div>
     <div class="row">
       <span class="price">{% if r.price is not none %}AED {{ '%.2f' % r.price }}{% else %}No price{% endif %}</span>
-      <span class="{{ 'in' if r.stock=='In stock' else ('gone' if r.stock=='Not on site' else 'out') }}">{{ r.stock or '' }}</span>
+      <span class="stockbox">
+        {# added by the last run (row number above new_after_id) -> "New" #}
+        {% if new_info and new_info.n and r.row_id and r.row_id > new_info.after_id %}<span class="newtag">New</span>{% endif %}
+        <span class="{{ 'in' if r.stock=='In stock' else ('gone' if r.stock=='Not on site' else 'out') }}">{{ r.stock or '' }}</span>
+      </span>
     </div>
     <div class="row">
       {% if r.url %}<a class="link" href="{{ r.url }}" target="_blank">View product</a>{% else %}<span></span>{% endif %}
@@ -1241,11 +1248,14 @@ def competitors():
                         params += [f"%{b}%" for b in picked]
                     print(f"[BRAND] Filter {src['label']} by {len(picked)} brand(s): {', '.join(picked)}", flush=True)
             if stock == "new":                              # "N new products added" -> Show / dropdown "New products"
-                if new_info:
+                if new_info and new_info["n"]:
                     where.append(f"{src['table']}.id > %s")
                     params.append(new_info["after_id"])
                     print(f"[NEW] Showing the {new_info['n']} new products of {src['label']} "
                           f"(added {new_info['date']}, row number above {new_info['after_id']})", flush=True)
+                else:                                       # no new products in the last run -> empty list
+                    where.append("FALSE")
+                    print(f"[NEW] {src['label']}: no new products in the last run -> nothing to show", flush=True)
             elif stock == "missing":                        # dropdown option "Missing items"
                 if missing_sql:
                     where.append(missing_sql)
@@ -1277,6 +1287,8 @@ def competitors():
                 f"{'NULL' if (not expr or (expr.isidentifier() and expr not in existing)) else expr} AS {alias}"
                 for alias, expr in c.items())
             select += f", {missing_sql or 'FALSE'} AS missing"     # True -> card shows "Missing item"
+            if src.get("kind") != "competitor":
+                select += f", {src['table']}.id AS row_id"         # row_id > new_after_id -> card shows "New"
             cur.execute(
                 f"SELECT {select} FROM {src['table']} {where_sql} ORDER BY id LIMIT %s OFFSET %s",
                 params + [PER_PAGE, (page - 1) * PER_PAGE],
