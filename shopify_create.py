@@ -77,7 +77,8 @@ WEB_CSS = """ /* Create in website button (admins only, shopify_create.py) */
 """
 
 # r = product row; goes under the "Create product description" button. OFF while there is no description.
-WEB_HTML = """{% if admin %}
+# HIDDEN when the product is already on our website (it has a "View on fragrantsouq.com" link = competitor_table.our_link)
+WEB_HTML = """{% if admin and not r.our_link %}
       <button type="button" class="desc-btn web-btn" id="webbtn-{{ r.fi_record_id }}"
               {% if not r.has_desc %}disabled title="Create the product description first"{% endif %}
               onclick="createWeb('{{ r.fi_record_id }}', this)">Create in website</button>
@@ -277,6 +278,24 @@ def set_metafield(owner_id, namespace, key, value):
 
 
 # ============================================================ SECTION 5: route
+def our_link(fid):
+    """competitor_table.our_link of this product (its fragrantsouq.com page), or None."""
+    conn = _hooks["connect"]()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT to_regclass('competitor_table') IS NOT NULL")
+        if not cur.fetchone()[0]:
+            return None
+        cur.execute("SELECT our_link FROM competitor_table WHERE fi_record_id = %s", (fid,))
+        row = cur.fetchone()
+        return (row[0] or None) if row else None
+    except Exception as ex:                            # e.g. our_link column not created yet -> no block
+        log(f"[WEB-CREATE] could not read our_link for {fid}: {ex}")
+        return None
+    finally:
+        conn.close()
+
+
 @web_bp.post(SAVE_URL)
 def create_in_website():
     """Button 'Create in website': item_master -> Shopify (same steps as the API) -> item_master.shopify_id.
@@ -288,6 +307,10 @@ def create_in_website():
     fid = (body.get("fi_record_id") or "").strip()
     if not fid.startswith(("rec", "new")):            # rec = from Airtable, new = Create a new item
         return jsonify({"ok": False, "error": "no product given"}), 400
+    link = our_link(fid)                               # already on fragrantsouq.com -> never create it again
+    if link:
+        log(f"[WEB-CREATE] {fid}: refused - already on our website ({link})")
+        return jsonify({"ok": False, "error": f"already on our website: {link}"}), 409
     log(f"[WEB-CREATE] {g.get('user')} -> create on website: {fid}" + (" (again, confirmed)" if body.get("force") else ""))
     run = run_history.Run("website", fid, g.get("user"))
     if body.get("force"):
