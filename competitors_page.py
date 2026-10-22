@@ -36,7 +36,6 @@ import price_limits                                       # LOP / MOP boxes on t
 import link_edit                                          # 'Edit link' for admins on the cards (link_edit.py)
 import barcode_edit                                       # 'Edit' our barcode for admins (barcode_edit.py)
 import skip_auto                                          # 'Skip automatic price' checkbox on the cards (skip_auto.py)
-import brand_sku                                          # SKU Prefix + Next SKU number per brand (brand_sku.py)
 from discount_rate import get_discount_rate               # kept here so competitors_page.get_discount_rate() still works
 
 competitors_bp = Blueprint("competitors", __name__)
@@ -1366,20 +1365,14 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
  .brow:hover{background:var(--bg)}
  .blist{margin-bottom:90px}
  .brow .n{color:var(--muted);font-variant-numeric:tabular-nums}
- /* SKU Prefix / Next SKU number columns + heading row (brand_sku.py) */
+ /* heading row of the brand list (Brand Name / Products / Auto) */
  .bhead{display:flex;align-items:center;gap:12px;padding:10px 18px;background:var(--bg);color:var(--muted);
         font-size:13px;font-weight:600;border-bottom:1px solid var(--line)}
  .bhead .bname{flex:1}
  .bhead + .brow{border-top:0}
- .pfx{width:90px;flex:0 0 auto;font-family:Consolas,monospace}
- .nxt{width:120px;flex:0 0 auto;text-align:right;font-variant-numeric:tabular-nums}
- .brow .pfx,.brow .nxt{color:var(--text)}
  .n{width:70px;flex:0 0 auto;text-align:right}
  .ahead{width:34px;flex:0 0 auto;text-align:center}
- .atname{color:#e0a36c;font-size:12px;flex:0 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
  #blist .apick{margin:0 7px}                                 /* 20px box + 14px = same width as the "Auto" heading */
- .bhead .pfx{font-family:inherit}
- @media (max-width:640px){ .pfx{width:56px} .nxt{width:70px} .bhead .nxt{font-size:11px} }
  /* ---- Daily competitor update box (Automate) ---- */
  .daily .drow{flex-wrap:wrap}
  .daily .drow input{font-size:16px;padding:9px 10px}
@@ -1499,20 +1492,14 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
    · {{ brands|sum(attribute='n') }} products</p>
 <p class="hint">Tick a brand = <b>automatic</b>: its UAE Price in Airtable follows the suggested price (now, and after every
    price update). Untick = <b>manual</b>. Currently {{ auto_set|length }} brand{{ '' if auto_set|length == 1 else 's' }} on automatic.</p>
-{# SKU Prefix + Next SKU number columns: our own table brand_sku (brand_sku.py) - no Airtable button any more #}
+{# SKU Prefix + Next SKU number are NOT shown - they are only in the database (table brand_sku, brand_sku.py) #}
 <div class="blist" id="blist">
   {# column headings (not a .brow, so the live search never hides it) #}
-  <div class="bhead"><span class="bname">Brand Name</span><span class="pfx">SKU Prefix</span>
-    <span class="nxt">Next SKU number</span><span class="n">Products</span><span class="ahead">Auto</span></div>
+  <div class="bhead"><span class="bname">Brand Name</span><span class="n">Products</span><span class="ahead">Auto</span></div>
   {% for b in brands %}
   <div class="brow" data-name="{{ b.brand|lower }}" data-n="{{ b.n }}">
     <a href="/competitors?tab=competitor&ff=brand&fo=anyof&fv={{ b.brand|urlencode }}" title="Open {{ b.brand }} in the competitor table">{{ b.brand }}</a>
     {% if b.brand|lower in auto_set %}<span class="auto">AUTO</span>{% endif %}
-    {% set sk = sku_map.get(b.brand|lower, (none, none, none)) %}
-    {# brand renamed in Airtable since the last load-fi -> found by record id; show the current Airtable name #}
-    {% if sk[2] and sk[2]|lower != b.brand|lower %}<span class="atname" title="Name in Airtable now - run /competitor/load-fi to update">Airtable: {{ sk[2] }}</span>{% endif %}
-    <span class="pfx">{{ sk[0] or '-' }}</span>
-    <span class="nxt">{{ '{:,}'.format(sk[1]) if sk[1] is not none else '-' }}</span>
     <span class="n">{{ b.n }}</span>
     {# ticked = automatic. data-was = saved state, so only real changes are sent #}
     <input type="checkbox" class="apick" data-brand="{{ b.brand }}" data-was="{{ 1 if b.brand|lower in auto_set else 0 }}"
@@ -1697,7 +1684,7 @@ def settings_page(key=None):
     if key and not option:
         print(f"[SETTINGS] Unknown option '{key}' -> showing all settings", flush=True)
     print(f"[SETTINGS] Opened: {option[1] if option else 'all settings'}", flush=True)
-    counts, brands, auto_set, sku_map = {}, [], set(), {}
+    counts, brands, auto_set = {}, [], set()
     discount_box = ""                                       # Auto discount rate box (only on /settings/discount)
     users = []
     daily = {}
@@ -1725,8 +1712,6 @@ def settings_page(key=None):
                     cur.execute("SELECT LOWER(brand) AS b FROM brand_automation WHERE auto")
                     auto_set = {r["b"] for r in cur.fetchall()}
                 print(f"[AUTOMATE] {len(auto_set)} brands on automatic", flush=True)
-                sku_map = brand_sku.get_map(cur)                  # SKU Prefix + Next SKU number (brand_sku.py)
-                print(f"[AUTOMATE] SKU prefixes known for {len(sku_map)} brands", flush=True)
                 print(f"[AUTOMATE] Search {q!r}: {len(brands)} brands, "
                       f"{sum(b['n'] for b in brands)} products", flush=True)
         finally:
@@ -1737,7 +1722,6 @@ def settings_page(key=None):
     print(f"[MENU] Settings page shown to {g.get('user') or 'unknown user'}", flush=True)
     return render_template_string(SETTINGS_HTML, nav_html=render_nav("settings", option[0] if option else None, counts),
                                   nav_css=NAV_CSS, option=option, options=SETTINGS_OPTIONS, brands=brands, q=q, auto_set=auto_set,
-                                  sku_map=sku_map,
                                   discount_box=discount_box, error=request.args.get("error"),   # error = Users page messages
                                   daily=daily, users=users, admin=is_admin(), me=g.get("user"), msg=request.args.get("msg"),
                                   min_pw=MIN_PASSWORD, title=option[1] if option else "Settings")

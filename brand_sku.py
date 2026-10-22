@@ -1,5 +1,5 @@
 """
-Brand SKU prefix + next SKU number  (shown on Settings -> Automate, next to each brand)
+Brand SKU prefix + next SKU number  (DATABASE ONLY - not shown on any page)
 ======================================================================================
 OUR copy (table brand_sku) of the Airtable "brands" table fields "SKU Prefix" and "Next sku number",
 so new SKUs can later be made from our database instead of Airtable.
@@ -13,8 +13,7 @@ Read it with:  python sql.py "SELECT * FROM brand_sku ORDER BY brand"
 Where things are (change them here):
   SECTION 1  settings      -> Airtable field names (F_PREFIX, F_NEXT)
   SECTION 2  table         -> BRAND_SKU_CREATE
-  SECTION 3  load + read   -> load_from_airtable(), get_map() (used by competitors_page.py Automate page;
-                              by name, else by Airtable brand record id when the brand was renamed)
+  SECTION 3  load + read   -> load_from_airtable(), get_map() (brand -> prefix / next; not used by a page any more)
   SECTION 4  routes        -> GET /brand-sku/load?secret= (no page button)
   SECTION 5  hooks         -> init(): database + Airtable reader from app.py
 """
