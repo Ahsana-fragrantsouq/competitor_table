@@ -1387,6 +1387,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
  .r2tab td{padding:5px 12px 5px 0;border-top:1px solid var(--line);vertical-align:top}
  .r2tab td:first-child{white-space:nowrap;width:130px}
  .r2tab td:nth-child(2){white-space:nowrap;width:120px}
+ .newlink{color:var(--gold);text-underline-offset:3px}       /* "N new" -> new products of that shop */
  /* ---- User management ---- */
  .urow{display:flex;gap:8px;flex-wrap:wrap}
  .urow input,.urow select,.inl input{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:10px;
@@ -1449,6 +1450,12 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
     {% if st.next %}<p class="hint">Next: {{ st.next|join(', ') }}</p>{% endif %}
     {% else %}<p class="hint">Not run yet &mdash; the first run starts at brand A.</p>{% endif %}
     {# whole lists read on the PC (they block Render): daily_update.py PC_LISTS / PC_LIST_DAYS #}
+{# "N new" -> that shop's own page showing only the products added by its last whole-list run (?stock=new) #}
+{% macro newlink(s) -%}
+  {%- if shop_keys.get(s.label) -%}<a class="newlink" href="/competitors?tab={{ shop_keys[s.label] }}&stock=new"
+     title="Show the new products of {{ s.label }}">{{ s.new }} new</a>
+  {%- else %}{{ s.new }} new{% endif -%}
+{%- endmacro %}
     <table class="r2tab">
       {% for s in daily.pc_rows %}
       <tr><td>{{ s.label }}</td>
@@ -1457,7 +1464,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
               {% else %}<span class="gtin">next PC run</span>{% endif %}</td>
           <td class="gtin">whole list in Chrome every {{ s.every }} days
               {%- if s.error %} &middot; <span class="errc">{{ s.error[:120] }}</span> (tried again next working day)
-              {%- elif s.date %} &middot; {{ s.new }} new &middot; next {{ s.due }}{% endif %}</td></tr>
+              {%- elif s.date %} &middot; {{ newlink(s) }} &middot; next {{ s.due }}{% endif %}</td></tr>
       {% endfor %}
     </table>
   </div>
@@ -1478,7 +1485,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
               {% elif s.status == 'incomplete' %}<span class="warnc">! {{ s.date }}</span>
               {% else %}<span class="gtin">due {{ s.due or '-' }}</span>{% endif %}</td>
           <td class="gtin">{% if s.status in ('error', 'incomplete') %}<span class="{{ 'errc' if s.status == 'error' else 'warnc' }}">{{ s.msg }}</span>
-              {% elif s.status == 'done' %}{{ s.new }} new{% endif %}</td></tr>
+              {% elif s.status == 'done' %}{{ newlink(s) }}{% endif %}</td></tr>
       {% endfor %}
     </table>
   </div>
@@ -1723,7 +1730,8 @@ def settings_page(key=None):
     return render_template_string(SETTINGS_HTML, nav_html=render_nav("settings", option[0] if option else None, counts),
                                   nav_css=NAV_CSS, option=option, options=SETTINGS_OPTIONS, brands=brands, q=q, auto_set=auto_set,
                                   discount_box=discount_box, error=request.args.get("error"),   # error = Users page messages
-                                  daily=daily, users=users, admin=is_admin(), me=g.get("user"), msg=request.args.get("msg"),
+                                  daily=daily, users=users, admin=is_admin(),
+                                  shop_keys={x["label"]: x["key"] for x in SOURCES},   # "N new" links me=g.get("user"), msg=request.args.get("msg"),
                                   min_pw=MIN_PASSWORD, title=option[1] if option else "Settings")
 
 
