@@ -35,7 +35,7 @@ Where things are (change them here):
   SECTION 4  load          -> load_all(): Airtable -> item_master, summary saved in app_settings 'item_master'
   SECTION 5  (removed: there is no automatic daily load)
   SECTION 6  page HTML     -> IM_HTML
-  SECTION 7  routes        -> /item-master, /item-master/load, /item-master/status
+  SECTION 7  routes        -> /item-master, /item-master/edit (admin Edit, item_edit.py), /item-master/load, /item-master/status
   SECTION 8  hooks         -> init(): Airtable reader + database connection from app.py
 """
 
@@ -53,6 +53,7 @@ from flask import Blueprint, request, jsonify, render_template_string, g
 import competitors_page                     # menu bar (render_nav, NAV_CSS) + menu counts
 import description_gen                      # 'Create product description' button (description_gen.py)
 import shopify_create                       # 'Create in website' button (shopify_create.py)
+import item_edit                            # 'Edit' button on each card (item_edit.py)
 from auth import is_admin
 
 item_master_bp = Blueprint("item_master", __name__)
@@ -104,6 +105,9 @@ WEBSITE_COLS_SQL = {
     "shopify_description": "CASE WHEN item_master.desc_created_at IS NOT NULL THEN item_master.shopify_description "
                            "ELSE EXCLUDED.shopify_description END",
 }
+# fields an admin changed with 'Edit' (item_edit.py, listed in edited_fields) -> Airtable load keeps our value
+for _c in item_edit.EDITABLE:
+    WEBSITE_COLS_SQL.setdefault(_c, f"CASE WHEN item_master.edited_fields ? '{_c}' THEN item_master.{_c} ELSE EXCLUDED.{_c} END")
 # Airtable fields NOT saved at all (not as a column, not in airtable_fields). Old saved values are removed at start.
 DROP_FIELDS = ["Item ID"]
 NUMBER_COLS = {c for c, t, _, _ in FIELDS if t.startswith("NUMERIC")}
@@ -133,6 +137,8 @@ CREATE TABLE IF NOT EXISTS item_master (
     + "ALTER TABLE item_master ADD COLUMN IF NOT EXISTS desc_created_at TIMESTAMP;\n"
     # 'website' = made with Item Master -> Create a new item (item_create.py) -> Load from Airtable never deletes it
     + "ALTER TABLE item_master ADD COLUMN IF NOT EXISTS source TEXT;\n"
+    # {column: who} of fields an admin changed with 'Edit' (item_edit.py) -> Load from Airtable keeps them
+    + item_edit.EDIT_SQL + "\n"
     + "".join(f"UPDATE item_master SET airtable_fields = airtable_fields - '{n}' WHERE airtable_fields ? '{n}';\n"
               for n in DROP_FIELDS))
 
@@ -396,6 +402,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
  @media (max-width:640px){ .notes{grid-template-columns:1fr} }
 @@DESC_CSS@@
 @@WEB_CSS@@
+@@EDIT_CSS@@
  /* button row: Create in website first (left), Create product description (right), messages on their own line */
  .btnrow{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:8px;margin-top:8px}
  .btnrow .desc-btn{margin:0}
@@ -444,6 +451,8 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
       {% else %}<span class="nolink">Not on fragrantsouq.com</span>{% endif %}
       {# admins: the 2 buttons on ONE line - [Create in website] [Create product description], messages below #}
       <div class="btnrow">
+      {# Edit - every field except product title + SKU (item_edit.py EDIT_BTN) #}
+      @@EDIT_BTN@@
       {# Create product description (description_gen.py DESC_HTML) #}
       @@DESC_HTML@@
       {# Create in website - only ON when there is a description (shopify_create.py WEB_HTML) #}
@@ -467,6 +476,8 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
     <div><div class="plabel">Base notes</div><div class="pval">{{ r.base_notes or '' }}{% if not r.base_notes %}<span class="none">-</span>{% endif %}</div></div>
   </div>
 
+  {# the Edit boxes, hidden until Edit is clicked (item_edit.py EDIT_FORM) #}
+  @@EDIT_FORM@@
   {# Airtable record id (fi_record_id) is NOT shown - it is only in the database #}
   {% if r.loaded_at %}<div class="date">Loaded {{ r.loaded_at.strftime('%d %b, %H:%M') }}</div>{% endif %}
 </div>
@@ -483,13 +494,16 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
 <script>
 @@DESC_JS@@
 @@WEB_JS@@
+@@EDIT_JS@@
 </script>
 </div></body></html>"""
 # card parts from description_gen.py (button, its look and its script)
 IM_HTML = (IM_HTML.replace("@@DESC_HTML@@", description_gen.DESC_HTML).replace("@@DESC_CSS@@", description_gen.DESC_CSS)
            .replace("@@DESC_JS@@", description_gen.DESC_JS)
            .replace("@@WEB_HTML@@", shopify_create.WEB_HTML).replace("@@WEB_CSS@@", shopify_create.WEB_CSS)
-           .replace("@@WEB_JS@@", shopify_create.WEB_JS))
+           .replace("@@WEB_JS@@", shopify_create.WEB_JS)
+           .replace("@@EDIT_BTN@@", item_edit.EDIT_BTN).replace("@@EDIT_FORM@@", item_edit.EDIT_FORM)
+           .replace("@@EDIT_CSS@@", item_edit.EDIT_CSS).replace("@@EDIT_JS@@", item_edit.EDIT_JS))
 
 
 # ============================================================ SECTION 7: routes
@@ -549,6 +563,31 @@ def item_master_page():
         IM_HTML, nav_html=competitors_page.render_nav("item", "im-list", counts), nav_css=competitors_page.NAV_CSS,
         rows=rows, total=total, q=q, page=page, pages=pages, shown=SHOWN, labels=LABELS, last=last,
         running=_load_lock.locked(), admin=is_admin(), msg=request.args.get("msg"))
+
+
+@item_master_bp.post(item_edit.SAVE_URL)
+def item_master_edit():
+    """Admin 'Edit' -> Save: changed fields -> item_master (+ brand / barcode -> competitor_table). No Airtable."""
+    if not is_admin():
+        log(f"[ITEM-EDIT] Refused: {g.get('user')} is not an admin")
+        return jsonify({"ok": False, "error": "admins only"}), 403
+    body = request.get_json(silent=True) or {}
+    fid = (body.get("fi_record_id") or "").strip()
+    if not fid.startswith(("rec", "new")):            # rec = from Airtable, new = Create a new item
+        return jsonify({"ok": False, "error": "no product given"}), 400
+    conn = _hooks["connect"]()
+    try:
+        ensure_table(conn)
+        changed, err = item_edit.save_edit(conn, fid, body.get("fields") or {}, g.get("user"))
+    except Exception as ex:
+        conn.rollback()
+        log(f"[ITEM-EDIT] {fid}: ERROR {ex}")
+        return jsonify({"ok": False, "error": str(ex)[:200]}), 500
+    finally:
+        conn.close()
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    return jsonify({"ok": True, "changed": changed})
 
 
 @item_master_bp.get("/item-master/load")

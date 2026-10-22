@@ -1,0 +1,25 @@
+[SQL] Database: dpg-d9pk54m1egvs73fi1g8g-a.oregon-postgres.render.com/french_fragrance_db
+[SQL] Query: SELECT table_name, (xpath('/row/c/text()', query_to_xml(format('SELECT COUNT(*) AS c FROM %I', table_name), false, true, '')))[1]::text AS rows, pg_size_pretty(pg_total_relation_size(quote_ident(table_name))) AS size FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name
+[SQL] table_name | rows | size
+      alinjaz_catalog | 1463 | 912 kB
+      amberiya_catalog | 3168 | 1968 kB
+      app_settings | 7 | 192 kB
+      app_users | 6 | 32 kB
+      brand_automation | 65 | 32 kB
+      brand_sku | 470 | 264 kB
+      branded_perfume_catalog | 15294 | 9112 kB
+      button_runs | 9 | 144 kB
+      competitor_table | 9596 | 156 MB
+      essenzi_catalog | 15294 | 8800 kB
+      french_fragrance_catalog | 15294 | 5856 kB
+      item_master | 9593 | 39 MB
+      nichegallerie_catalog | 5910 | 2744 kB
+      ounass_catalog | 3326 | 1736 kB
+      price_check_log | 214 | 136 kB
+      price_check_progress | 51 | 32 kB
+      price_check_runs | 3 | 32 kB
+      samawa_catalog | 26714 | 14 MB
+      test_price_backup | 0 | 32 kB
+      vperfumes_catalog | 8496 | 3952 kB
+[SQL] 20 row(s)
+[SQL] Done (saved)
