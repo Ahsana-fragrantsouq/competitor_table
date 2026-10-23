@@ -56,7 +56,7 @@ SOURCES = [
      "shops": [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"), ("Essenzi", "es"),
                ("V Perfumes", "vp"), ("Al Injaz", "aj"),
                ("Ounass", "on"), ("Amberiya", "am"), ("Niche Gallerie", "ng"), ("Perfume Dubai", "pd"),
-               ("MHG Boutique", "mh")],
+               ("MHG Boutique", "mh"), ("Emirates Pride", "ep")],
      "cols": {"code": "french_inventory_code", "sku": "sku", "brand": "brand", "barcode": "barcode", "name": "product_name",
               "uae_price": "uae_price",
               "samawa_url": "samawa_link", "samawa_price": "samawa_price", "samawa_stock": "samawa_stock",
@@ -78,6 +78,8 @@ SOURCES = [
               "pd_title": "pd_title", "pd_confirmed": "pd_confirmed",
               "mh_url": "mh_link", "mh_price": "mh_price", "mh_stock": "mh_stock", "mh_suggestion": "mh_suggestion",
               "mh_title": "mh_title", "mh_confirmed": "mh_confirmed",
+              "ep_url": "ep_link", "ep_price": "ep_price", "ep_stock": "ep_stock", "ep_suggestion": "ep_suggestion",
+              "ep_title": "ep_title", "ep_confirmed": "ep_confirmed",
               # competitor's own product name, used as the link text
               "samawa_title": "samawa_title", "ff_title": "ff_title", "bp_title": "bp_title",
               "es_title": "es_title", "vp_title": "vp_title",
@@ -142,6 +144,12 @@ SOURCES = [
      "cols": {"name": "name", "brand": "brand", "gtin": "COALESCE(gtin, sku)", "url": "product_url",
               "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
               "updated": "updated_at"}},
+    # Emirates Pride = emiratespride.com/ae PERFUMES only (Shopify), emiratespride.py.
+    # "menu": "brands" -> listed in the BRANDS menu (not Competitors); everything else = like a competitor
+    {"key": "ep", "label": "Emirates Pride", "table": "emiratespride_catalog", "menu": "brands",
+     "cols": {"name": "name", "brand": "brand", "gtin": "COALESCE(gtin, sku)", "url": "product_url",
+              "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
+              "updated": "updated_at"}},
     # {"key": "shop3", "label": "Shop 3", "table": "shop3_catalog", "cols": {...}},   # add more here
 ]
 SOURCE_BY_KEY = {s["key"]: s for s in SOURCES}
@@ -176,7 +184,17 @@ NAV_HTML = """
   <details class="dd" id="ddComp">
     <summary class="{{ 'on' if active == 'shop' else '' }}">Competitors<span class="car">&#9662;</span></summary>
     <div class="ddmenu">
-      {% for s in sources if s.key != 'competitor' %}
+      {% for s in sources if s.key != 'competitor' and s.menu != 'brands' %}
+      <a href="/competitors?tab={{ s.key }}" class="{{ 'cur' if s.key == cur_key else '' }}">
+        <span>{{ s.label }}</span><span class="n">{{ counts.get(s.key, 0) }}</span></a>
+      {% endfor %}
+    </div>
+  </details>
+  {# Brands dropdown: brands' own shops (SOURCES with "menu": "brands", e.g. Emirates Pride) - same pages as competitors #}
+  <details class="dd" id="ddBrand">
+    <summary class="{{ 'on' if active == 'brandshop' else '' }}">Brands<span class="car">&#9662;</span></summary>
+    <div class="ddmenu">
+      {% for s in sources if s.menu == 'brands' %}
       <a href="/competitors?tab={{ s.key }}" class="{{ 'cur' if s.key == cur_key else '' }}">
         <span>{{ s.label }}</span><span class="n">{{ counts.get(s.key, 0) }}</span></a>
       {% endfor %}
@@ -257,7 +275,7 @@ SETTINGS_OPTIONS = [
 
 def render_nav(active, cur_key, counts):
     """Menu bar HTML. active = 'competitor' / 'shop' / 'settings' / 'item' (Item Master)."""
-    shops = [s["label"] for s in SOURCES if s["key"] != "competitor"]
+    shops = [s["label"] for s in SOURCES if s["key"] != "competitor" and s.get("menu") != "brands"]
     print(f"[MENU] Building menu: active={active!r} current page={cur_key!r} | "
           f"Competitors dropdown has {len(shops)} shops: {', '.join(shops)}", flush=True)
     return render_template_string(NAV_HTML, active=active, cur_key=cur_key, counts=counts or {}, sources=SOURCES,
@@ -784,7 +802,7 @@ HTML = """
                   'Branded Perfume': r.bp_url, 'Essenzi': r.es_url, 'V Perfumes': r.vp_url, 'Al Injaz': r.aj_url,
                   'Ounass': r.on_url, 'Amberiya': r.am_url,
                   'Niche Gallerie': r.ng_url, 'Perfume Dubai': r.pd_url,
-                  'MHG Boutique': r.mh_url} %}
+                  'MHG Boutique': r.mh_url, 'Emirates Pride': r.ep_url} %}
              <span class="{{ 'in' if 'Fragrant Souq' in (r.least_site or '') else 'out' }}">
                {%- for site in (r.least_site or '').split(', ') -%}
                  {%- if site_links.get(site) -%}
@@ -1127,6 +1145,7 @@ LINK_BARCODES = {
     "ng": ("nichegallerie_catalog", "product_url", "sku"),
     "pd": ("perfumedubai_catalog", "product_url", "sku"),
     "mh": ("mhgboutique_catalog", "product_url", "sku"),
+    "ep": ("emiratespride_catalog", "product_url", "sku"),
 }
 
 
@@ -1330,7 +1349,8 @@ def competitors():
         cur.close()
         conn.close()
 
-    active = "competitor" if src["key"] == "competitor" else "shop"
+    active = ("competitor" if src["key"] == "competitor"
+              else "brandshop" if src.get("menu") == "brands" else "shop")     # Brands menu shops (Emirates Pride)
     print(f"[MENU] Showing page '{src['label']}' (menu item: "
           f"{'Competitor table' if active == 'competitor' else 'Competitors'})", flush=True)
     return render_template_string(HTML, sources=SOURCES, src=src, counts=counts, rows=rows, same_barcode=same_barcode,
@@ -1886,7 +1906,7 @@ def run2_rows(rs):
     except Exception as ex:                                # daily_update.py missing -> fixed order
         print(f"[RUN2-BOX] daily_update.py not importable ({ex}) -> default shop order", flush=True)
         order = [("samawa", "Samawa"), ("vp", "V Perfumes"), ("am", "Amberiya"), ("pd", "Perfume Dubai"),
-                 ("mh", "MHG Boutique")]
+                 ("mh", "MHG Boutique"), ("ep", "Emirates Pride")]
     rs = rs or {}
     start = rs.get("round_start")
     results = rs.get("weekly_results") or {}

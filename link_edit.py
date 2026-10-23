@@ -51,6 +51,8 @@ SHOP_LISTS = {
            "COALESCE(price_inc_tax, price)", "stock"),
     "mh": ("MHG Boutique", "mhgboutique_catalog", "product_url", "CONCAT_WS(' ', brand, name)",
            "COALESCE(price_inc_tax, price)", "stock"),
+    "ep": ("Emirates Pride", "emiratespride_catalog", "product_url", "CONCAT_WS(' ', brand, name)",
+           "COALESCE(price_inc_tax, price)", "stock"),
 }
 
 
