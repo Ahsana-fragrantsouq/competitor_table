@@ -4,8 +4,12 @@ Plugged into app.py as a Blueprint. Made from perfumedubai.py (same Shopify way 
 Shown in the menu "Brands" (not "Competitors") - a brand's own shop; everything else works like a competitor.
 
 Emirates Pride is a Shopify store with a UAE part (/ae), so its product list is public.
-Product lists are read from the first address of EP_API_BASES that answers with products (UAE part /ae first,
-then the main address); links always open the UAE shop (EP_BASE).
+The product LIST comes from the Shopify shop (first address of EP_API_BASES that answers, = the main address).
+Its prices are NOT the UAE prices (Midnight Bloom: 245 there, AED 585 on the UAE site) -> every product is opened
+on the UAE website itself: emiratespride.com/ae/product/<handle> (EP_PRODUCT_PAGE, ep_uae):
+  page not found = not sold in the UAE -> left out; found = AED price (EP_PRICE_PATTERNS) + stock from that page.
+  No AED price found on the page -> saved WITHOUT price (never a wrong price). Links open that UAE page.
+Size options that are sets / oils ("100ml + 8ml Oil") are left out too (ep_variant_ok).
   /emiratespride/test shows the prices: compare one with the website (must be AED).
 ONLY PERFUMES are saved (no make up, skincare, bags, gift sets, body mists ...):
   1. the shop's PERFUME collection is read: the first of EP_COLLECTIONS that has products, e.g.
@@ -125,24 +129,86 @@ def ep_is_perfume(p, whole_shop):
     return not whole_shop or any(re.search(rf"\b{w}\b", text) for w in EP_PERFUME_WORDS)
 
 
-def ep_items(products, whole_shop=False):
-    """Shopify products -> one dict per variant (perfumes only, see ep_is_perfume)."""
+EP_PRODUCT_PAGE = EP_BASE + "/product/{handle}"   # the UAE shop's own product page (singular "product")
+# the AED price on that page, tried in this order (page data / meta tags / structured data)
+EP_PRICE_PATTERNS = [
+    r'product:price:amount"\s+content="([0-9]+(?:\.[0-9]+)?)"',
+    r'itemprop="price"\s+content="([0-9]+(?:\.[0-9]+)?)"',
+    r'"price"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?\s*,\s*"priceCurrency"\s*:\s*"AED"',
+    r'"priceCurrency"\s*:\s*"AED"\s*,\s*"price"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)',
+    r'"amount"\s*:\s*"([0-9]+(?:\.[0-9]+)?)"\s*,\s*"currencyCode"\s*:\s*"AED"',
+    r'"currencyCode"\s*:\s*"AED"\s*,\s*"amount"\s*:\s*"([0-9]+(?:\.[0-9]+)?)"',
+]
+
+
+def ep_uae(handle):
+    """The product as the UAE shop sells it, read from its own page EP_PRODUCT_PAGE (emiratespride.com/ae/product/...).
+    -> None when the page does not exist (not sold in the UAE), else {"price": AED or None, "available": bool or None,
+    "pattern": which EP_PRICE_PATTERNS found the price}. Network trouble -> {} (price left empty, nothing guessed)."""
+    url = EP_PRODUCT_PAGE.format(handle=handle)
+    try:
+        r = requests.get(url, headers={**EP_HEADERS, "Accept": "text/html"}, timeout=60)
+    except requests.RequestException as ex:
+        ep_log(f"[EP-UAE] {handle}: network error {str(ex)[:80]}")
+        return {}
+    html = r.text or ""
+    up = html.upper()
+    if r.status_code == 404 or ("ERROR 404" in up and "PAGE NOT FOUND" in up):   # their "PAGE NOT FOUND" page
+        ep_state.setdefault("uae_checks", []).append({"page": url, "answer": f"HTTP {r.status_code}: not found"})
+        return None
+    price, pattern = None, None
+    for n, pat in enumerate(EP_PRICE_PATTERNS, 1):
+        m = re.search(pat, html)
+        if m:
+            price, pattern = round(float(m.group(1)), 2), n
+            break
+    # stock = structured data of the page only ("schema.org/InStock" / "OutOfStock"); none -> None (main shop stock)
+    available = (False if re.search(r"schema\.org/(OutOfStock|SoldOut)", html)
+                 else True if re.search(r"schema\.org/InStock", html) else None)
+    ep_log(f"[EP-UAE] {handle}: AED {price} (pattern {pattern}), available {available}")
+    ep_state.setdefault("uae_checks", []).append({"page": url, "answer": f"HTTP {r.status_code}", "aed_price": price,
+                                                  "price_pattern": pattern, "in_stock": available})
+    return {"price": price, "available": available, "pattern": pattern}
+
+
+def ep_variant_ok(vtitle):
+    """False for a size option that is really a set / an oil: "100ml + 8ml Oil", "Refill + Oil" ..."""
+    t = " " + re.sub(r"[^a-z0-9+]+", " ", (vtitle or "").lower()) + " "
+    return "+" not in t and not re.search(r"\boils?\b", t)
+
+
+def ep_items(products, whole_shop=False, check_uae=True, skipped=None):
+    """Shopify products -> one dict per variant (perfumes only, see ep_is_perfume).
+    check_uae: every product is looked up in the UAE shop (ep_uae): not sold there -> left out;
+    sold there -> UAE price + stock. skipped (list) collects the left-out names for /emiratespride/test."""
     out = []
     for p in products:
         if not ep_is_perfume(p, whole_shop):
             continue
         title = (p.get("title") or "").strip()
-        variants = p.get("variants", [])
+        uae = ep_uae(p.get("handle")) if check_uae else {"price": None, "available": None}
+        if uae is None:                                   # page not found in the UAE shop -> not sold in UAE
+            ep_log(f"[EP-UAE] {title}: not in the UAE shop -> skipped")
+            if skipped is not None:
+                skipped.append(f"{title} (not in UAE shop)")
+            continue
+        if check_uae:
+            time.sleep(0.3)                               # be gentle: one request per product
+        variants = [v for v in p.get("variants", []) if ep_variant_ok(v.get("title"))]
+        for v in p.get("variants", []):
+            if not ep_variant_ok(v.get("title")) and skipped is not None:
+                skipped.append(f"{title} - {v.get('title')} (set / oil)")
         for v in variants:
             vtitle = (v.get("title") or "").strip()
             name = title if vtitle.lower() in ("", "default title") else f"{title} - {vtitle}"
-            url = f"{EP_BASE}/products/{p.get('handle')}"
-            if len(variants) > 1:
-                url += f"?variant={v.get('id')}"                 # opens the right size
-            try:
-                price_inc = round(float(v.get("price")), 2)
-            except (TypeError, ValueError):
-                price_inc = None
+            url = EP_PRODUCT_PAGE.format(handle=p.get("handle"))   # UAE page (the main shop's prices are NOT AED)
+            # price = the AED price shown on the UAE page; one page = one price -> only for a single-size product
+            price_inc = uae.get("price") if len(variants) == 1 else None
+            if price_inc is None:
+                ep_log(f"[EP-UAE] {name}: no AED price read -> saved without price (not used for least price)")
+            available = uae.get("available")
+            if available is None:
+                available = bool(v.get("available"))             # page did not say -> main shop stock
             sku = (v.get("sku") or "").strip() or None
             digits = re.sub(r"\D", "", sku or "")
             out.append({
@@ -151,7 +217,7 @@ def ep_items(products, whole_shop=False):
                 "sku": sku, "brand": (p.get("vendor") or "").strip() or None, "name": name,
                 "product_type": (p.get("product_type") or "").strip() or None,
                 "price_inc_tax": price_inc, "price": round(price_inc / 1.05, 2) if price_inc else None,
-                "stock": "In stock" if v.get("available") else "Out of stock",
+                "stock": "In stock" if available else "Out of stock",
                 "volume": ep_volume(vtitle, title),
             })
     return out
@@ -242,9 +308,11 @@ def ep_run():
                 break
             if not products:
                 break
-            items = ep_items(products, whole_shop)
+            skipped = []
+            items = ep_items(products, whole_shop, skipped=skipped)
             st["skipped_not_perfume"] = st.get("skipped_not_perfume", 0) + sum(
                 1 for p in products if not ep_is_perfume(p, whole_shop))
+            st["skipped_not_in_uae_or_set"] = st.get("skipped_not_in_uae_or_set", 0) + len(skipped)
             rows = [(i["variant_id"], i["url"], i["gtin"], i["sku"], i["brand"], i["name"], i["product_type"],
                      i["price_inc_tax"], i["price"], i["stock"], i["volume"]) for i in items if i["variant_id"]]
             if rows:
@@ -295,6 +363,7 @@ def ep_test_route():
     """Read page 1 only - shows whether Render can read Emirates Pride and what is read."""
     if not ep_secret_ok():
         return jsonify({"error": "unauthorized"}), 401
+    ep_state["uae_checks"] = []                          # filled by ep_uae: every UAE page read on this test
     try:
         path = ep_source()
         whole_shop = path == "/products.json"
@@ -302,9 +371,12 @@ def ep_test_route():
     except RuntimeError as ex:
         ep_log(f"[EP-TEST] {ex}")
         return jsonify({"ok": False, "error": str(ex)})
-    items = ep_items(products or [], whole_shop)
+    skipped = []
+    items = ep_items(products or [], whole_shop, skipped=skipped)
     result = {"ok": bool(items), "source": path, "api_base": ep_state.get("api_base"),
-              "tried": ep_state.get("tried", []), "page1_products": len(products or []), "page1_variants": len(items),
+              "tried": ep_state.get("tried", []),
+              "skipped_not_in_uae_or_set": skipped,
+              "uae_pages": ep_state.get("uae_checks", [])[:15],   # compare these AED prices with the website "page1_products": len(products or []), "page1_variants": len(items),
               "skipped_not_perfume": [p.get("title") for p in (products or []) if not ep_is_perfume(p, whole_shop)][:30],
               "with_sku": sum(1 for i in items if i["sku"]), "with_barcode": sum(1 for i in items if i["gtin"]),
               "brands_seen": sorted({i["brand"] or "-" for i in items})[:20],
