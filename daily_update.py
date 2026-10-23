@@ -94,7 +94,7 @@ RUN2_TIME = "07:00"            # "HH:MM", 24-hour India time. Example: "06:30", 
 # the next round starts RUN2_ROUND_DAYS after the start of the last one -> every shop once every 2 weeks.
 # Ounass, Al Injaz, Niche Gallerie are NOT here: they block Render (captcha / "too many requests") and run on the
 # PC (PC_LISTS below). The next shop = the first one not done yet in this round.
-RUN2_ORDER = ["samawa", "vp", "am", "pd"]      # pd = Perfume Dubai (perfumedubai.py)
+RUN2_ORDER = ["samawa", "vp", "am", "pd", "mh"]   # pd = Perfume Dubai (perfumedubai.py), mh = MHG Boutique (mhgboutique.py)
 RUN2_ROUND_DAYS = 14           # a new round every 14 days (7 = every week)
 RUN2_DAYS = range(0, 7)        # 0 = Monday ... 6 = Sunday: Render runs every day
 # RUN2_SAVE_NEW = True  -> NEW products of the shop are SAVED and matched to our products.
@@ -110,6 +110,7 @@ RUN2_SHOPS = [
     ("vp", "V Perfumes", "vperfumes_catalog", "/vperfumes/run", "/vperfumes/status", "/competitor/match-vp"),
     ("am", "Amberiya", "amberiya_catalog", "/amberiya/run", "/amberiya/status", "/competitor/match-am"),
     ("pd", "Perfume Dubai", "perfumedubai_catalog", "/perfumedubai/run", "/perfumedubai/status", "/competitor/match-pd"),
+    ("mh", "MHG Boutique", "mhgboutique_catalog", "/mhgboutique/run", "/mhgboutique/status", "/competitor/match-mh"),
 ]
 RUN2_LABELS = {k: label for k, label, *_ in RUN2_SHOPS}
 
@@ -221,7 +222,8 @@ def known_brands(cur):
     """Every brand written anywhere in the database: ours + Samawa / Amberiya / Ounass brand columns."""
     names = set()
     for t, col in (("competitor_table", "brand"), ("samawa_catalog", "brand"), ("amberiya_catalog", "brand"),
-                   ("ounass_catalog", "brand"), ("perfumedubai_catalog", "brand")):
+                   ("ounass_catalog", "brand"), ("perfumedubai_catalog", "brand"),
+                   ("mhgboutique_catalog", "brand")):
         if table_exists(cur, t):
             cur.execute(f"SELECT DISTINCT TRIM({col}) FROM {t} WHERE {col} IS NOT NULL AND TRIM({col}) <> ''")
             found = {b for (b,) in cur.fetchall()}

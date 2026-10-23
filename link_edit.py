@@ -49,6 +49,8 @@ SHOP_LISTS = {
     "ng": ("Niche Gallerie", "nichegallerie_catalog", "product_url", "name", "COALESCE(price_inc_tax, price)", "stock"),
     "pd": ("Perfume Dubai", "perfumedubai_catalog", "product_url", "CONCAT_WS(' ', brand, name)",
            "COALESCE(price_inc_tax, price)", "stock"),
+    "mh": ("MHG Boutique", "mhgboutique_catalog", "product_url", "CONCAT_WS(' ', brand, name)",
+           "COALESCE(price_inc_tax, price)", "stock"),
 }
 
 
