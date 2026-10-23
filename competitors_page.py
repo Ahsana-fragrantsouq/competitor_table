@@ -17,7 +17,7 @@ FILE MAP (search "SECTION <number>" to jump there)
   SECTION 5   helpers (database, counts)          -> db_conn(), table_exists(), tab_counts(), add_next_cheapest()
   SECTION 6   competitors page HTML               -> HTML (inside: 6a CSS, 6b filter bar, 6c product card, 6d pager, 6e scripts)
   SECTION 7   competitors page route              -> /competitors (reads the rows, filters, paging)
-  SECTION 8   Settings page HTML                  -> SETTINGS_HTML (8a Automate, 8b Users, 8c Auto discount rate)
+  SECTION 8   Settings page HTML                  -> SETTINGS_HTML (8a Automate, 8b Users, 8c Auto discount rate, 8d Brands)
   SECTION 9   Settings page route                 -> /settings, /settings/<key>
   SECTION 10  saved settings + Daily update box   -> app_settings table, daily_info(), /settings/daily, get_setting()
   Auto discount rate itself (page box, save, rate) -> its own file discount_rate.py
@@ -227,7 +227,10 @@ ITEM_OPTIONS = [
     ("im-list", "/item-master", "Item Master"),
     ("im-new", "/item-master/new", "Create a new item"),
     ("im-history", "/item-master/history", "Run history"),
+    ("im-brands", "/item-master/brands", "Brands"),           # brand list + Auto ticks (moved from Settings -> Automate)
 ]
+# the Brands page uses the Settings page template (SETTINGS_HTML, part 8d) but sits in the Item Master menu
+BRANDS_OPTION = ("brands", "Brands", "All brands with their product count; tick = automatic price update.")
 
 # Settings options (pages are empty for now - content will be added later)
 SETTINGS_OPTIONS = [
@@ -1502,7 +1505,8 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
     </table>
   </div>
 </div>
-{# Automate: search brands at the top, all brands with their product count below #}
+{# ======== 8d Brands (menu Item Master -> Brands, /item-master/brands; was on Automate): search + brand list ======== #}
+{% elif option and option[0] == 'brands' %}
 <form class="bsearch" method="get" onsubmit="return true">
   <input type="search" name="q" id="bq" value="{{ q }}" placeholder="Search brands" autocomplete="off">
   <button type="submit">Search</button>
@@ -1699,7 +1703,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 @competitors_bp.route("/settings/<key>")
 def settings_page(key=None):
     """Settings: /settings lists the 3 options, /settings/<key> opens one (empty for now)."""
-    option = next((o for o in SETTINGS_OPTIONS if o[0] == key), None)
+    option = BRANDS_OPTION if key == "brands" else next((o for o in SETTINGS_OPTIONS if o[0] == key), None)
     if key and not option:
         print(f"[SETTINGS] Unknown option '{key}' -> showing all settings", flush=True)
     print(f"[SETTINGS] Opened: {option[1] if option else 'all settings'}", flush=True)
@@ -1721,7 +1725,8 @@ def settings_page(key=None):
             if option and option[0] == "automate":
                 daily = daily_info(cur)                           # Daily competitor update box
                 daily["saved"] = request.args.get("daily_saved") == "1"
-                # Automate: every brand of our products with how many products it has (search = brand contains q)
+            if option and option[0] == "brands":                  # Item Master -> Brands
+                # Brands: every brand of our products with how many products it has (search = brand contains q)
                 sql = ("SELECT brand, COUNT(*) AS n FROM competitor_table WHERE brand IS NOT NULL AND brand <> ''"
                        + (" AND brand ILIKE %s" if q else "") + " GROUP BY brand ORDER BY LOWER(brand)")
                 cur.execute(sql, [f"%{q}%"] if q else [])
@@ -1739,12 +1744,21 @@ def settings_page(key=None):
     except Exception as ex:
         print(f"[competitors] settings: counts not loaded ({ex})", flush=True)
     print(f"[MENU] Settings page shown to {g.get('user') or 'unknown user'}", flush=True)
-    return render_template_string(SETTINGS_HTML, nav_html=render_nav("settings", option[0] if option else None, counts),
+    nav_html = (render_nav("item", "im-brands", counts) if key == "brands"          # Brands sits under Item Master
+                else render_nav("settings", option[0] if option else None, counts))
+    return render_template_string(SETTINGS_HTML, nav_html=nav_html,
                                   nav_css=NAV_CSS, option=option, options=SETTINGS_OPTIONS, brands=brands, q=q, auto_set=auto_set,
                                   discount_box=discount_box, error=request.args.get("error"),   # error = Users page messages
                                   daily=daily, users=users, admin=is_admin(),
                                   shop_keys={x["label"]: x["key"] for x in SOURCES},   # "N new" links me=g.get("user"), msg=request.args.get("msg"),
                                   min_pw=MIN_PASSWORD, title=option[1] if option else "Settings")
+
+
+@competitors_bp.route("/item-master/brands")
+def brands_page():
+    """Item Master -> Brands: the brand list with product counts + Auto ticks (moved here from Settings -> Automate)."""
+    print(f"[BRANDS] Brands page opened by {g.get('user')}", flush=True)
+    return settings_page("brands")
 
 
 # ============================================================ SECTION 10: saved settings (app_settings) + Daily update box
