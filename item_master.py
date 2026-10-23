@@ -491,6 +491,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
   <a class="pbtn {{ '' if page < pages else 'off' }}" href="?q={{ q|urlencode }}&page={{ page + 1 }}">Next &rarr;</a>
 </div>
 {% endif %}
+@@EDIT_OPTS@@
 <script>
 @@DESC_JS@@
 @@WEB_JS@@
@@ -503,7 +504,8 @@ IM_HTML = (IM_HTML.replace("@@DESC_HTML@@", description_gen.DESC_HTML).replace("
            .replace("@@WEB_HTML@@", shopify_create.WEB_HTML).replace("@@WEB_CSS@@", shopify_create.WEB_CSS)
            .replace("@@WEB_JS@@", shopify_create.WEB_JS)
            .replace("@@EDIT_BTN@@", item_edit.EDIT_BTN).replace("@@EDIT_FORM@@", item_edit.EDIT_FORM)
-           .replace("@@EDIT_CSS@@", item_edit.EDIT_CSS).replace("@@EDIT_JS@@", item_edit.EDIT_JS))
+           .replace("@@EDIT_CSS@@", item_edit.EDIT_CSS).replace("@@EDIT_JS@@", item_edit.EDIT_JS)
+           .replace("@@EDIT_OPTS@@", item_edit.EDIT_OPTS))
 
 
 # ============================================================ SECTION 7: routes
@@ -528,7 +530,7 @@ def item_master_page():
         page = max(1, int(request.args.get("page", "1")))
     except ValueError:
         page = 1
-    rows, total, last, counts = [], 0, {}, {}
+    rows, total, last, counts, edit_opts = [], 0, {}, {}, {}
     conn = _hooks["connect"]()
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -555,6 +557,8 @@ def item_master_page():
                     params + [PER_PAGE, (page - 1) * PER_PAGE])
         rows = cur.fetchall()
         last = read_summary(cur)
+        if is_admin() and rows:                            # pick lists of the Edit boxes (item_edit.py)
+            edit_opts = item_edit.load_options(cur)
     finally:
         conn.close()
     pages = max(1, math.ceil(total / PER_PAGE))
@@ -562,7 +566,7 @@ def item_master_page():
     return render_template_string(
         IM_HTML, nav_html=competitors_page.render_nav("item", "im-list", counts), nav_css=competitors_page.NAV_CSS,
         rows=rows, total=total, q=q, page=page, pages=pages, shown=SHOWN, labels=LABELS, last=last,
-        running=_load_lock.locked(), admin=is_admin(), msg=request.args.get("msg"))
+        running=_load_lock.locked(), admin=is_admin(), msg=request.args.get("msg"), edit_opts=edit_opts)
 
 
 @item_master_bp.post(item_edit.SAVE_URL)
@@ -578,7 +582,7 @@ def item_master_edit():
     conn = _hooks["connect"]()
     try:
         ensure_table(conn)
-        changed, err = item_edit.save_edit(conn, fid, body.get("fields") or {}, g.get("user"))
+        changed, added, err = item_edit.save_edit(conn, fid, body.get("fields") or {}, g.get("user"))
     except Exception as ex:
         conn.rollback()
         log(f"[ITEM-EDIT] {fid}: ERROR {ex}")
@@ -587,7 +591,7 @@ def item_master_edit():
         conn.close()
     if err:
         return jsonify({"ok": False, "error": err}), 400
-    return jsonify({"ok": True, "changed": changed})
+    return jsonify({"ok": True, "changed": changed, "new_options": added})
 
 
 @item_master_bp.get("/item-master/load")
