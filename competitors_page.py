@@ -1385,6 +1385,20 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
         font-size:13px;font-weight:600;border-bottom:1px solid var(--line)}
  .bhead .bname{flex:1}
  .bhead + .brow{border-top:0}
+ /* Brands -> Create new (admins): button + small form above the brand list */
+ .newbrand-bar{display:flex;justify-content:flex-end;margin:6px 0 10px}
+ .newbrand-btn{background:#f2d675;color:#1c1b19;border:0;border-radius:10px;padding:9px 16px;font-size:15px;font-weight:700;cursor:pointer}
+ .newbrand{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-bottom:12px}
+ .newbrand .nbrow{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+ .newbrand label{display:block;color:var(--muted);font-size:13px}
+ .newbrand input{display:block;margin-top:4px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:10px;
+                 padding:10px 12px;font-size:15px}
+ .newbrand input[name=brand]{width:260px} .newbrand input[name=sku_prefix]{width:130px;text-transform:uppercase}
+ .newbrand .nbsave{background:#f2d675;color:#1c1b19;border:0;border-radius:10px;padding:10px 18px;font-size:15px;font-weight:700;cursor:pointer}
+ .newbrand .nbsave:disabled{opacity:.6;cursor:wait}
+ .newbrand .nbcancel{background:none;border:1px solid var(--line);color:var(--muted);border-radius:10px;padding:10px 14px;font-size:15px;cursor:pointer}
+ .newbrand .nbmsg{font-size:14px;margin-top:8px} .newbrand .nbmsg.err{color:#e0806c}
+ .newtagb{background:#e3f5e1;color:#1c5a24;border-radius:999px;padding:2px 9px;font-size:12px;font-weight:700}
  .n{width:70px;flex:0 0 auto;text-align:right}
  .ahead{width:34px;flex:0 0 auto;text-align:center}
  #blist .apick{margin:0 7px}                                 /* 20px box + 14px = same width as the "Auto" heading */
@@ -1516,6 +1530,56 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 <p class="hint">Tick a brand = <b>automatic</b>: its UAE Price in Airtable follows the suggested price (now, and after every
    price update). Untick = <b>manual</b>. Currently {{ auto_set|length }} brand{{ '' if auto_set|length == 1 else 's' }} on automatic.</p>
 {# SKU Prefix + Next SKU number are NOT shown - they are only in the database (table brand_sku, brand_sku.py) #}
+{% if msg %}<p class="ok">{{ msg }}</p>{% endif %}
+{# ---- Create new brand (admins): Brand name + SKU prefix -> POST /brand-sku/create (brand_sku.py checks both are new) ---- #}
+{% if admin %}
+<div class="newbrand-bar"><button type="button" class="newbrand-btn" id="nbopen" onclick="nbOpen()">Create new</button></div>
+<form class="newbrand" id="nbform" hidden onsubmit="nbSave(this); return false;">
+  <div class="nbrow">
+    <label>Brand name *<input name="brand" required maxlength="100" autocomplete="off"></label>
+    <label>SKU prefix *<input name="sku_prefix" required maxlength="10" pattern="[A-Za-z0-9]{2,10}" title="2-10 letters / digits" autocomplete="off"></label>
+    <button type="submit" class="nbsave">Save</button>
+    <button type="button" class="nbcancel" onclick="nbClose()">Cancel</button>
+  </div>
+  <div class="nbmsg" id="nbmsg">Both must be new: a brand name or SKU prefix that already exists is not saved.</div>
+</form>
+<script>
+  function nbOpen() {
+    document.getElementById("nbform").hidden = false; document.getElementById("nbopen").hidden = true;
+    document.querySelector("#nbform [name=brand]").focus();
+  }
+  function nbClose() {
+    var f = document.getElementById("nbform"); f.reset(); f.hidden = true;
+    document.getElementById("nbopen").hidden = false;
+    var m = document.getElementById("nbmsg"); m.className = "nbmsg";
+    m.textContent = "Both must be new: a brand name or SKU prefix that already exists is not saved.";
+  }
+  async function nbSave(f) {
+    var m = document.getElementById("nbmsg"), b = f.querySelector(".nbsave");
+    var brand = f.brand.value.trim(), prefix = f.sku_prefix.value.trim().toUpperCase();
+    // quick check against the brands on this page (the website checks again, also brands without products)
+    var dup = Array.prototype.some.call(document.querySelectorAll("#blist .brow"), function (r) {
+      return r.dataset.name.replace(/\\s+/g, " ").trim() === brand.toLowerCase().replace(/\\s+/g, " ");
+    });
+    if (dup) { m.className = "nbmsg err"; m.textContent = "Brand '" + brand + "' already exists"; return; }
+    b.disabled = true; b.textContent = "Saving ..."; m.className = "nbmsg"; m.textContent = "";
+    console.log("[BRANDS] Create new brand: " + brand + " / " + prefix);
+    try {
+      var r = await fetch("/brand-sku/create", {method: "POST", headers: {"Content-Type": "application/json"},
+                                                body: JSON.stringify({brand: brand, sku_prefix: prefix})});
+      var d = await r.json().catch(function () { return {ok: false, error: "HTTP " + r.status}; });
+      if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
+      console.log("[BRANDS] Created " + d.brand + " (" + d.sku_prefix + ", next " + d.next_sku_number + ")");
+      location.href = "/item-master/brands?msg=" + encodeURIComponent("Brand " + d.brand + " created (SKU prefix " +
+                      d.sku_prefix + ", first SKU " + d.sku_prefix + d.next_sku_number + ")");
+    } catch (e) {
+      m.className = "nbmsg err"; m.textContent = "Not created: " + e.message;
+      console.log("[BRANDS] Not created: " + e.message);
+      b.disabled = false; b.textContent = "Save";
+    }
+  }
+</script>
+{% endif %}
 <div class="blist" id="blist">
   {# column headings (not a .brow, so the live search never hides it) #}
   <div class="bhead"><span class="bname">Brand Name</span><span class="n">Products</span><span class="ahead">Auto</span></div>
@@ -1523,6 +1587,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
   <div class="brow" data-name="{{ b.brand|lower }}" data-n="{{ b.n }}">
     <a href="/competitors?tab=competitor&ff=brand&fo=anyof&fv={{ b.brand|urlencode }}" title="Open {{ b.brand }} in the competitor table">{{ b.brand }}</a>
     {% if b.brand|lower in auto_set %}<span class="auto">AUTO</span>{% endif %}
+    {% if b.created_by %}<span class="newtagb" title="Created on our website by {{ b.created_by }}">NEW BRAND</span>{% endif %}
     <span class="n">{{ b.n }}</span>
     {# ticked = automatic. data-was = saved state, so only real changes are sent #}
     <input type="checkbox" class="apick" data-brand="{{ b.brand }}" data-was="{{ 1 if b.brand|lower in auto_set else 0 }}"
@@ -1727,10 +1792,20 @@ def settings_page(key=None):
                 daily["saved"] = request.args.get("daily_saved") == "1"
             if option and option[0] == "brands":                  # Item Master -> Brands
                 # Brands: every brand of our products with how many products it has (search = brand contains q)
-                sql = ("SELECT brand, COUNT(*) AS n FROM competitor_table WHERE brand IS NOT NULL AND brand <> ''"
-                       + (" AND brand ILIKE %s" if q else "") + " GROUP BY brand ORDER BY LOWER(brand)")
-                cur.execute(sql, [f"%{q}%"] if q else [])
-                brands = cur.fetchall()
+                sql = ("SELECT brand, COUNT(*) AS n, NULL AS created_by FROM competitor_table "
+                       "WHERE brand IS NOT NULL AND brand <> ''"
+                       + (" AND brand ILIKE %s" if q else "") + " GROUP BY brand")
+                params = [f"%{q}%"] if q else []
+                cur.execute("SELECT COUNT(*) AS t FROM information_schema.columns "
+                            "WHERE table_name = 'brand_sku' AND column_name = 'created_by'")
+                if cur.fetchone()["t"]:                    # column added by brand_sku.py at the first Create new
+                    # brands made with "Create new" (brand_sku.py) - shown even with 0 products
+                    sql += (" UNION ALL SELECT bs.brand, 0, bs.created_by FROM brand_sku bs WHERE bs.created_by IS NOT NULL"
+                            " AND NOT EXISTS (SELECT 1 FROM competitor_table ct WHERE LOWER(ct.brand) = LOWER(bs.brand))"
+                            + (" AND bs.brand ILIKE %s" if q else ""))
+                    params += [f"%{q}%"] if q else []
+                cur.execute(sql + " ORDER BY 1", params)
+                brands = sorted(cur.fetchall(), key=lambda b: b["brand"].lower())
                 cur.execute("SELECT to_regclass('brand_automation') AS t")
                 if cur.fetchone()["t"]:
                     cur.execute("SELECT LOWER(brand) AS b FROM brand_automation WHERE auto")
@@ -1750,7 +1825,8 @@ def settings_page(key=None):
                                   nav_css=NAV_CSS, option=option, options=SETTINGS_OPTIONS, brands=brands, q=q, auto_set=auto_set,
                                   discount_box=discount_box, error=request.args.get("error"),   # error = Users page messages
                                   daily=daily, users=users, admin=is_admin(),
-                                  shop_keys={x["label"]: x["key"] for x in SOURCES},   # "N new" links me=g.get("user"), msg=request.args.get("msg"),
+                                  shop_keys={x["label"]: x["key"] for x in SOURCES},   # "N new" links
+                                  me=g.get("user"), msg=request.args.get("msg"),
                                   min_pw=MIN_PASSWORD, title=option[1] if option else "Settings")
 
 

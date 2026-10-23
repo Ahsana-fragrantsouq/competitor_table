@@ -203,6 +203,12 @@ def choices(cur):
     for col in ["brand"] + [c for c, _ in SELECT_COLS]:
         cur.execute(f"SELECT DISTINCT {col} FROM item_master WHERE COALESCE({col}, '') <> '' ORDER BY {col}")
         out[col] = [r[0] for r in cur.fetchall()]
+    # brands made with Item Master -> Brands -> Create new have no products yet -> add every brand of brand_sku
+    cur.execute("SELECT to_regclass('brand_sku') IS NOT NULL")
+    if cur.fetchone()[0]:
+        cur.execute("SELECT brand FROM brand_sku WHERE COALESCE(TRIM(brand), '') <> ''")
+        have = {b.lower() for b in out["brand"]}
+        out["brand"] = sorted(out["brand"] + [b for (b,) in cur.fetchall() if b.lower() not in have], key=str.lower)
     return out
 
 
@@ -221,7 +227,7 @@ def take_sku(cur, brand):
                 (brand,))
     row = cur.fetchone()
     if not row:
-        return None, f"brand '{brand}' is not in the brand table (Settings -> Automate -> Load SKU prefixes)"
+        return None, f"brand '{brand}' is not in the brand table (Item Master -> Brands -> Create new)"
     _, prefix, nxt = row
     if not prefix or nxt is None:
         return None, f"brand '{brand}' has no SKU Prefix / Next SKU number"

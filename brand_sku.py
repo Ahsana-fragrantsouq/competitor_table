@@ -9,12 +9,14 @@ changed by Create a new item (Next SKU number + 1). Re-copy from Airtable only i
 Every load copies ALL brands again - safe to repeat. Next SKU number: the HIGHER of ours / Airtable's is kept
 (Create a new item raises ours when it makes a SKU - an older Airtable number never brings it back down).
 Read it with:  python sql.py "SELECT * FROM brand_sku ORDER BY brand"
+NEW brands are made on our website: Item Master -> Brands -> "Create new" (Brand name + SKU prefix, both must be NEW,
+any capitals / spaces). Next SKU number starts at FIRST_SKU_NUMBER. Those rows have no airtable_id (created_by = admin).
 
 Where things are (change them here):
   SECTION 1  settings      -> Airtable field names (F_PREFIX, F_NEXT)
   SECTION 2  table         -> BRAND_SKU_CREATE
   SECTION 3  load + read   -> load_from_airtable(), get_map() (brand -> prefix / next; not used by a page any more)
-  SECTION 4  routes        -> GET /brand-sku/load?secret= (no page button)
+  SECTION 4  routes        -> GET /brand-sku/load?secret= (no page button), POST /brand-sku/create (Create new brand)
   SECTION 5  hooks         -> init(): database + Airtable reader from app.py
 """
 
@@ -22,6 +24,8 @@ import re
 import time
 
 from flask import Blueprint, request, jsonify, g
+
+from auth import is_admin
 
 
 brand_sku_bp = Blueprint("brand_sku", __name__)
@@ -35,6 +39,7 @@ def log(*a):
 # ============================================================ SECTION 1: settings
 F_PREFIX = "SKU Prefix"              # Airtable "brands" table field names
 F_NEXT = "Next sku number"
+FIRST_SKU_NUMBER = 1001              # Next SKU number of a brand made with "Create new" (first SKU = prefix + 1001)
 
 
 # ============================================================ SECTION 2: table
@@ -47,6 +52,7 @@ CREATE TABLE IF NOT EXISTS brand_sku (
     updated_at       TIMESTAMP DEFAULT NOW()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS brand_sku_lower ON brand_sku (LOWER(brand));
+ALTER TABLE brand_sku ADD COLUMN IF NOT EXISTS created_by TEXT;     -- admin who made it on our website (Create new)
 """
 _hooks = {}
 
@@ -146,6 +152,94 @@ def brand_sku_load_url():
     if not g.get("user") and (not secret or request.args.get("secret") != secret):
         return jsonify({"error": "unauthorized"}), 401
     return jsonify(load_from_airtable())
+
+
+_table_ready = False
+
+
+def ensure_table(conn):
+    """Create brand_sku / add new columns ONCE after each start (ALTER TABLE on every request would wait on locks)."""
+    global _table_ready
+    if not _table_ready:
+        conn.cursor().execute(BRAND_SKU_CREATE)
+        conn.commit()
+        _table_ready = True
+        log("[BRAND-SKU] Table brand_sku ready")
+
+
+def _key(s):
+    """Compare names without capitals / extra spaces: ' Al  Majed ' == 'al majed'."""
+    return " ".join((s or "").split()).lower()
+
+
+def create_brand(conn, name, prefix, user):
+    """New brand in brand_sku. Returns (row dict, None) or (None, reason). Refused when:
+    - name or prefix is empty / prefix is not letters + digits
+    - the brand name already exists (brand_sku, or products in item_master / competitor_table) - any capitals / spaces
+    - the SKU prefix already belongs to another brand, or SKUs like PREFIX1234 are already used in item_master"""
+    name = " ".join((name or "").split())
+    prefix = (prefix or "").strip().upper()
+    if not name or not prefix:
+        return None, "Brand name and SKU prefix are both needed"
+    if not re.fullmatch(r"[A-Z0-9]{2,10}", prefix):
+        return None, "SKU prefix: 2-10 letters / digits only (e.g. AFN)"
+    ensure_table(conn)
+    cur = conn.cursor()
+    # two admins creating at the same moment -> the 2nd waits here until the 1st is saved (no table lock)
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext('brand_sku_create'))")
+    # 1. brand name must be new (brand_sku + brands already used by products)
+    sql = "SELECT brand FROM brand_sku WHERE LOWER(REGEXP_REPLACE(TRIM(brand), '\\s+', ' ', 'g')) = %s"
+    for t in ("item_master", "competitor_table"):
+        cur.execute("SELECT to_regclass(%s) IS NOT NULL", (t,))
+        if cur.fetchone()[0]:
+            sql += f" UNION SELECT brand FROM {t} WHERE LOWER(REGEXP_REPLACE(TRIM(brand), '\\s+', ' ', 'g')) = %s"
+    cur.execute(sql + " LIMIT 1", [_key(name)] * sql.count("%s"))
+    row = cur.fetchone()
+    if row:
+        conn.rollback()
+        log(f"[BRAND-SKU] Create refused: brand '{name}' already exists as '{row[0]}'")
+        return None, f"Brand '{row[0]}' already exists"
+    # 2. SKU prefix must be new
+    cur.execute("SELECT brand FROM brand_sku WHERE UPPER(TRIM(sku_prefix)) = %s LIMIT 1", (prefix,))
+    row = cur.fetchone()
+    if row:
+        conn.rollback()
+        log(f"[BRAND-SKU] Create refused: prefix {prefix} already belongs to '{row[0]}'")
+        return None, f"SKU prefix {prefix} already belongs to brand '{row[0]}'"
+    cur.execute("SELECT to_regclass('item_master') IS NOT NULL")
+    if cur.fetchone()[0]:
+        cur.execute("SELECT sku FROM item_master WHERE UPPER(TRIM(sku)) ~ %s LIMIT 1", (f"^{prefix}[0-9]+$",))
+        row = cur.fetchone()
+        if row:
+            conn.rollback()
+            log(f"[BRAND-SKU] Create refused: SKUs with prefix {prefix} already used (e.g. {row[0]})")
+            return None, f"SKU prefix {prefix} is already used by products (e.g. {row[0]})"
+    cur.execute("INSERT INTO brand_sku (brand, sku_prefix, next_sku_number, created_by, updated_at) "
+                "VALUES (%s, %s, %s, %s, NOW())", (name, prefix, FIRST_SKU_NUMBER, user))
+    conn.commit()
+    log(f"[BRAND-SKU] {user} created brand '{name}' prefix {prefix}, next SKU {prefix}{FIRST_SKU_NUMBER}")
+    return {"brand": name, "sku_prefix": prefix, "next_sku_number": FIRST_SKU_NUMBER}, None
+
+
+@brand_sku_bp.post("/brand-sku/create")
+def brand_sku_create():
+    """Item Master -> Brands -> Create new (admins). Body: {brand, sku_prefix}."""
+    if not is_admin():
+        log(f"[BRAND-SKU] Create refused: {g.get('user')} is not an admin")
+        return jsonify({"ok": False, "error": "admins only"}), 403
+    body = request.get_json(silent=True) or {}
+    conn = _hooks["connect"]()
+    try:
+        row, err = create_brand(conn, body.get("brand"), body.get("sku_prefix"), g.get("user"))
+    except Exception as ex:
+        conn.rollback()
+        log(f"[BRAND-SKU] Create ERROR: {ex}")
+        return jsonify({"ok": False, "error": str(ex)[:200]}), 500
+    finally:
+        conn.close()
+    if err:
+        return jsonify({"ok": False, "error": err}), 409
+    return jsonify({"ok": True, **row})
 
 
 # ============================================================ SECTION 5: hooks (called once from app.py)
