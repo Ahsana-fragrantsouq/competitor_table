@@ -47,6 +47,8 @@ SHOP_LISTS = {
     "on": ("Ounass", "ounass_catalog", "product_url", "CONCAT_WS(' ', brand, name)", "COALESCE(price_inc_tax, price)", "stock"),
     "am": ("Amberiya", "amberiya_catalog", "product_url", "CONCAT_WS(' ', brand, name)", "COALESCE(price_inc_tax, price)", "stock"),
     "ng": ("Niche Gallerie", "nichegallerie_catalog", "product_url", "name", "COALESCE(price_inc_tax, price)", "stock"),
+    "pd": ("Perfume Dubai", "perfumedubai_catalog", "product_url", "CONCAT_WS(' ', brand, name)",
+           "COALESCE(price_inc_tax, price)", "stock"),
 }
 
 

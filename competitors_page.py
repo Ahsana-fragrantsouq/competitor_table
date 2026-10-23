@@ -55,7 +55,7 @@ SOURCES = [
      # shops shown on each card: (label, column prefix in competitor_table). Add V Perfumes here later.
      "shops": [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"), ("Essenzi", "es"),
                ("V Perfumes", "vp"), ("Al Injaz", "aj"),
-               ("Ounass", "on"), ("Amberiya", "am"), ("Niche Gallerie", "ng")],
+               ("Ounass", "on"), ("Amberiya", "am"), ("Niche Gallerie", "ng"), ("Perfume Dubai", "pd")],
      "cols": {"code": "french_inventory_code", "sku": "sku", "brand": "brand", "barcode": "barcode", "name": "product_name",
               "uae_price": "uae_price",
               "samawa_url": "samawa_link", "samawa_price": "samawa_price", "samawa_stock": "samawa_stock",
@@ -73,6 +73,8 @@ SOURCES = [
               "am_title": "am_title", "am_confirmed": "am_confirmed",
               "ng_url": "ng_link", "ng_price": "ng_price", "ng_stock": "ng_stock", "ng_suggestion": "ng_suggestion",
               "ng_title": "ng_title", "ng_confirmed": "ng_confirmed",
+              "pd_url": "pd_link", "pd_price": "pd_price", "pd_stock": "pd_stock", "pd_suggestion": "pd_suggestion",
+              "pd_title": "pd_title", "pd_confirmed": "pd_confirmed",
               # competitor's own product name, used as the link text
               "samawa_title": "samawa_title", "ff_title": "ff_title", "bp_title": "bp_title",
               "es_title": "es_title", "vp_title": "vp_title",
@@ -125,6 +127,11 @@ SOURCES = [
     # Niche Gallerie = nichegallerie.com (WooCommerce product list), nichegallerie.py
     {"key": "ng", "label": "Niche Gallerie", "table": "nichegallerie_catalog",
      "cols": {"name": "name", "brand": None, "gtin": "COALESCE(gtin, sku)", "url": "product_url",
+              "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
+              "updated": "updated_at"}},
+    # Perfume Dubai = perfumedubai.com PERFUMES only (Shopify perfume collection), perfumedubai.py
+    {"key": "pd", "label": "Perfume Dubai", "table": "perfumedubai_catalog",
+     "cols": {"name": "name", "brand": "brand", "gtin": "COALESCE(gtin, sku)", "url": "product_url",
               "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
               "updated": "updated_at"}},
     # {"key": "shop3", "label": "Shop 3", "table": "shop3_catalog", "cols": {...}},   # add more here
@@ -768,7 +775,7 @@ HTML = """
                   'Samawa': r.samawa_url, 'French Fragrance': r.ff_url,
                   'Branded Perfume': r.bp_url, 'Essenzi': r.es_url, 'V Perfumes': r.vp_url, 'Al Injaz': r.aj_url,
                   'Ounass': r.on_url, 'Amberiya': r.am_url,
-                  'Niche Gallerie': r.ng_url} %}
+                  'Niche Gallerie': r.ng_url, 'Perfume Dubai': r.pd_url} %}
              <span class="{{ 'in' if 'Fragrant Souq' in (r.least_site or '') else 'out' }}">
                {%- for site in (r.least_site or '').split(', ') -%}
                  {%- if site_links.get(site) -%}
@@ -1109,6 +1116,7 @@ LINK_BARCODES = {
     "vp": ("vperfumes_catalog", "product_url", None), "aj": ("alinjaz_catalog", "product_url", "sku"),
     "on": ("ounass_catalog", "product_url", "sku"), "am": ("amberiya_catalog", "product_url", "sku"),
     "ng": ("nichegallerie_catalog", "product_url", "sku"),
+    "pd": ("perfumedubai_catalog", "product_url", "sku"),
 }
 
 
@@ -1867,7 +1875,7 @@ def run2_rows(rs):
         order = [(k, du.RUN2_LABELS[k]) for k in du.RUN2_ORDER]
     except Exception as ex:                                # daily_update.py missing -> fixed order
         print(f"[RUN2-BOX] daily_update.py not importable ({ex}) -> default shop order", flush=True)
-        order = [("samawa", "Samawa"), ("vp", "V Perfumes"), ("am", "Amberiya")]
+        order = [("samawa", "Samawa"), ("vp", "V Perfumes"), ("am", "Amberiya"), ("pd", "Perfume Dubai")]
     rs = rs or {}
     start = rs.get("round_start")
     results = rs.get("weekly_results") or {}

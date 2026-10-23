@@ -35,6 +35,7 @@ Files in this project
   ounass.py           -> downloads ounass.ae women + men fragrance pages into ounass_catalog
   amberiya.py         -> downloads amberiya.ae (Shopify products.json) into amberiya_catalog
   nichegallerie.py    -> downloads nichegallerie.com (WooCommerce product list) into nichegallerie_catalog
+  perfumedubai.py     -> downloads perfumedubai.com PERFUMES only (Shopify collection) into perfumedubai_catalog
   price_check.py      -> DAILY: re-checks price + stock at the EXISTING competitor links of 50 products
                          (Render Cron Job "python price_check.py"; never changes our price or Airtable)
 
@@ -50,6 +51,7 @@ Normal order to run things (open these URLs in the browser)
   9. /ounass/run?secret=XXX  then /competitor/match-on?secret=XXX   Ounass
  10. /amberiya/run?secret=XXX then /competitor/match-am?secret=XXX  Amberiya
  11. /nichegallerie/run?secret=XXX then /competitor/match-ng?secret=XXX  Niche Gallerie
+ 12. /perfumedubai/run?secret=XXX then /competitor/match-pd?secret=XXX  Perfume Dubai (test first: /perfumedubai/test)
      (least price is also recalculated automatically at the end of steps 2, 3 and 4)
   Progress: step 1 -> /samawa-catalog/status | steps 2, 3, 4 -> /samawa/status | Result -> /competitors
 
@@ -130,6 +132,7 @@ from alinjaz import alinjaz_bp                     # /alinjaz/test, /alinjaz/run
 from ounass import ounass_bp                       # /ounass/test, /ounass/run, /ounass/status
 from amberiya import amberiya_bp                   # /amberiya/test, /amberiya/run, /amberiya/status
 from nichegallerie import nichegallerie_bp         # /nichegallerie/test, /nichegallerie/run, /nichegallerie/status
+from perfumedubai import perfumedubai_bp           # /perfumedubai/test, /perfumedubai/run, /perfumedubai/status
 # price_check.py is optional: if the file is not uploaded to GitHub, the app still starts (without /price-check)
 try:
     from price_check import price_check_bp         # /price-check/run, /price-check/status (daily price check)
@@ -160,6 +163,7 @@ app.register_blueprint(alinjaz_bp)
 app.register_blueprint(ounass_bp)
 app.register_blueprint(amberiya_bp)
 app.register_blueprint(nichegallerie_bp)
+app.register_blueprint(perfumedubai_bp)            # Perfume Dubai (perfumedubai.py)
 if price_check_bp is not None:
     app.register_blueprint(price_check_bp)
     print("[PC] Daily price check routes registered: /price-check/run, /price-check/status", flush=True)
@@ -874,6 +878,7 @@ def run_match(brands, rematch=False, fi_groups=None):
 #   on_link / on_price / on_stock / on_suggestion / on_method / on_score   Ounass (brand cleaned, name match)
 #   am_link / am_price / am_stock / am_suggestion / am_method / am_score   Amberiya (Shopify vendor = brand)
 #   ng_link / ng_price / ng_stock / ng_suggestion / ng_method / ng_score   Niche Gallerie (brand inside the name)
+#   pd_link / pd_price / pd_stock / pd_suggestion / pd_method / pd_score   Perfume Dubai (Shopify vendor = brand)
 #   <shop>_title           the competitor's own product name (shown as the link text on the page)
 #   our_link / our_title   OUR product page on fragrantsouq.com (matched by SKU) - /competitor/load-our-links
 #   <shop>_confirmed       TRUE = suggestion accepted with "OK" -> later match runs keep this link
@@ -978,6 +983,15 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ng_score NUMERIC(5,3);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ng_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ng_confirmed BOOLEAN DEFAULT FALSE;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ng_rejected TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS pd_link TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS pd_price NUMERIC(10,2);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS pd_stock BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS pd_suggestion TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS pd_method TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS pd_score NUMERIC(5,3);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS pd_title TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS pd_confirmed BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS pd_rejected TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_link TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_stock BOOLEAN;
@@ -1291,14 +1305,15 @@ def on_entries_from_db(cur):
     return entries, {}
 
 
-def am_entries_from_db(cur):
-    """amberiya_catalog rows -> same entry format as Samawa (Shopify: brand = vendor, name = title - size)."""
-    cur.execute("SELECT to_regclass('amberiya_catalog')")
+def am_entries_from_db(cur, table="amberiya_catalog", label="Amberiya"):
+    """amberiya_catalog rows -> same entry format as Samawa (Shopify: brand = vendor, name = title - size).
+    Also used for Perfume Dubai (same Shopify columns): table="perfumedubai_catalog"."""
+    cur.execute("SELECT to_regclass(%s)", (table,))
     if cur.fetchone()[0] is None:
-        log("[CT-MATCH] amberiya_catalog does not exist yet")
+        log(f"[CT-MATCH] {table} does not exist yet")
         return [], {}
     cur.execute("SELECT product_url, gtin, brand, name, COALESCE(price_inc_tax, price), stock, volume "
-                "FROM amberiya_catalog WHERE COALESCE(stock, '') <> 'Not on site'")
+                f"FROM {table} WHERE COALESCE(stock, '') <> 'Not on site'")
     entries, by_barcode = [], {}
     for url, gtin, brand, name, price, stock, volume in cur.fetchall():
         name = name or ""
@@ -1314,8 +1329,13 @@ def am_entries_from_db(cur):
         if bc:
             by_barcode[bc] = e
             e["barcode"] = bc                     # used by match_one: barcode differs -> no name match
-    log(f"[CT-MATCH] {len(entries)} Amberiya variants loaded from amberiya_catalog | {len(by_barcode)} with barcode")
+    log(f"[CT-MATCH] {len(entries)} {label} variants loaded from {table} | {len(by_barcode)} with barcode")
     return entries, by_barcode
+
+
+def pd_entries_from_db(cur):
+    """perfumedubai_catalog rows (Shopify, same columns as Amberiya) -> entries for matching."""
+    return am_entries_from_db(cur, "perfumedubai_catalog", "Perfume Dubai")
 
 
 def ng_entries_from_db(cur):
@@ -1371,6 +1391,9 @@ SHOPS = {
     "ng": {"label": "Niche Gallerie", "prefix": "ng", "loader": ng_entries_from_db,
            "empty_hint": "nichegallerie_catalog is empty - run /nichegallerie/run first",
            "trust_barcode": False},      # no SKUs on the site -> name matching
+    "pd": {"label": "Perfume Dubai", "prefix": "pd", "loader": pd_entries_from_db,
+           "empty_hint": "perfumedubai_catalog is empty - run /perfumedubai/run first",
+           "trust_barcode": False},      # barcode must also agree by name (like Amberiya)
 }
 
 
@@ -1548,6 +1571,12 @@ def ct_match_ng():
     return ct_match_shop("ng")
 
 
+def ct_match_pd():
+    """Match all products to Perfume Dubai."""
+    log("[CT-PD] Started: match all products to Perfume Dubai")
+    return ct_match_shop("pd")
+
+
 # ============================================================ SECTION 11: PRICES: least price + suggested price
 # LEAST_SQL = cheapest of our price + in-stock competitors | SUGGEST_SQL = cheapest in-stock competitor - discount rate (discount_rate.py) | ct_update_least() runs both.
 # ---------------------------------------------------------------- Branded Perfume / Essenzi + least price
@@ -1597,6 +1626,9 @@ WITH offers AS (
     UNION ALL
     SELECT fi_record_id, 'Niche Gallerie', ng_price, 10
       FROM competitor_table WHERE ng_stock AND ng_link IS NOT NULL AND ng_price > 0
+    UNION ALL
+    SELECT fi_record_id, 'Perfume Dubai', pd_price, 11
+      FROM competitor_table WHERE pd_stock AND pd_link IS NOT NULL AND pd_price > 0
 ),
 best AS (
     SELECT fi_record_id, MIN(price) AS min_price FROM offers GROUP BY fi_record_id
@@ -1646,6 +1678,8 @@ WITH competitor_offers AS (
     SELECT fi_record_id, am_price FROM competitor_table WHERE am_stock AND am_link IS NOT NULL AND am_price > 0
     UNION ALL
     SELECT fi_record_id, ng_price FROM competitor_table WHERE ng_stock AND ng_link IS NOT NULL AND ng_price > 0
+    UNION ALL
+    SELECT fi_record_id, pd_price FROM competitor_table WHERE pd_stock AND pd_link IS NOT NULL AND pd_price > 0
 )
 UPDATE competitor_table c
 -- LOP / MOP (price_limits.py clamp_sql): below LOP -> LOP, above MOP -> MOP, empty = no limit
@@ -1892,11 +1926,13 @@ SUGGESTION_SHOPS = {
                        "WHERE product_url = %s LIMIT 1"),
     "ng": ("Niche Gallerie", "SELECT name, COALESCE(price_inc_tax, price), stock FROM nichegallerie_catalog "
                              "WHERE product_url = %s LIMIT 1"),
+    "pd": ("Perfume Dubai", "SELECT CONCAT_WS(' ', brand, name), COALESCE(price_inc_tax, price), stock "
+                            "FROM perfumedubai_catalog WHERE product_url = %s LIMIT 1"),
 }
 LEAST_ORDER = [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"),
                ("Essenzi", "es"), ("V Perfumes", "vp"), ("Al Injaz", "aj"),
                ("Ounass", "on"), ("Amberiya", "am"),
-               ("Niche Gallerie", "ng")]
+               ("Niche Gallerie", "ng"), ("Perfume Dubai", "pd")]
 
 
 def link_sisters_for(cur, fid):
@@ -2291,6 +2327,13 @@ def ct_match_ng_route():
     # /competitor/match-ng?secret=XXX -> Niche Gallerie link / price / stock / suggestion for every product
     log("[ROUTE] /competitor/match-ng called")
     return _ct_start(ct_match_ng, "CT-NG")
+
+
+@app.get("/competitor/match-pd")
+def ct_match_pd_route():
+    # /competitor/match-pd?secret=XXX -> Perfume Dubai link / price / stock / suggestion for every product
+    log("[ROUTE] /competitor/match-pd called")
+    return _ct_start(ct_match_pd, "CT-PD")
 
 
 @app.get("/competitor/match-am")
