@@ -1906,7 +1906,7 @@ def run2_rows(rs):
     except Exception as ex:                                # daily_update.py missing -> fixed order
         print(f"[RUN2-BOX] daily_update.py not importable ({ex}) -> default shop order", flush=True)
         order = [("samawa", "Samawa"), ("vp", "V Perfumes"), ("am", "Amberiya"), ("pd", "Perfume Dubai"),
-                 ("mh", "MHG Boutique"), ("ep", "Emirates Pride")]
+                 ("mh", "MHG Boutique")]
     rs = rs or {}
     start = rs.get("round_start")
     results = rs.get("weekly_results") or {}

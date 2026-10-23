@@ -1,6 +1,8 @@
 """
 Emirates Pride catalog (emiratespride.com -> Postgres french_fragrance_db, table emiratespride_catalog)
 Plugged into app.py as a Blueprint. Made from perfumedubai.py (same Shopify way of reading).
+RUNS ON THE PC (Run 1, PC_LISTS in daily_update.py -> ep_scraper.py): the UAE pages answer "404" to Render's US
+servers but work from the PC (UAE internet). The /emiratespride/... routes on Render therefore find nothing.
 Shown in the menu "Brands" (not "Competitors") - a brand's own shop; everything else works like a competitor.
 
 Emirates Pride is a Shopify store with a UAE part (/ae), so its product list is public.
@@ -37,7 +39,16 @@ import traceback
 import requests
 import psycopg2
 from psycopg2.extras import execute_values
-from flask import Blueprint, request, jsonify
+try:
+    from flask import Blueprint, request, jsonify
+except ImportError:                      # on the PC (ep_scraper.py) Flask may be missing: the routes are not needed there
+    class Blueprint:                     # stand-in: @emiratespride_bp.route(...) just returns the function
+        def __init__(self, *a, **k):
+            pass
+
+        def route(self, *a, **k):
+            return lambda f: f
+    request = jsonify = None
 
 emiratespride_bp = Blueprint("emiratespride", __name__)
 

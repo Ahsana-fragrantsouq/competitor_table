@@ -94,7 +94,7 @@ RUN2_TIME = "07:00"            # "HH:MM", 24-hour India time. Example: "06:30", 
 # the next round starts RUN2_ROUND_DAYS after the start of the last one -> every shop once every 2 weeks.
 # Ounass, Al Injaz, Niche Gallerie are NOT here: they block Render (captcha / "too many requests") and run on the
 # PC (PC_LISTS below). The next shop = the first one not done yet in this round.
-RUN2_ORDER = ["samawa", "vp", "am", "pd", "mh", "ep"]   # pd = Perfume Dubai, mh = MHG Boutique, ep = Emirates Pride
+RUN2_ORDER = ["samawa", "vp", "am", "pd", "mh"]   # pd = Perfume Dubai, mh = MHG Boutique (Emirates Pride = PC_LISTS)
 RUN2_ROUND_DAYS = 14           # a new round every 14 days (7 = every week)
 RUN2_DAYS = range(0, 7)        # 0 = Monday ... 6 = Sunday: Render runs every day
 # RUN2_SAVE_NEW = True  -> NEW products of the shop are SAVED and matched to our products.
@@ -111,7 +111,6 @@ RUN2_SHOPS = [
     ("am", "Amberiya", "amberiya_catalog", "/amberiya/run", "/amberiya/status", "/competitor/match-am"),
     ("pd", "Perfume Dubai", "perfumedubai_catalog", "/perfumedubai/run", "/perfumedubai/status", "/competitor/match-pd"),
     ("mh", "MHG Boutique", "mhgboutique_catalog", "/mhgboutique/run", "/mhgboutique/status", "/competitor/match-mh"),
-    ("ep", "Emirates Pride", "emiratespride_catalog", "/emiratespride/run", "/emiratespride/status", "/competitor/match-ep"),
 ]
 RUN2_LABELS = {k: label for k, label, *_ in RUN2_SHOPS}
 
@@ -125,6 +124,7 @@ PC_LISTS = [
     ("on", "Ounass", "ounass_catalog", "on_scraper.py", "/competitor/match-on"),
     ("aj", "Al Injaz", "alinjaz_catalog", "aj_scraper.py", "/competitor/match-aj"),        # captcha on Render
     ("ng", "Niche Gallerie", "nichegallerie_catalog", "ng_scraper.py", "/competitor/match-ng"),  # captcha on Render
+    ("ep", "Emirates Pride", "emiratespride_catalog", "ep_scraper.py", "/competitor/match-ep"),   # UAE pages 404 on Render
 ]
 
 
