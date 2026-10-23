@@ -229,9 +229,11 @@ def take_sku(cur, brand):
     if not row:
         return None, f"brand '{brand}' is not in the brand table (Item Master -> Brands -> Create new)"
     _, prefix, nxt = row
-    if not prefix or nxt is None:
-        return None, f"brand '{brand}' has no SKU Prefix / Next SKU number"
-    n = int(nxt)
+    if not prefix:
+        return None, f"brand '{brand}' has no SKU Prefix"
+    if nxt is None:                                      # prefix but no number yet -> start at 1001 (database default)
+        log(f"[NEW-ITEM] brand '{brand}' has no Next SKU number -> starting at {brand_sku.FIRST_SKU_NUMBER}")
+    n = int(nxt if nxt is not None else brand_sku.FIRST_SKU_NUMBER)
     while True:                                          # never give a SKU that is already used
         cur.execute("SELECT 1 FROM item_master WHERE UPPER(TRIM(sku)) = %s LIMIT 1", (f"{prefix}{n}".upper(),))
         if not cur.fetchone():

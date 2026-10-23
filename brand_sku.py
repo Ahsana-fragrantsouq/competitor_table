@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS brand_sku (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS brand_sku_lower ON brand_sku (LOWER(brand));
 ALTER TABLE brand_sku ADD COLUMN IF NOT EXISTS created_by TEXT;     -- admin who made it on our website (Create new)
+ALTER TABLE brand_sku ALTER COLUMN next_sku_number SET DEFAULT 1001;  -- new brand: first SKU = prefix + 1001
 """
 _hooks = {}
 
