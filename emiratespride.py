@@ -4,7 +4,8 @@ Plugged into app.py as a Blueprint. Made from perfumedubai.py (same Shopify way 
 Shown in the menu "Brands" (not "Competitors") - a brand's own shop; everything else works like a competitor.
 
 Emirates Pride is a Shopify store with a UAE part (/ae), so its product list is public.
-EP_BASE = https://emiratespride.com/ae -> UAE prices + links that open the UAE shop.
+Product lists are read from the first address of EP_API_BASES that answers with products (UAE part /ae first,
+then the main address); links always open the UAE shop (EP_BASE).
   /emiratespride/test shows the prices: compare one with the website (must be AED).
 ONLY PERFUMES are saved (no make up, skincare, bags, gift sets, body mists ...):
   1. the shop's PERFUME collection is read: the first of EP_COLLECTIONS that has products, e.g.
@@ -36,7 +37,9 @@ from flask import Blueprint, request, jsonify
 
 emiratespride_bp = Blueprint("emiratespride", __name__)
 
-EP_BASE = "https://emiratespride.com/ae"      # UAE part of the shop (AED prices); product links start with this too
+EP_BASE = "https://emiratespride.com/ae"      # UAE part of the shop: product links start with this
+# where the product lists are read (tried in this order; /emiratespride/test shows the HTTP answer of each one)
+EP_API_BASES = ["https://emiratespride.com/ae", "https://emiratespride.com", "https://www.emiratespride.com"]
 EP_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
               "Accept": "application/json"}
 EP_MAX_PAGES = 100              # Shopify limit: max 100 pages x 250 = 25,000 products
@@ -154,23 +157,37 @@ def ep_items(products, whole_shop=False):
     return out
 
 
-def ep_source():
-    """Path of the perfume list: /collections/<first of EP_COLLECTIONS with products>/products.json,
-    or /products.json (whole shop, filtered by EP_PERFUME_WORDS) when none exists. Remembered in ep_state."""
-    for handle in EP_COLLECTIONS:
-        path = f"/collections/{handle}/products.json"
+def ep_try(url):
+    """One test read (1 product). Returns (number of products, short answer text) - also saved in ep_state['tried']."""
+    try:
+        r = requests.get(url, params={"limit": 1}, headers=EP_HEADERS, timeout=60)
+    except requests.RequestException as ex:
+        answer, n = f"network error {str(ex)[:80]}", 0
+    else:
         try:
-            r = requests.get(f"{EP_BASE}{path}", params={"limit": 1}, headers=EP_HEADERS, timeout=60)
             n = len(r.json().get("products", [])) if r.status_code == 200 else 0
-        except (requests.RequestException, ValueError) as ex:
-            ep_log(f"[EP] collection '{handle}': not readable ({str(ex)[:80]})")
-            continue
-        ep_log(f"[EP] collection '{handle}': HTTP {r.status_code}, {n} product(s) on a test read")
-        if n:
-            ep_state["source"] = path
-            return path
-    ep_log("[EP] no perfume collection found -> whole shop /products.json, perfumes picked by words")
-    ep_state["source"] = "/products.json"
+            answer = f"HTTP {r.status_code}, {n} product(s)"
+        except ValueError:
+            n, answer = 0, f"HTTP {r.status_code}, not a product list (web page / blocked?): {r.text[:80]!r}"
+    ep_state.setdefault("tried", []).append({"url": url, "answer": answer})
+    ep_log(f"[EP] test read {url}: {answer}")
+    return n, answer
+
+
+def ep_source():
+    """Path of the perfume list: /collections/<first of EP_COLLECTIONS with products>/products.json, else
+    /products.json (whole shop, filtered by EP_PERFUME_WORDS). Tries every address of EP_API_BASES; the one that
+    works is kept in ep_state['api_base'] (used by ep_get)."""
+    ep_state["tried"] = []
+    for base in EP_API_BASES:
+        for path in [f"/collections/{h}/products.json" for h in EP_COLLECTIONS] + ["/products.json"]:
+            n, _ = ep_try(f"{base}{path}")
+            if n:
+                ep_state["api_base"], ep_state["source"] = base, path
+                ep_log(f"[EP] using {base}{path}")
+                return path
+    ep_log("[EP] NO address answered with products - see 'tried' on /emiratespride/test")
+    ep_state["api_base"], ep_state["source"] = EP_API_BASES[0], "/products.json"
     return "/products.json"
 
 
@@ -181,7 +198,7 @@ def ep_get(page, path="/products.json"):
             ep_log(f"[EP] page {page}: retry {attempt}/{len(EP_RETRY_WAITS)} in {wait}s")
             time.sleep(wait)
         try:
-            r = requests.get(f"{EP_BASE}{path}", params={"limit": 250, "page": page},
+            r = requests.get(f"{ep_state.get('api_base') or EP_API_BASES[0]}{path}", params={"limit": 250, "page": page},
                              headers=EP_HEADERS, timeout=60)
         except requests.RequestException as ex:
             ep_log(f"[EP] page {page}: network error {ex}")
@@ -216,6 +233,7 @@ def ep_run():
         path = ep_source()                                  # perfume collection (or whole shop)
         whole_shop = path == "/products.json"
         st["source"] = path
+        st["api_base"] = ep_state.get("api_base")
         for page in range(1, EP_MAX_PAGES + 1):
             products = ep_get(page, path)
             if products is None:
@@ -285,7 +303,8 @@ def ep_test_route():
         ep_log(f"[EP-TEST] {ex}")
         return jsonify({"ok": False, "error": str(ex)})
     items = ep_items(products or [], whole_shop)
-    result = {"ok": bool(items), "source": path, "page1_products": len(products or []), "page1_variants": len(items),
+    result = {"ok": bool(items), "source": path, "api_base": ep_state.get("api_base"),
+              "tried": ep_state.get("tried", []), "page1_products": len(products or []), "page1_variants": len(items),
               "skipped_not_perfume": [p.get("title") for p in (products or []) if not ep_is_perfume(p, whole_shop)][:30],
               "with_sku": sum(1 for i in items if i["sku"]), "with_barcode": sum(1 for i in items if i["gtin"]),
               "brands_seen": sorted({i["brand"] or "-" for i in items})[:20],
