@@ -55,6 +55,8 @@ SHOP_LISTS = {
            "COALESCE(price_inc_tax, price)", "stock"),
     "an": ("Anfasic", "anfasic_catalog", "product_url", "CONCAT_WS(' ', brand, name)",
            "COALESCE(price_inc_tax, price)", "stock"),
+    "kh": ("Khaltat", "khaltat_catalog", "product_url", "CONCAT_WS(' ', brand, name)",
+           "COALESCE(price_inc_tax, price)", "stock"),
 }
 
 

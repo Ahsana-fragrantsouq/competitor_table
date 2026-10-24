@@ -39,6 +39,7 @@ Files in this project
   mhgboutique.py      -> downloads mhgboutique.com PERFUMES only (Shopify, product type) into mhgboutique_catalog
   emiratespride.py    -> downloads emiratespride.com/ae PERFUMES only (Shopify) into emiratespride_catalog (menu Brands)
   anfasic.py          -> downloads anfasic.ae PERFUMES only (Shopify) into anfasic_catalog (menu Brands)
+  khaltat.py          -> downloads khaltat.com PERFUMES only (Shopify) into khaltat_catalog (menu Brands Store)
   price_check.py      -> DAILY: re-checks price + stock at the EXISTING competitor links of 50 products
                          (Render Cron Job "python price_check.py"; never changes our price or Airtable)
 
@@ -58,6 +59,7 @@ Normal order to run things (open these URLs in the browser)
  13. /mhgboutique/run?secret=XXX then /competitor/match-mh?secret=XXX  MHG Boutique (test first: /mhgboutique/test)
  14. /emiratespride/run?secret=XXX then /competitor/match-ep?secret=XXX  Emirates Pride (test first: /emiratespride/test)
  15. /anfasic/run?secret=XXX then /competitor/match-an?secret=XXX  Anfasic (test first: /anfasic/test)
+ 16. /khaltat/run?secret=XXX then /competitor/match-kh?secret=XXX  Khaltat (test first: /khaltat/test)
      (least price is also recalculated automatically at the end of steps 2, 3 and 4)
   Progress: step 1 -> /samawa-catalog/status | steps 2, 3, 4 -> /samawa/status | Result -> /competitors
 
@@ -142,6 +144,7 @@ from perfumedubai import perfumedubai_bp           # /perfumedubai/test, /perfum
 from mhgboutique import mhgboutique_bp             # /mhgboutique/test, /mhgboutique/run, /mhgboutique/status
 from emiratespride import emiratespride_bp         # /emiratespride/test, /emiratespride/run, /emiratespride/status
 from anfasic import anfasic_bp                     # /anfasic/test, /anfasic/run, /anfasic/status
+from khaltat import khaltat_bp                     # /khaltat/test, /khaltat/run, /khaltat/status
 import brand_refresh                               # Item Master -> Brands: Refresh all / one brand (brand_refresh.py)
 # price_check.py is optional: if the file is not uploaded to GitHub, the app still starts (without /price-check)
 try:
@@ -177,6 +180,7 @@ app.register_blueprint(perfumedubai_bp)            # Perfume Dubai (perfumedubai
 app.register_blueprint(mhgboutique_bp)             # MHG Boutique (mhgboutique.py)
 app.register_blueprint(emiratespride_bp)           # Emirates Pride (emiratespride.py, menu Brands)
 app.register_blueprint(anfasic_bp)                 # Anfasic (anfasic.py, menu Brands)
+app.register_blueprint(khaltat_bp)                 # Khaltat (khaltat.py, menu Brands Store)
 app.register_blueprint(brand_refresh.refresh_bp)   # POST /brands/refresh, GET /brands/refresh/status
 if price_check_bp is not None:
     app.register_blueprint(price_check_bp)
@@ -896,6 +900,7 @@ def run_match(brands, rematch=False, fi_groups=None):
 #   mh_link / mh_price / mh_stock / mh_suggestion / mh_method / mh_score   MHG Boutique (Shopify vendor = brand)
 #   ep_link / ep_price / ep_stock / ep_suggestion / ep_method / ep_score   Emirates Pride (Shopify, menu Brands)
 #   an_link / an_price / an_stock / an_suggestion / an_method / an_score   Anfasic (Shopify, menu Brands)
+#   kh_link / kh_price / kh_stock / kh_suggestion / kh_method / kh_score   Khaltat (Shopify, menu Brands Store)
 #   <shop>_title           the competitor's own product name (shown as the link text on the page)
 #   our_link / our_title   OUR product page on fragrantsouq.com (matched by SKU) - /competitor/load-our-links
 #   <shop>_confirmed       TRUE = suggestion accepted with "OK" -> later match runs keep this link
@@ -1036,6 +1041,15 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS an_score NUMERIC(5,3);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS an_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS an_confirmed BOOLEAN DEFAULT FALSE;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS an_rejected TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS kh_link TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS kh_price NUMERIC(10,2);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS kh_stock BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS kh_suggestion TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS kh_method TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS kh_score NUMERIC(5,3);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS kh_title TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS kh_confirmed BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS kh_rejected TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_link TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_stock BOOLEAN;
@@ -1405,6 +1419,11 @@ def an_entries_from_db(cur):
     return am_entries_from_db(cur, "anfasic_catalog", "Anfasic")
 
 
+def kh_entries_from_db(cur):
+    """khaltat_catalog rows (Shopify, same columns as Amberiya) -> entries for matching."""
+    return am_entries_from_db(cur, "khaltat_catalog", "Khaltat")
+
+
 def ng_entries_from_db(cur):
     """nichegallerie_catalog rows -> same entry format (WooCommerce like Al Injaz: brand is inside the name)."""
     cur.execute("SELECT to_regclass('nichegallerie_catalog')")
@@ -1470,7 +1489,25 @@ SHOPS = {
     "an": {"label": "Anfasic", "prefix": "an", "loader": an_entries_from_db,
            "empty_hint": "anfasic_catalog is empty - run /anfasic/run first",
            "trust_barcode": False},      # barcode must also agree by name
+    "kh": {"label": "Khaltat", "prefix": "kh", "loader": kh_entries_from_db,
+           "empty_hint": "khaltat_catalog is empty - run /khaltat/run first",
+           "trust_barcode": False},      # barcode must also agree by name
 }
+
+
+# words that are often missing from a shop's product title: "Initio Parfums" is written "Initio ..." on Al Injaz
+BRAND_GENERIC_WORDS = {"parfums", "parfum", "perfumes", "perfume", "fragrances", "fragrance", "paris", "london",
+                       "milano", "cosmetics"}
+
+
+def brand_core(bnorm):
+    """norm_text(brand) without BRAND_GENERIC_WORDS -> ' initio ' ; None when nothing was dropped or the rest is
+    too short to be safe (under 4 letters, e.g. 'Le Parfums' -> None)."""
+    words = bnorm.split()
+    core = [w for w in words if w not in BRAND_GENERIC_WORDS]
+    if len(core) == len(words) or len("".join(core)) < 4:
+        return None
+    return " " + " ".join(core) + " "
 
 
 def ct_match_shop(shop_key, only_brands=None, least=True):
@@ -1540,11 +1577,15 @@ def ct_match_shop(shop_key, only_brands=None, least=True):
         updates = []
         for bi, brand in enumerate(brands, 1):
             bkey, bnorm = key(brand), norm_text(brand)
+            bcore = brand_core(bnorm)                 # "initio parfums" -> " initio " (None = nothing to drop)
             # same brand = shop's brand starts with ours, or our brand name is inside the product title,
-            # or shop brand "Dior" inside our "Christian Dior"
+            # or shop brand "Dior" inside our "Christian Dior",
+            # or (shops with the brand only in the title) our brand WITHOUT "Parfums / Perfumes / Paris ..." is in it:
+            # Al Injaz "Initio Oud for Greatness Neo" for our brand "Initio Parfums"
             brand_entries = [e for e in entries if (e["vendor_key"] and e["vendor_key"].startswith(bkey))
                              or bnorm in e["title_norm"]
-                             or (len(e["vendor_key"]) >= 4 and e["vendor_key"] in bkey)]
+                             or (len(e["vendor_key"]) >= 4 and e["vendor_key"] in bkey)
+                             or (bcore and not e["vendor_key"] and bcore in e["title_norm"])]
             if shop_key in ("ff", "vp", "aj", "on", "ng"):
                 # French Fragrance / V Perfumes titles start with the FULL brand ("Christian Dior Sauvage ...").
                 # Our brand is "Dior" -> the word "christian" would lower the name score.
@@ -1552,6 +1593,8 @@ def ct_match_shop(shop_key, only_brands=None, least=True):
                 trimmed = []
                 for e in brand_entries:
                     pos = e["title_norm"].find(bnorm)
+                    if pos < 0 and bcore:                 # title has the short brand ("initio") -> trim before that
+                        pos = e["title_norm"].find(bcore)
                     # "Santal 33 by Le Labo": the words before the brand ARE the perfume name -> keep them
                     if pos > 0 and not e["title_norm"][:pos + 1].endswith(" by "):
                         e = {**e, "tokens": e["tokens"] - tokens(e["title_norm"][:pos])}
@@ -1678,6 +1721,12 @@ def ct_match_an():
     return ct_match_shop("an")
 
 
+def ct_match_kh():
+    """Match all products to Khaltat."""
+    log("[CT-KH] Started: match all products to Khaltat")
+    return ct_match_shop("kh")
+
+
 # ============================================================ SECTION 11: PRICES: least price + suggested price
 # LEAST_SQL = cheapest of our price + in-stock competitors | SUGGEST_SQL = cheapest in-stock competitor - discount rate (discount_rate.py) | ct_update_least() runs both.
 # ---------------------------------------------------------------- Branded Perfume / Essenzi + least price
@@ -1739,6 +1788,9 @@ WITH offers AS (
     UNION ALL
     SELECT fi_record_id, 'Anfasic', an_price, 14
       FROM competitor_table WHERE an_stock AND an_link IS NOT NULL AND an_price > 0
+    UNION ALL
+    SELECT fi_record_id, 'Khaltat', kh_price, 15
+      FROM competitor_table WHERE kh_stock AND kh_link IS NOT NULL AND kh_price > 0
 ),
 best AS (
     SELECT fi_record_id, MIN(price) AS min_price FROM offers GROUP BY fi_record_id
@@ -1796,6 +1848,8 @@ WITH competitor_offers AS (
     SELECT fi_record_id, ep_price FROM competitor_table WHERE ep_stock AND ep_link IS NOT NULL AND ep_price > 0
     UNION ALL
     SELECT fi_record_id, an_price FROM competitor_table WHERE an_stock AND an_link IS NOT NULL AND an_price > 0
+    UNION ALL
+    SELECT fi_record_id, kh_price FROM competitor_table WHERE kh_stock AND kh_link IS NOT NULL AND kh_price > 0
 )
 UPDATE competitor_table c
 -- LOP / MOP (price_limits.py clamp_sql): below LOP -> LOP, above MOP -> MOP, empty = no limit
@@ -2050,12 +2104,14 @@ SUGGESTION_SHOPS = {
                              "FROM emiratespride_catalog WHERE product_url = %s LIMIT 1"),
     "an": ("Anfasic", "SELECT CONCAT_WS(' ', brand, name), COALESCE(price_inc_tax, price), stock "
                       "FROM anfasic_catalog WHERE product_url = %s LIMIT 1"),
+    "kh": ("Khaltat", "SELECT CONCAT_WS(' ', brand, name), COALESCE(price_inc_tax, price), stock "
+                      "FROM khaltat_catalog WHERE product_url = %s LIMIT 1"),
 }
 LEAST_ORDER = [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"),
                ("Essenzi", "es"), ("V Perfumes", "vp"), ("Al Injaz", "aj"),
                ("Ounass", "on"), ("Amberiya", "am"),
                ("Niche Gallerie", "ng"), ("Perfume Dubai", "pd"), ("MHG Boutique", "mh"),
-               ("Emirates Pride", "ep"), ("Anfasic", "an")]
+               ("Emirates Pride", "ep"), ("Anfasic", "an"), ("Khaltat", "kh")]
 
 
 def link_sisters_for(cur, fid):
@@ -2503,6 +2559,13 @@ def ct_match_ng_route():
     # /competitor/match-ng?secret=XXX -> Niche Gallerie link / price / stock / suggestion for every product
     log("[ROUTE] /competitor/match-ng called")
     return _ct_start(ct_match_ng, "CT-NG")
+
+
+@app.get("/competitor/match-kh")
+def ct_match_kh_route():
+    # /competitor/match-kh?secret=XXX -> Khaltat link / price / stock / suggestion for every product
+    log("[ROUTE] /competitor/match-kh called")
+    return _ct_start(ct_match_kh, "CT-KH")
 
 
 @app.get("/competitor/match-an")

@@ -58,7 +58,7 @@ SOURCES = [
                ("V Perfumes", "vp"), ("Al Injaz", "aj"),
                ("Ounass", "on"), ("Amberiya", "am"), ("Niche Gallerie", "ng"), ("Perfume Dubai", "pd"),
                ("MHG Boutique", "mh"), ("Emirates Pride", "ep"),
-               ("Anfasic", "an")],
+               ("Anfasic", "an"), ("Khaltat", "kh")],
      "cols": {"code": "french_inventory_code", "sku": "sku", "brand": "brand", "barcode": "barcode", "name": "product_name",
               "uae_price": "uae_price",
               "samawa_url": "samawa_link", "samawa_price": "samawa_price", "samawa_stock": "samawa_stock",
@@ -84,6 +84,8 @@ SOURCES = [
               "ep_title": "ep_title", "ep_confirmed": "ep_confirmed",
               "an_url": "an_link", "an_price": "an_price", "an_stock": "an_stock", "an_suggestion": "an_suggestion",
               "an_title": "an_title", "an_confirmed": "an_confirmed",
+              "kh_url": "kh_link", "kh_price": "kh_price", "kh_stock": "kh_stock", "kh_suggestion": "kh_suggestion",
+              "kh_title": "kh_title", "kh_confirmed": "kh_confirmed",
               # competitor's own product name, used as the link text
               "samawa_title": "samawa_title", "ff_title": "ff_title", "bp_title": "bp_title",
               "es_title": "es_title", "vp_title": "vp_title",
@@ -160,6 +162,11 @@ SOURCES = [
      "cols": {"name": "name", "brand": "brand", "gtin": "COALESCE(gtin, sku)", "url": "product_url",
               "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
               "updated": "updated_at"}},
+    # Khaltat = khaltat.com PERFUMES only (Shopify), khaltat.py - menu BRANDS STORE like Emirates Pride / Anfasic
+    {"key": "kh", "label": "Khaltat", "table": "khaltat_catalog", "menu": "brands",
+     "cols": {"name": "name", "brand": "brand", "gtin": "COALESCE(gtin, sku)", "url": "product_url",
+              "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
+              "updated": "updated_at"}},
     # {"key": "shop3", "label": "Shop 3", "table": "shop3_catalog", "cols": {...}},   # add more here
 ]
 SOURCE_BY_KEY = {s["key"]: s for s in SOURCES}
@@ -200,9 +207,9 @@ NAV_HTML = """
       {% endfor %}
     </div>
   </details>
-  {# Brands dropdown: brands' own shops (SOURCES with "menu": "brands", e.g. Emirates Pride) - same pages as competitors #}
+  {# "Brands Store" dropdown: brands' own shops (SOURCES with "menu": "brands", e.g. Emirates Pride) - same pages as competitors #}
   <details class="dd" id="ddBrand">
-    <summary class="{{ 'on' if active == 'brandshop' else '' }}">Brands<span class="car">&#9662;</span></summary>
+    <summary class="{{ 'on' if active == 'brandshop' else '' }}">Brands Store<span class="car">&#9662;</span></summary>
     <div class="ddmenu">
       {% for s in sources if s.menu == 'brands' %}
       <a href="/competitors?tab={{ s.key }}" class="{{ 'cur' if s.key == cur_key else '' }}">
@@ -813,7 +820,7 @@ HTML = """
                   'Ounass': r.on_url, 'Amberiya': r.am_url,
                   'Niche Gallerie': r.ng_url, 'Perfume Dubai': r.pd_url,
                   'MHG Boutique': r.mh_url, 'Emirates Pride': r.ep_url,
-                  'Anfasic': r.an_url} %}
+                  'Anfasic': r.an_url, 'Khaltat': r.kh_url} %}
              <span class="{{ 'in' if 'Fragrant Souq' in (r.least_site or '') else 'out' }}">
                {%- for site in (r.least_site or '').split(', ') -%}
                  {%- if site_links.get(site) -%}
@@ -1160,6 +1167,7 @@ LINK_BARCODES = {
     "mh": ("mhgboutique_catalog", "product_url", "sku"),
     "ep": ("emiratespride_catalog", "product_url", "sku"),
     "an": ("anfasic_catalog", "product_url", "sku"),
+    "kh": ("khaltat_catalog", "product_url", "sku"),
 }
 
 
@@ -1930,7 +1938,7 @@ def run2_rows(rs):
     except Exception as ex:                                # daily_update.py missing -> fixed order
         print(f"[RUN2-BOX] daily_update.py not importable ({ex}) -> default shop order", flush=True)
         order = [("samawa", "Samawa"), ("vp", "V Perfumes"), ("am", "Amberiya"), ("pd", "Perfume Dubai"),
-                 ("mh", "MHG Boutique"), ("an", "Anfasic")]
+                 ("mh", "MHG Boutique"), ("an", "Anfasic"), ("kh", "Khaltat")]
     rs = rs or {}
     start = rs.get("round_start")
     results = rs.get("weekly_results") or {}
