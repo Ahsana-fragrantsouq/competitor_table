@@ -45,7 +45,7 @@ COMPETITORS = [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfu
                ("Essenzi", "es"), ("V Perfumes", "vp"), ("Al Injaz", "aj"),
                ("Ounass", "on"), ("Amberiya", "am"), ("Niche Gallerie", "ng"),
                ("Perfume Dubai", "pd"), ("MHG Boutique", "mh"), ("Emirates Pride", "ep"),
-               ("Anfasic", "an"), ("Khaltat", "kh")]
+               ("Anfasic", "an"), ("Khaltat", "kh"), ("Oud Elite", "oe")]
 SHOP_LABELS = {p: label for label, p in COMPETITORS}
 RATE_KEY = "discount_rate"          # Settings -> Auto discount rate (table app_settings, discount_rate.py)
 
@@ -139,7 +139,7 @@ def recalc_product(cur, fid, reason=""):
 # ============================================================ SECTION 4: TRIGGER 1 - competitor price / stock changed
 def on_competitor_change(cur, shop, link, price=None, in_stock=None):
     """A competitor's price or stock CHANGED for the product page `link` (call it only when it really changed).
-        shop     : column prefix - "ff", "bp", "es", "samawa", "vp", "aj", "on", "am", "ng", "pd", "mh", "ep", "an", "kh"
+        shop     : column prefix - "ff", "bp", "es", "samawa", "vp", "aj", "on", "am", "ng", "pd", "mh", "ep", "an", "kh", "oe"
         link     : the product page on that shop (the same text saved in competitor_table.<shop>_link)
         price    : new price incl. VAT (None = price not read -> the saved price is kept)
         in_stock : True / False (None = stock not known -> the saved stock is kept)
