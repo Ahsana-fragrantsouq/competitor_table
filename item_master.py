@@ -396,6 +396,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
  .ourlink a{color:var(--gold);text-underline-offset:3px}
  .ourlink .nolink{color:var(--muted);font-size:14px}
  .ourlink .out{color:#e0806c;font-size:13px;margin-bottom:3px}
+ .ourlink .stockqty{color:var(--muted);font-size:13px;margin-top:3px}     /* "Stock 7" under the fragrantsouq.com link */
  @media (max-width:640px){ .titlerow{flex-direction:column} .ourlink{max-width:100%;text-align:left} }
  .meta{color:var(--muted);font-size:14px;margin-top:4px}
  .meta b{color:var(--text);font-weight:600}
@@ -457,6 +458,8 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
     <div class="ourlink">
       {% if r.our_link and r.our_stock == false %}<div class="out">Out of stock</div>{% endif %}
       {% if r.our_link %}<a href="{{ r.our_link }}" target="_blank" title="{{ r.our_title or r.our_link }}">View on fragrantsouq.com &#8599;</a>
+      {# stock NUMBER on our website (same as the Competitor table card; from Shopify admin via load-our-links / Refresh) #}
+      {% if r.our_stock_qty is not none %}<div class="stockqty">Stock {{ r.our_stock_qty }}</div>{% endif %}
       {% else %}<span class="nolink">Not on fragrantsouq.com</span>{% endif %}
       {# admins: the 2 buttons on ONE line - [Create in website] [Create product description], messages below #}
       <div class="btnrow">
@@ -555,9 +558,13 @@ def item_master_page():
         cur.execute("SELECT to_regclass('competitor_table') IS NOT NULL AS ok")
         if cur.fetchone()["ok"]:
             link_cols = "ct.our_link, ct.our_title, ct.our_stock"
+            # stock NUMBER on fragrantsouq.com (competitor_table.our_stock_qty, Shopify admin) - column made by load-our-links
+            cur.execute("SELECT COUNT(*) AS n FROM information_schema.columns "
+                        "WHERE table_name = 'competitor_table' AND column_name = 'our_stock_qty'")
+            link_cols += ", ct.our_stock_qty" if cur.fetchone()["n"] else ", NULL AS our_stock_qty"
             link_join = "LEFT JOIN competitor_table ct ON ct.fi_record_id = im.fi_record_id"
         else:                                              # competitor table not created yet -> no links
-            link_cols, link_join = "NULL AS our_link, NULL AS our_title, NULL AS our_stock", ""
+            link_cols, link_join = "NULL AS our_link, NULL AS our_title, NULL AS our_stock, NULL AS our_stock_qty", ""
         cur.execute(f"SELECT im.fi_record_id, im.loaded_at, {', '.join('im.' + c for c in SHOWN)}, "
                     f"(COALESCE(im.shopify_description, '') <> '') AS has_desc, "     # button asks before replacing
                     f"(TRIM(CONCAT(im.top_notes, im.middle_notes, im.base_notes)) <> '') AS has_notes, "  # no notes -> description button off
