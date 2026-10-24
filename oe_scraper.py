@@ -5,9 +5,9 @@ Oud Elite (ae.oudelite.com) is a SALLA shop (store 1934736234) that refuses plai
 so - like Ounass - it is read in your Chrome. Sections read (everything in them, as asked):
   Fragrances           https://ae.oudelite.com/en/fragrances/c435056374
   Gifts & Accessories  https://ae.oudelite.com/en/gift-sets/c218966268
-Two ways, the first that gives products wins (per section):
-  A  Salla's product API, called from inside the shop page (exact price + stock)    -> oe_api()
-  B  the product cards on the page (scrolls / clicks "load more" until all are shown) -> oe_cards()
+Read from the product cards on the UAE page (scrolls / clicks "load more" until all are shown) -> oe_cards().
+(Salla's product API also answers - oe_api() - but it gives the SAUDI store: sa.oudelite.com links, SAR prices,
+ some Arabic names, fewer products. So it is switched OFF: USE_API = False.)
 After it finishes daily_update.py starts the matching on Render (/competitor/match-oe).
 
 BEFORE running (same Chrome window as the other scrapers is fine; the shop must be in ENGLISH in that Chrome):
@@ -54,6 +54,7 @@ SECTIONS = [                            # (label, category page, Salla category 
 ]
 STORE_ID = "1934736234"                 # salla.config store.id (from the shop page)
 API_PER_PAGE = 50
+USE_API = False                         # the API = SAUDI store (sa.oudelite.com, SAR) -> UAE cards are used instead
 CDP_URL = "http://localhost:9222"
 
 
@@ -204,17 +205,13 @@ def main():
             page.goto(url, wait_until="domcontentloaded", timeout=90000)
             page.wait_for_timeout(5000)
             rows, ok = [], False
-            try:
-                rows, ok = oe_api(page, cat)                     # way A
-            except Exception as ex:
-                log(f"[OE-API] error {str(ex)[:200]}")
-            if args.test or not ok:
-                cards, ok_b = oe_cards(page)                     # way B (also shown in --test)
-                if not ok and ok_b:
-                    rows, ok = cards, True
-                if args.test:
-                    for r in cards[:3]:
-                        log(f"[OE-TEST cards] {r}")
+            if USE_API:                                          # off: the API is the Saudi store
+                try:
+                    rows, ok = oe_api(page, cat)
+                except Exception as ex:
+                    log(f"[OE-API] error {str(ex)[:200]}")
+            if not ok:
+                rows, ok = oe_cards(page)                        # UAE product cards (AED, ae.oudelite.com links)
             for r in rows[:3]:
                 log(f"[OE-TEST used] {r}")
             log(f"[OE] {label}: {len(rows)} products ({'OK' if ok else 'NOTHING READ'})")
