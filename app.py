@@ -1039,6 +1039,7 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS an_rejected TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_link TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_stock BOOLEAN;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_stock_qty INTEGER;   -- stock number on fragrantsouq.com (Shopify admin)
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_price NUMERIC(10,2);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS least_priced_website TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS suggested_price NUMERIC(10,2);
@@ -2364,6 +2365,43 @@ def ct_update_prices_route():
 OUR_SITE = os.environ.get("OUR_SITE", "https://fragrantsouq.com")
 
 
+def our_stock_numbers():
+    """Stock NUMBER of every SKU on fragrantsouq.com: Shopify ADMIN API (the public list only says in / out of stock).
+    Uses Render env SHOPIFY_SHOP + SHOPIFY_API_TOKEN (same as 'Create in website'). Returns {SKU: qty} ({} when the
+    token is missing or Shopify refuses - the page then simply shows no stock number)."""
+    shop, token = os.environ.get("SHOPIFY_SHOP", ""), os.environ.get("SHOPIFY_API_TOKEN", "")
+    ver = os.environ.get("SHOPIFY_API_VERSION", "2025-01")
+    if not shop or not token:
+        log("[OUR-QTY] SHOPIFY_SHOP / SHOPIFY_API_TOKEN not set -> no stock numbers")
+        return {}
+    url = f"https://{shop}/admin/api/{ver}/products.json"
+    params = {"limit": 250, "fields": "id,variants"}
+    qty, pages = {}, 0
+    while url and pages < 200:
+        try:
+            r = requests.get(url, params=params, headers={"X-Shopify-Access-Token": token}, timeout=60)
+        except requests.RequestException as ex:
+            log(f"[OUR-QTY] network error {ex} -> stock numbers incomplete")
+            break
+        if r.status_code == 429:                         # Shopify: too fast -> wait and try the same page again
+            time.sleep(2)
+            continue
+        if not r.ok:
+            log(f"[OUR-QTY] Shopify answered HTTP {r.status_code}: {r.text[:150]} -> stock numbers stop here")
+            break
+        for p in r.json().get("products", []):
+            for v in p.get("variants", []):
+                sku = (v.get("sku") or "").strip().upper()
+                if sku and v.get("inventory_quantity") is not None:
+                    qty[sku] = qty.get(sku, 0) + int(v["inventory_quantity"])   # same SKU twice -> added up
+        pages += 1
+        nxt = re.search(r'<([^>]+)>;\s*rel="next"', r.headers.get("Link", ""))  # Shopify pages: Link header
+        url, params = (nxt.group(1), None) if nxt else (None, None)
+        time.sleep(0.5)
+    log(f"[OUR-QTY] {len(qty)} SKUs with a stock number ({pages} pages read from Shopify admin)")
+    return qty
+
+
 def ct_load_our_links(only_brands=None):
     """Read every product of our Shopify store (public products.json, 250 per page) and save
     our_link + our_title in competitor_table, matched by SKU (Shopify variant SKU = French Inventories SKU).
@@ -2430,6 +2468,16 @@ def ct_load_our_links(only_brands=None):
             if wanted:                                # only these brands (values are quoted by mogrify)
                 sql += cur.mogrify(brand_sql, [wanted]).decode().replace("%", "%%")   # % in a name stays literal
             execute_values(cur, sql, rows, page_size=1000)
+        qty = our_stock_numbers()                        # stock NUMBER (Shopify admin) -> our_stock_qty
+        if qty:
+            cur.execute("UPDATE competitor_table c SET our_stock_qty = NULL WHERE TRUE" + brand_sql,
+                        [wanted] if wanted else [])
+            qsql = """UPDATE competitor_table c SET our_stock_qty = v.qty FROM (VALUES %s) AS v(sku, qty)
+                      WHERE UPPER(TRIM(c.sku)) = v.sku"""
+            if wanted:
+                qsql += cur.mogrify(brand_sql, [wanted]).decode().replace("%", "%%")
+            execute_values(cur, qsql, list(qty.items()), page_size=1000)
+            summary["stock_numbers"] = len(qty)
             out = sum(1 for _, _, st in by_sku.values() if not st)
             log(f"[OUR] {out} of {len(by_sku)} SKUs are OUT OF STOCK on fragrantsouq.com")
         cur.execute("SELECT COUNT(*), COUNT(our_link) FROM competitor_table")

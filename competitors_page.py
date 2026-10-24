@@ -90,6 +90,7 @@ SOURCES = [
               "samawa_confirmed": "samawa_confirmed", "ff_confirmed": "ff_confirmed", "vp_confirmed": "vp_confirmed",
               "bp_confirmed": "bp_confirmed", "es_confirmed": "es_confirmed",   # set by an admin (link_edit.py)
               "our_link": "our_link", "our_title": "our_title", "our_stock": "our_stock",
+              "our_stock_qty": "our_stock_qty",     # stock NUMBER on fragrantsouq.com (Shopify admin, load-our-links)
               "least_price": "least_price", "least_site": "least_priced_website",
               "suggested_price": "suggested_price", "fi": "fi_record_id",
               "lop": "lop", "mop": "mop",           # LOP / MOP (price_limits.py) - read for the card boxes
@@ -854,7 +855,9 @@ HTML = """
         {% if r.our_link and r.our_stock == false %}<div class="out ourstock">Out of stock</div>{% endif %}
         {% if r.our_link %}<a class="link" href="{{ r.our_link }}" target="_blank" title="Open on fragrantsouq.com">{{ r.our_title or r.name }}</a>
         {% else %}<span class="gtin">Not on fragrantsouq.com</span>{% endif %}
-        {% if r.barcode %}<div class="bcode">Barcode {{ r.barcode }}</div>{% endif %}</div>
+        {% if r.barcode %}<div class="bcode">Barcode {{ r.barcode }}</div>{% endif %}
+        {# stock NUMBER on our website only (our_stock_qty, filled by load-our-links / Refresh from Shopify admin) #}
+        {% if r.our_link and r.our_stock_qty is not none %}<div class="bcode">Stock {{ r.our_stock_qty }}</div>{% endif %}</div>
     </div>
     {# only shops that have this product (a match) or a suggestion to check; "No match" shops are hidden.
          IN-STOCK matches + suggestions are shown; OUT-OF-STOCK matches are hidden under "Show out of stock". #}
