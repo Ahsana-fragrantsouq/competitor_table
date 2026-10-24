@@ -17,13 +17,10 @@ Where things are (change them here):
   SECTION 2  pick lists    -> load_options() (item_master page calls it), table item_options
   SECTION 3  card parts    -> EDIT_CSS, EDIT_BTN (button), EDIT_FORM (the boxes), EDIT_JS (pick list + Save -> POST)
   SECTION 4  save          -> save_edit()   (route POST /item-master/edit is in item_master.py)
-  SECTION 5  Update in shopify -> shopify_update(): Combined_codes webhook (env COMBINED_WEBHOOK_TOKEN) after Save
+  SECTION 5  Update in shopify -> shopify_update(): Shopify Admin API directly (same env as shopify_create.py)
 """
 
-import os
 import json
-
-import requests
 
 
 def log(*a):
@@ -51,11 +48,15 @@ PICK_COLS = [c for c, _, k in EDIT_COLS if k.startswith("pick")]
 ADD_COLS = [c for c, _, k in EDIT_COLS if k == "pick"]          # these may get new options
 CT_SYNC = ["brand", "barcode"]            # also changed in competitor_table (the Competitor table cards)
 SAVE_URL = "/item-master/edit"
-# "Update in shopify" (ticked by default): after Save the product is ALSO sent to the Combined_codes webhook
-# (same call as the Airtable automation script). The secret is NOT in the code: Render env COMBINED_WEBHOOK_TOKEN.
-# Only SKU + Title + Barcode + Size are sent - prices / qty are NOT (item_master's copy may be older than Shopify).
-SHOPIFY_WEBHOOK_URL = os.environ.get("COMBINED_WEBHOOK_URL", "https://combined-codes.onrender.com/airtable-webhook")
-SHOPIFY_WEBHOOK_TIMEOUT = 90         # seconds (the webhook may need to wake up)
+# "Update in shopify" (ticked by default): after Save the product is ALSO changed in Shopify, DIRECTLY with the
+# Shopify Admin API (Render env SHOPIFY_SHOP + SHOPIFY_API_TOKEN, same as "Create in website" / shopify_create.py).
+# (The Combined_codes webhook was used before, but it only changes SKU / Title / Barcode / Size -> brand, type,
+#  category ... never reached Shopify.)  Same field places as "Create in website":
+#   Brand    -> Vendor + metafield custom.brands        Barcode  -> variant barcode
+#   Type     -> Shopify "Type" (product_type, e.g. EDT)  Size     -> metafield custom.size
+#   Category -> tag (old category tag swapped) + variant google_shopping.gender (male / female / unisex)
+# Perfume name / Product type / notes have NO Shopify field (notes are inside the description) -> not sent.
+# Title, prices, stock, description are NOT changed.
 EDIT_SQL = """ALTER TABLE item_master ADD COLUMN IF NOT EXISTS edited_fields JSONB;
 CREATE TABLE IF NOT EXISTS item_options (           -- options added with "Add option:" (item_edit.py)
     field      TEXT NOT NULL,                       -- product_type / type / category / size
@@ -153,7 +154,7 @@ EDIT_FORM = """{% if admin %}
     <div class="editgrid">
 """ + "".join(_box(c, l, k) for c, l, k in EDIT_COLS) + """    </div>
     <div class="editbtns">
-      {# ticked = after Save also update the product in Shopify (Combined_codes webhook); no name -> not a field #}
+      {# ticked = after Save also update the product in Shopify (Shopify API, SECTION 5); no name -> not a field #}
       <label class="toshop"><input type="checkbox" class="toshop-box" checked> Update in shopify</label>
       <span class="editmsg" id="editmsg-{{ r.fi_record_id }}">Product title and SKU are not editable.</span>
       <button type="button" class="cancel" onclick="editClose('{{ r.fi_record_id }}')">Cancel</button>
@@ -309,30 +310,94 @@ def save_edit(conn, fid, fields, user):
 
 
 # ============================================================ SECTION 5: Update in shopify (after Save, box ticked)
+FIND_BY_SKU = """query($q: String!) { productVariants(first: 10, query: $q) { edges { node {
+  id legacyResourceId sku product { id legacyResourceId tags } } } } }"""
+
+
+def _find_in_shopify(sc, sku, shopify_id):
+    """-> (product id, variant id, product tags) of OUR product in Shopify, or None.
+    Uses item_master.shopify_id when we have it, else the SKU (products made in Shopify / by Airtable)."""
+    if shopify_id:
+        r = sc.shopify_rest("GET", f"products/{shopify_id}.json?fields=id,tags,variants")
+        if r.ok:
+            p = r.json().get("product") or {}
+            v = next((v for v in p.get("variants") or [] if (v.get("sku") or "").strip().upper() == sku),
+                     (p.get("variants") or [None])[0])
+            if v:
+                return p["id"], v["id"], p.get("tags") or ""
+        log(f"[ITEM-SHOPIFY] shopify_id {shopify_id}: HTTP {r.status_code} -> searching by SKU {sku}")
+    res = sc.shopify_graphql(FIND_BY_SKU, {"q": f"sku:'{sku}'"})
+    edges = ((res.get("data") or {}).get("productVariants") or {}).get("edges") or []
+    for e in edges:                                          # search is loose -> exact SKU only
+        n = e.get("node") or {}
+        if (n.get("sku") or "").strip().upper() == sku:
+            prod = n.get("product") or {}
+            return int(prod["legacyResourceId"]), int(n["legacyResourceId"]), ", ".join(prod.get("tags") or [])
+    return None
+
+
 def shopify_update(conn, fid):
-    """Send THIS product to the Combined_codes webhook (same call as the Airtable automation script).
+    """Change THIS product in Shopify from item_master (brand, barcode, type, size, category - see SECTION 1).
     Returns {"ok": True, "answer": ...} or {"ok": False, "error": ...}. Nothing is retried automatically."""
-    token = os.environ.get("COMBINED_WEBHOOK_TOKEN", "")
-    if not token:
-        log("[ITEM-SHOPIFY] COMBINED_WEBHOOK_TOKEN not set in Render -> not sent")
-        return {"ok": False, "error": "COMBINED_WEBHOOK_TOKEN is not set in Render -> Environment"}
+    import shopify_create as sc                              # Shopify helpers + env (loaded here: no import loop)
+    if not (sc.SHOP and sc.TOKEN):
+        log("[ITEM-SHOPIFY] SHOPIFY_SHOP / SHOPIFY_API_TOKEN not set in Render -> not sent")
+        return {"ok": False, "error": "SHOPIFY_SHOP / SHOPIFY_API_TOKEN are not set in Render -> Environment"}
     cur = conn.cursor()
-    cur.execute("SELECT sku, product_name, barcode, size FROM item_master WHERE fi_record_id = %s", (fid,))
+    cur.execute("SELECT sku, brand, barcode, type, size, category, shopify_id FROM item_master "
+                "WHERE fi_record_id = %s", (fid,))
     row = cur.fetchone()
     if not row or not (row[0] or "").strip():
         return {"ok": False, "error": "product has no SKU"}
-    sku, title, barcode, size = row
-    txt = lambda v: str(v).strip() if v not in (None, "") else None        # like txt() in the Airtable script
-    data = {"SKU": sku.strip().upper(), "Title": txt(title), "Barcode": txt(barcode), "Size": txt(size)}
-    log(f"[ITEM-SHOPIFY] {fid}: sending {data}")
+    sku, brand, barcode, ptype, size, category, shopify_id = row
+    sku = sku.strip().upper()
+    txt = lambda v: str(v).strip() if v not in (None, "") else ""
     try:
-        r = requests.post(SHOPIFY_WEBHOOK_URL, json=data, timeout=SHOPIFY_WEBHOOK_TIMEOUT,
-                          headers={"Content-Type": "application/json", "X-Secret-Token": token})
-    except requests.RequestException as ex:
-        log(f"[ITEM-SHOPIFY] {fid}: webhook not reachable ({ex})")
-        return {"ok": False, "error": f"webhook not reachable ({str(ex)[:100]})"}
-    answer = (r.text or "")[:300]
-    log(f"[ITEM-SHOPIFY] {fid}: HTTP {r.status_code} {answer}")
-    if not r.ok:
-        return {"ok": False, "error": f"webhook answered HTTP {r.status_code}: {answer[:150]}"}
-    return {"ok": True, "answer": answer}
+        found = _find_in_shopify(sc, sku, txt(shopify_id))
+        if not found:
+            log(f"[ITEM-SHOPIFY] {fid}: SKU {sku} not found in Shopify")
+            return {"ok": False, "error": f"SKU {sku} not found in Shopify"}
+        pid, vid, tags = found
+        log(f"[ITEM-SHOPIFY] {fid}: SKU {sku} = Shopify product {pid}, variant {vid}")
+
+        # tags: take out every tag that is a category (Male / Female / Unisex ... = our category list), add the new one
+        cats = {c.lower() for c in load_options(cur).get("category", [])}
+        new_tags = [t.strip() for t in tags.split(",") if t.strip() and t.strip().lower() not in cats]
+        if txt(category):
+            new_tags.append(txt(category))
+        product = {"id": pid, "tags": ", ".join(new_tags)}
+        if txt(brand):
+            product["vendor"] = txt(brand)
+        if txt(ptype):
+            product["product_type"] = txt(ptype)
+        r = sc.shopify_rest("PUT", f"products/{pid}.json", {"product": product})
+        if not r.ok:
+            return {"ok": False, "error": f"product not changed ({r.status_code}): {r.text[:150]}"}
+        log(f"[ITEM-SHOPIFY] {fid}: product {product}")
+
+        r = sc.shopify_rest("PUT", f"variants/{vid}.json", {"variant": {"id": vid, "barcode": txt(barcode)}})
+        if not r.ok:
+            return {"ok": False, "error": f"barcode not changed ({r.status_code}): {r.text[:150]}"}
+        log(f"[ITEM-SHOPIFY] {fid}: variant barcode {txt(barcode)!r}")
+
+        gender = {"men": "male", "man": "male", "women": "female", "woman": "female"}.get(
+            txt(category).lower(), txt(category).lower())   # our "Men" / "Women" -> Google's male / female
+        metas = [(f"gid://shopify/Product/{pid}", "custom", "brands", txt(brand)),
+                 (f"gid://shopify/Product/{pid}", "custom", "size", txt(size)),
+                 (f"gid://shopify/ProductVariant/{vid}", "google_shopping", "gender",
+                  gender if gender in ("male", "female", "unisex") else "unisex")]
+        bad = []
+        for owner, ns, key, value in metas:
+            if not value:                                    # empty -> leave Shopify's value
+                continue
+            ok, errs = sc.set_metafield(owner, ns, key, value)
+            if not ok:
+                bad.append(f"{ns}.{key}: {errs}")
+        if bad:
+            log(f"[ITEM-SHOPIFY] {fid}: metafields NOT set: {bad}")
+            return {"ok": False, "error": f"metafields not set: {'; '.join(bad)[:150]}"}
+    except Exception as ex:
+        log(f"[ITEM-SHOPIFY] {fid}: ERROR {ex}")
+        return {"ok": False, "error": f"Shopify error: {str(ex)[:150]}"}
+    log(f"[ITEM-SHOPIFY] {fid}: Shopify product {pid} updated")
+    return {"ok": True, "answer": f"Shopify product {pid} updated"}
