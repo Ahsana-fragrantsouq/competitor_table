@@ -17,9 +17,13 @@ Where things are (change them here):
   SECTION 2  pick lists    -> load_options() (item_master page calls it), table item_options
   SECTION 3  card parts    -> EDIT_CSS, EDIT_BTN (button), EDIT_FORM (the boxes), EDIT_JS (pick list + Save -> POST)
   SECTION 4  save          -> save_edit()   (route POST /item-master/edit is in item_master.py)
+  SECTION 5  Update in shopify -> shopify_update(): Combined_codes webhook (env COMBINED_WEBHOOK_TOKEN) after Save
 """
 
+import os
 import json
+
+import requests
 
 
 def log(*a):
@@ -47,6 +51,11 @@ PICK_COLS = [c for c, _, k in EDIT_COLS if k.startswith("pick")]
 ADD_COLS = [c for c, _, k in EDIT_COLS if k == "pick"]          # these may get new options
 CT_SYNC = ["brand", "barcode"]            # also changed in competitor_table (the Competitor table cards)
 SAVE_URL = "/item-master/edit"
+# "Update in shopify" (ticked by default): after Save the product is ALSO sent to the Combined_codes webhook
+# (same call as the Airtable automation script). The secret is NOT in the code: Render env COMBINED_WEBHOOK_TOKEN.
+# Only SKU + Title + Barcode + Size are sent - prices / qty are NOT (item_master's copy may be older than Shopify).
+SHOPIFY_WEBHOOK_URL = os.environ.get("COMBINED_WEBHOOK_URL", "https://combined-codes.onrender.com/airtable-webhook")
+SHOPIFY_WEBHOOK_TIMEOUT = 90         # seconds (the webhook may need to wake up)
 EDIT_SQL = """ALTER TABLE item_master ADD COLUMN IF NOT EXISTS edited_fields JSONB;
 CREATE TABLE IF NOT EXISTS item_options (           -- options added with "Add option:" (item_edit.py)
     field      TEXT NOT NULL,                       -- product_type / type / category / size
@@ -112,6 +121,8 @@ EDIT_CSS = """ /* Edit (admins only, item_edit.py) */
  .editbtns .cancel{background:transparent;color:var(--muted);border:1px solid var(--line);border-radius:10px;padding:8px 14px;cursor:pointer}
  .editbtns .save:disabled{opacity:.6;cursor:wait}
  .editmsg{font-size:13px;margin-right:auto} .editmsg.err{color:#e0806c}
+ .toshop{flex-basis:100%;display:flex;justify-content:flex-end;align-items:center;gap:7px;font-size:14px;color:var(--text);cursor:pointer}
+ .toshop input{width:17px;height:17px;accent-color:#f2d675;margin:0}
  @media (max-width:640px){ .editgrid{grid-template-columns:1fr} }
 """
 
@@ -142,6 +153,8 @@ EDIT_FORM = """{% if admin %}
     <div class="editgrid">
 """ + "".join(_box(c, l, k) for c, l, k in EDIT_COLS) + """    </div>
     <div class="editbtns">
+      {# ticked = after Save also update the product in Shopify (Combined_codes webhook); no name -> not a field #}
+      <label class="toshop"><input type="checkbox" class="toshop-box" checked> Update in shopify</label>
       <span class="editmsg" id="editmsg-{{ r.fi_record_id }}">Product title and SKU are not editable.</span>
       <button type="button" class="cancel" onclick="editClose('{{ r.fi_record_id }}')">Cancel</button>
       <button type="submit" class="save">Save</button>
@@ -221,11 +234,19 @@ EDIT_JS = """  // ---- Edit (admins only, item_edit.py) ----
     btn.disabled = true; btn.textContent = "Saving ..."; msg.className = "editmsg"; msg.textContent = "";
     try {
       var r = await fetch("@@SAVE_URL@@", {method: "POST", headers: {"Content-Type": "application/json"},
-                          body: JSON.stringify({fi_record_id: fi, fields: Object.fromEntries(new FormData(f))})});
+                          body: JSON.stringify({fi_record_id: fi, fields: Object.fromEntries(new FormData(f)),
+                                                to_shopify: f.querySelector(".toshop-box").checked})});
       var d = await r.json().catch(function () { return {ok: false, error: "HTTP " + r.status}; });
       if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
       console.log("[ITEM-EDIT] " + fi + ": saved " + (d.changed || []).join(", ") +
-                  ((d.new_options || []).length ? " | new options: " + d.new_options.join(", ") : ""));
+                  ((d.new_options || []).length ? " | new options: " + d.new_options.join(", ") : "") +
+                  (d.shopify ? " | shopify: " + JSON.stringify(d.shopify) : ""));
+      if (d.shopify && !d.shopify.ok) {                   // saved here, but Shopify did not take it -> say so, no reload
+        msg.className = "editmsg err";
+        msg.textContent = "Saved in our database, but NOT in Shopify: " + d.shopify.error;
+        btn.disabled = false; btn.textContent = "Save";
+        return;
+      }
       location.reload();                                  // card shows the new values
     } catch (e) {
       msg.className = "editmsg err"; msg.textContent = "Not saved: " + e.message;
@@ -285,3 +306,33 @@ def save_edit(conn, fid, fields, user):
     conn.commit()
     log(f"[ITEM-EDIT] {user} changed {fid}: " + "; ".join(f"{c}: {old.get(c)!r} -> {new[c]!r}" for c in changed))
     return changed, added, None
+
+
+# ============================================================ SECTION 5: Update in shopify (after Save, box ticked)
+def shopify_update(conn, fid):
+    """Send THIS product to the Combined_codes webhook (same call as the Airtable automation script).
+    Returns {"ok": True, "answer": ...} or {"ok": False, "error": ...}. Nothing is retried automatically."""
+    token = os.environ.get("COMBINED_WEBHOOK_TOKEN", "")
+    if not token:
+        log("[ITEM-SHOPIFY] COMBINED_WEBHOOK_TOKEN not set in Render -> not sent")
+        return {"ok": False, "error": "COMBINED_WEBHOOK_TOKEN is not set in Render -> Environment"}
+    cur = conn.cursor()
+    cur.execute("SELECT sku, product_name, barcode, size FROM item_master WHERE fi_record_id = %s", (fid,))
+    row = cur.fetchone()
+    if not row or not (row[0] or "").strip():
+        return {"ok": False, "error": "product has no SKU"}
+    sku, title, barcode, size = row
+    txt = lambda v: str(v).strip() if v not in (None, "") else None        # like txt() in the Airtable script
+    data = {"SKU": sku.strip().upper(), "Title": txt(title), "Barcode": txt(barcode), "Size": txt(size)}
+    log(f"[ITEM-SHOPIFY] {fid}: sending {data}")
+    try:
+        r = requests.post(SHOPIFY_WEBHOOK_URL, json=data, timeout=SHOPIFY_WEBHOOK_TIMEOUT,
+                          headers={"Content-Type": "application/json", "X-Secret-Token": token})
+    except requests.RequestException as ex:
+        log(f"[ITEM-SHOPIFY] {fid}: webhook not reachable ({ex})")
+        return {"ok": False, "error": f"webhook not reachable ({str(ex)[:100]})"}
+    answer = (r.text or "")[:300]
+    log(f"[ITEM-SHOPIFY] {fid}: HTTP {r.status_code} {answer}")
+    if not r.ok:
+        return {"ok": False, "error": f"webhook answered HTTP {r.status_code}: {answer[:150]}"}
+    return {"ok": True, "answer": answer}

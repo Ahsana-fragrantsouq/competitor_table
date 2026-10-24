@@ -599,6 +599,9 @@ def item_master_edit():
     try:
         ensure_table(conn)
         changed, added, err = item_edit.save_edit(conn, fid, body.get("fields") or {}, g.get("user"))
+        shopify = None
+        if not err and body.get("to_shopify"):          # "Update in shopify" ticked (item_edit.py SECTION 5)
+            shopify = item_edit.shopify_update(conn, fid)
     except Exception as ex:
         conn.rollback()
         log(f"[ITEM-EDIT] {fid}: ERROR {ex}")
@@ -607,7 +610,7 @@ def item_master_edit():
         conn.close()
     if err:
         return jsonify({"ok": False, "error": err}), 400
-    return jsonify({"ok": True, "changed": changed, "new_options": added})
+    return jsonify({"ok": True, "changed": changed, "new_options": added, "shopify": shopify})
 
 
 @item_master_bp.get("/item-master/load")
