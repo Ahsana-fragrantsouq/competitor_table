@@ -94,7 +94,7 @@ RUN2_TIME = "07:00"            # "HH:MM", 24-hour India time. Example: "06:30", 
 # the next round starts RUN2_ROUND_DAYS after the start of the last one -> every shop once every 2 weeks.
 # Ounass, Al Injaz, Niche Gallerie are NOT here: they block Render (captcha / "too many requests") and run on the
 # PC (PC_LISTS below). The next shop = the first one not done yet in this round.
-RUN2_ORDER = ["samawa", "vp", "am", "pd", "mh", "an", "kh", "oe"]   # pd = Perfume Dubai, mh = MHG Boutique, an = Anfasic, kh = Khaltat, oe = Oud Elite (Emirates Pride = PC_LISTS)
+RUN2_ORDER = ["samawa", "vp", "am", "pd", "mh", "an", "kh"]   # pd = Perfume Dubai, mh = MHG Boutique, an = Anfasic, kh = Khaltat (Emirates Pride + Oud Elite = PC_LISTS)
 RUN2_ROUND_DAYS = 14           # a new round every 14 days (7 = every week)
 RUN2_DAYS = range(0, 7)        # 0 = Monday ... 6 = Sunday: Render runs every day
 # RUN2_SAVE_NEW = True  -> NEW products of the shop are SAVED and matched to our products.
@@ -113,7 +113,6 @@ RUN2_SHOPS = [
     ("mh", "MHG Boutique", "mhgboutique_catalog", "/mhgboutique/run", "/mhgboutique/status", "/competitor/match-mh"),
     ("an", "Anfasic", "anfasic_catalog", "/anfasic/run", "/anfasic/status", "/competitor/match-an"),
     ("kh", "Khaltat", "khaltat_catalog", "/khaltat/run", "/khaltat/status", "/competitor/match-kh"),
-    ("oe", "Oud Elite", "oudelite_catalog", "/oudelite/run", "/oudelite/status", "/competitor/match-oe"),
 ]
 RUN2_LABELS = {k: label for k, label, *_ in RUN2_SHOPS}
 
@@ -128,6 +127,7 @@ PC_LISTS = [
     ("aj", "Al Injaz", "alinjaz_catalog", "aj_scraper.py", "/competitor/match-aj"),        # captcha on Render
     ("ng", "Niche Gallerie", "nichegallerie_catalog", "ng_scraper.py", "/competitor/match-ng"),  # captcha on Render
     ("ep", "Emirates Pride", "emiratespride_catalog", "ep_scraper.py", "/competitor/match-ep"),   # UAE pages 404 on Render
+    ("oe", "Oud Elite", "oudelite_catalog", "oe_scraper.py", "/competitor/match-oe"),   # Salla shop, HTTP 403 -> Chrome
 ]
 
 

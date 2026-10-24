@@ -1,6 +1,9 @@
 """
 Oud Elite catalog (ae.oudelite.com -> Postgres french_fragrance_db, table oudelite_catalog)
 Plugged into app.py as a Blueprint. Made from khaltat.py (same Shopify way of reading).
+!! Oud Elite is NOT Shopify - it is a SALLA shop (store 1934736234) and blocks plain downloads (HTTP 403).
+!! The real download is oe_scraper.py on the PC (in Chrome, PC_LISTS in daily_update.py). This file now only gives
+!! the table (OE_CREATE / OE_UPSERT) + oe_volume(); its /oudelite/... routes on Render find nothing.
 Shown in the menu "Brands" (not "Competitors") - the brand's own shop; everything else works like a competitor.
 Oud Elite = same group as MHG Boutique / Oud Elite; besides perfumes it sells oils, dokhoon, incense -> strict perfume filter.
 
@@ -32,7 +35,16 @@ import traceback
 import requests
 import psycopg2
 from psycopg2.extras import execute_values
-from flask import Blueprint, request, jsonify
+try:
+    from flask import Blueprint, request, jsonify
+except ImportError:                      # on the PC (oe_scraper.py) Flask may be missing: the routes are not needed there
+    class Blueprint:                     # stand-in: @oudelite_bp.route(...) just returns the function
+        def __init__(self, *a, **k):
+            pass
+
+        def route(self, *a, **k):
+            return lambda f: f
+    request = jsonify = None
 
 oudelite_bp = Blueprint("oudelite", __name__)
 
