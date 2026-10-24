@@ -106,7 +106,7 @@ WEBSITE_COLS_SQL = {
                            "ELSE EXCLUDED.shopify_description END",
 }
 # fields an admin changed with 'Edit' (item_edit.py, listed in edited_fields) -> Airtable load keeps our value
-for _c in item_edit.EDITABLE:
+for _c in item_edit.KEEP_COLS:                 # edited fields + product name rebuilt by Edit
     WEBSITE_COLS_SQL.setdefault(_c, f"CASE WHEN item_master.edited_fields ? '{_c}' THEN item_master.{_c} ELSE EXCLUDED.{_c} END")
 # Airtable fields NOT saved at all (not as a column, not in airtable_fields). Old saved values are removed at start.
 DROP_FIELDS = ["Item ID"]
