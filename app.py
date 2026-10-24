@@ -128,6 +128,7 @@ from item_master import item_master_bp             # /item-master, /item-master/
 import description_gen                             # 'Create product description' on Item Master (description_gen.py)
 from description_gen import desc_bp                # POST /item-master/description
 import shopify_create                              # 'Create in website' on Item Master (shopify_create.py)
+import item_edit                                   # 'Update price' -> Shopify directly (item_edit.py SECTION 6)
 from shopify_create import web_bp                  # POST /item-master/create-in-website
 import run_history                                 # Run history of the Item Master buttons (run_history.py)
 import item_create                                 # Item Master -> Create a new item (item_create.py)
@@ -933,6 +934,9 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS french_inventory_code TEXT
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS sku TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS product_name TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS uae_price NUMERIC(10,2);
+-- TRUE = our UAE price was set by OUR website straight in Shopify ('Update price' / Item Master Edit), not in
+-- Airtable -> loading from Airtable (CT_UPSERT_FI) keeps it. Back to FALSE when a price is written to Airtable.
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS uae_price_website BOOLEAN DEFAULT FALSE;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS brand TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS barcode TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS perfume_name TEXT;
@@ -1086,7 +1090,8 @@ ON CONFLICT (fi_record_id) DO UPDATE SET
     french_inventory_code = EXCLUDED.french_inventory_code,
     sku          = EXCLUDED.sku,
     product_name = EXCLUDED.product_name,
-    uae_price    = EXCLUDED.uae_price,
+    uae_price    = CASE WHEN competitor_table.uae_price_website THEN competitor_table.uae_price
+                        ELSE EXCLUDED.uae_price END,          -- price set in Shopify by our website: keep it
     brand        = EXCLUDED.brand,
     barcode      = EXCLUDED.barcode,
     perfume_name = EXCLUDED.perfume_name,
@@ -2278,8 +2283,8 @@ def airtable_set_prices(good, tag="PRICES"):
     cur = conn.cursor()
     try:
         for f in done:
-            cur.execute("UPDATE competitor_table SET uae_price = %s, updated_at = NOW() WHERE fi_record_id = %s",
-                        (good[f], f))
+            cur.execute("UPDATE competitor_table SET uae_price = %s, uae_price_website = FALSE, updated_at = NOW() "
+                        "WHERE fi_record_id = %s", (good[f], f))     # written to Airtable -> Airtable is right again
             least_for(cur, f)                          # least price / suggested price for this product
         conn.commit()
     finally:
@@ -2669,8 +2674,9 @@ def ct_match_vp_route():
 
 @app.post("/competitor/update-price")
 def ct_update_price_route():
-    """'Update price' button on /competitors: write a new UAE Price to Airtable (French Inventories)
-    for ONE product, then update competitor_table + least price so the page shows it immediately.
+    """'Update price' button on /competitors: the new UAE price goes STRAIGHT INTO SHOPIFY (no Airtable):
+    variant price + 'United Arab Emirates' price list (item_edit.shopify_set_uae_price), then our database:
+    competitor_table.uae_price (+ uae_price_website -> Airtable load keeps it) + least price, item_master.uae_price.
     Body (JSON): {"fi_record_id": "recXXXX", "price": 79}"""
     body = request.get_json(silent=True) or {}
     fid = str(body.get("fi_record_id") or "").strip()
@@ -2680,28 +2686,29 @@ def ct_update_price_route():
         return jsonify({"ok": False, "error": "Price must be a number"}), 400
     if not fid.startswith(OWN_ID_PREFIXES) or not (0 < price < 100000):
         return jsonify({"ok": False, "error": "Wrong product or price (must be between 0 and 100,000)"}), 400
-    log(f"[PRICE] Update requested: {fid} -> AED {price}")
+    log(f"[PRICE] Update requested by {g.get('user')}: {fid} -> AED {price} (Shopify, no Airtable)")
 
-    # 1) Airtable: French Inventories -> UAE Price (needs data.records:write on the token)
-    if in_airtable(fid):
-        r = requests.patch(f"{AT_URL}/{FI_TABLE}/{fid}", headers=AT_HEADERS,
-                           json={"fields": {F_UAE_PRICE: price}, "typecast": True}, timeout=30)
-        if not r.ok:
-            log(f"[PRICE] Airtable error {r.status_code}: {r.text[:300]}")
-            return jsonify({"ok": False, "error": f"Airtable {r.status_code}: {r.text[:200]}"}), 502
-        log(f"[PRICE] Airtable updated: {fid} UAE Price = {price}")
-    else:
-        log(f"[PRICE] {fid} made on our website (not in Airtable) -> price saved in our database only")
-
-    # 2) Postgres: our price + least price / least priced website for the page
     conn = pg_conn()
     cur = conn.cursor()
     try:
-        cur.execute("UPDATE competitor_table SET uae_price = %s, updated_at = NOW() WHERE fi_record_id = %s",
-                    (price, fid))
+        # 1) Shopify first - nothing is saved here when Shopify did not take it
+        res = item_edit.shopify_set_uae_price(conn, fid, price)
+        if not res.get("ok"):
+            log(f"[PRICE] {fid}: NOT updated - {res.get('error')}")
+            return jsonify({"ok": False, "error": res.get("error")}), 502
+        log(f"[PRICE] Shopify updated: {fid} -> {res.get('answer')}")
+        # 2) Postgres: our price + least price / least priced website for the page
+        cur.execute("UPDATE competitor_table SET uae_price = %s, uae_price_website = TRUE, updated_at = NOW() "
+                    "WHERE fi_record_id = %s", (price, fid))
         cur.execute(LEAST_SQL)                       # recalculates least price with our new price
         cur.execute("SELECT least_price, least_priced_website FROM competitor_table WHERE fi_record_id = %s", (fid,))
         row = cur.fetchone()
+        # Item Master shows the same UAE price; marked as edited -> an Airtable load keeps it
+        cur.execute("SELECT to_regclass('item_master') IS NOT NULL")
+        if cur.fetchone()[0]:
+            cur.execute("UPDATE item_master SET uae_price = %s, edited_fields = COALESCE(edited_fields, '{}'::jsonb) "
+                        "|| jsonb_build_object('uae_price', %s::text) WHERE fi_record_id = %s",
+                        (price, g.get("user") or "update price", fid))
         conn.commit()
     finally:
         cur.close()

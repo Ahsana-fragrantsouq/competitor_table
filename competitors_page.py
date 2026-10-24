@@ -838,7 +838,7 @@ HTML = """
                {%- endfor -%}
              </span></div>
         <div><div class="plabel">Suggested price</div>
-             {# editable: change the number if needed, then "Update price" writes it to Airtable UAE Price #}
+             {# editable: change the number if needed, then "Update price" writes it to Shopify (UAE price, no Airtable) #}
              <div class="upd">
                <span class="sugg">AED</span>
                <input class="sugg-in" type="number" step="0.01" min="0" id="sp-{{ r.fi }}"
@@ -1108,7 +1108,7 @@ HTML = """
     }
   }
 
-  // "Update price": send the (edited) suggested price to the server -> Airtable UAE Price + competitor table
+  // "Update price": send the (edited) suggested price to the server -> SHOPIFY UAE price (no Airtable) + competitor table
   {# LOP / MOP Save script: price_limits.py LIMITS_JS #}
   @@LIMITS_JS@@
   {# Skip automatic price script: skip_auto.py SKIP_JS #}
@@ -1121,8 +1121,8 @@ HTML = """
     var input = document.getElementById("sp-" + fi), msg = document.getElementById("msg-" + fi);
     var price = parseFloat(input.value);
     if (!(price > 0)) { msg.className = "upd-msg out"; msg.textContent = "Enter a price first."; return; }
-    if (!confirm("Set UAE Price in Airtable to AED " + price + "?")) return;
-    btn.disabled = true; msg.className = "upd-msg gtin"; msg.textContent = "Updating Airtable...";
+    if (!confirm("Set the UAE price on fragrantsouq.com (Shopify) to AED " + price + "?")) return;
+    btn.disabled = true; msg.className = "upd-msg gtin"; msg.textContent = "Updating Shopify...";
     try {
       var r = await fetch("/competitor/update-price", {method: "POST", headers: {"Content-Type": "application/json"},
                                                       body: JSON.stringify({fi_record_id: fi, price: price})});
@@ -1130,7 +1130,7 @@ HTML = """
       if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
       document.getElementById("our-" + fi).textContent = "AED " + d.price.toFixed(2);
       msg.className = "upd-msg in";
-      msg.textContent = "Updated in Airtable: AED " + d.price.toFixed(2) +
+      msg.textContent = "Updated in Shopify: AED " + d.price.toFixed(2) +
                         (d.least_site ? " | Least now: " + d.least_site : "");
     } catch (e) {
       msg.className = "upd-msg out"; msg.textContent = "Not updated: " + e.message;
