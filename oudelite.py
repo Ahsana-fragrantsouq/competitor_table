@@ -36,7 +36,9 @@ from flask import Blueprint, request, jsonify
 
 oudelite_bp = Blueprint("oudelite", __name__)
 
-OE_BASE = "https://ae.oudelite.com"
+OE_BASE = "https://ae.oudelite.com"          # UAE shop: product links start with this
+# where the product list is read (tried in this order; /oudelite/test shows the answer of each one in 'tried')
+OE_API_BASES = ["https://ae.oudelite.com", "https://oudelite.com", "https://www.oudelite.com"]
 OE_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
               "Accept": "application/json"}
 OE_MAX_PAGES = 100              # Shopify limit: max 100 pages x 250 = 25,000 products
@@ -161,23 +163,36 @@ def oe_items(products, whole_shop=False):
     return out
 
 
-def oe_source():
-    """Path of the perfume list: /collections/<first of OE_COLLECTIONS with products>/products.json,
-    or /products.json (whole shop, filtered by OE_PERFUME_WORDS) when none exists. Remembered in oe_state."""
-    for handle in OE_COLLECTIONS:
-        path = f"/collections/{handle}/products.json"
+def oe_try(url):
+    """One test read (1 product). Returns number of products - the answer is saved in oe_state['tried']."""
+    try:
+        r = requests.get(url, params={"limit": 1}, headers=OE_HEADERS, timeout=60)
+    except requests.RequestException as ex:
+        answer, n = f"network error {str(ex)[:80]}", 0
+    else:
         try:
-            r = requests.get(f"{OE_BASE}{path}", params={"limit": 1}, headers=OE_HEADERS, timeout=60)
             n = len(r.json().get("products", [])) if r.status_code == 200 else 0
-        except (requests.RequestException, ValueError) as ex:
-            oe_log(f"[OE] collection '{handle}': not readable ({str(ex)[:80]})")
-            continue
-        oe_log(f"[OE] collection '{handle}': HTTP {r.status_code}, {n} product(s) on a test read")
-        if n:
-            oe_state["source"] = path
-            return path
-    oe_log("[OE] no perfume collection found -> whole shop /products.json, perfumes picked by words")
-    oe_state["source"] = "/products.json"
+            answer = f"HTTP {r.status_code}, {n} product(s)"
+        except ValueError:
+            n, answer = 0, f"HTTP {r.status_code}, not a product list (web page / blocked?): {r.text[:80]!r}"
+    oe_state.setdefault("tried", []).append({"url": url, "answer": answer})
+    oe_log(f"[OE] test read {url}: {answer}")
+    return n
+
+
+def oe_source():
+    """Perfume list path: /collections/<first of OE_COLLECTIONS with products>/products.json, else /products.json
+    (whole shop, filtered by product type / words). Every address of OE_API_BASES is tried; the one that answers
+    with products is kept in oe_state['api_base'] (used by oe_get). /oudelite/test shows every answer ('tried')."""
+    oe_state["tried"] = []
+    for base in OE_API_BASES:
+        for path in [f"/collections/{h}/products.json" for h in OE_COLLECTIONS] + ["/products.json"]:
+            if oe_try(f"{base}{path}"):
+                oe_state["api_base"], oe_state["source"] = base, path
+                oe_log(f"[OE] using {base}{path}")
+                return path
+    oe_log("[OE] NO address answered with products - see 'tried' on /oudelite/test")
+    oe_state["api_base"], oe_state["source"] = OE_API_BASES[0], "/products.json"
     return "/products.json"
 
 
@@ -188,7 +203,7 @@ def oe_get(page, path="/products.json"):
             oe_log(f"[OE] page {page}: retry {attempt}/{len(OE_RETRY_WAITS)} in {wait}s")
             time.sleep(wait)
         try:
-            r = requests.get(f"{OE_BASE}{path}", params={"limit": 250, "page": page},
+            r = requests.get(f"{oe_state.get('api_base') or OE_BASE}{path}", params={"limit": 250, "page": page},
                              headers=OE_HEADERS, timeout=60)
         except requests.RequestException as ex:
             oe_log(f"[OE] page {page}: network error {ex}")
@@ -292,7 +307,8 @@ def oe_test_route():
         oe_log(f"[OE-TEST] {ex}")
         return jsonify({"ok": False, "error": str(ex)})
     items = oe_items(products or [], whole_shop)
-    result = {"ok": bool(items), "source": path, "page1_products": len(products or []), "page1_variants": len(items),
+    result = {"ok": bool(items), "source": path, "api_base": oe_state.get("api_base"),
+              "tried": oe_state.get("tried", []), "page1_products": len(products or []), "page1_variants": len(items),
               "skipped_not_perfume": [p.get("title") for p in (products or []) if not oe_is_perfume(p, whole_shop)][:30],
               "with_sku": sum(1 for i in items if i["sku"]), "with_barcode": sum(1 for i in items if i["gtin"]),
               "brands_seen": sorted({i["brand"] or "-" for i in items})[:20],
