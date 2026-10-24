@@ -5,13 +5,15 @@ Shown in the menu "Brands" (not "Competitors") - the brand's own shop; everythin
 Khaltat = same group as MHG Boutique / Khaltat; besides perfumes it sells oils, dokhoon, incense -> strict perfume filter.
 
 Khaltat is a Shopify store, so its product list is public.
-ONLY PERFUMES are saved (no make up, skincare, bags, gift sets, body mists ...):
-  1. the shop's PERFUME collection is read: the first of KH_COLLECTIONS that has products, e.g.
-       https://www.khaltat.com/collections/perfume/products.json?limit=250&page=1, 2, 3 ...
-     (no such collection -> the whole shop /products.json: product type "Perfumes..." (KH_TYPE_WORDS) or a perfume word
-      in the title (KH_PERFUME_WORDS))
-  2. then products whose title / type has a word of KH_SKIP_WORDS are left out (gift set, body mist, deodorant ...)
-  /khaltat/test shows which collection was used + the product types / skipped titles -> check it first.
+FRAGRANCES + GIFT SETS are saved (user's choice, same as Oud Elite) - EVERYTHING in these 2 collections:
+  1. fragrances: the first of KH_COLLECTIONS that has products, e.g.
+       https://www.khaltat.com/collections/perfumes/products.json?limit=250&page=1, 2, 3 ...
+     (no such collection -> whole shop /products.json: product type "Perfumes..." (KH_TYPE_WORDS) or a perfume word
+      in the title (KH_PERFUME_WORDS), minus KH_SKIP_WORDS)
+  2. gift sets: the first of KH_GIFT_COLLECTIONS that has products
+     (no such collection -> whole shop /products.json: title / type with a word of KH_GIFT_WORDS)
+  Inside a collection only KH_ALWAYS_SKIP is left out (gift card, giveaways). A product in both lists is saved once.
+  /khaltat/test shows which collections were used + the product types / skipped titles -> check it first.
 One row per variant (a product with 50ml + 100ml = 2 rows).
 Brand = Shopify "vendor" (e.g. "Khaltat"). Size from the tags ("75ml") when not in the title., name = product title + size, link opens the right size.
 
@@ -48,7 +50,14 @@ KH_PERFUME_WORDS = ["perfume", "perfumes", "parfum", "toilette", "cologne", "edp
 # whole shop: a product type with one of these words is a perfume too ("perfume*" = word start -> "Perfumes | عطور")
 KH_TYPE_WORDS = ["perfume*", "parfum*", "fragrance*"]
 # always left out: title or product type has one of these WHOLE words (any capitals). "moisturi*" = word start.
-KH_SKIP_WORDS = ["gift set", "giftset", "coffret", "set", "body mist", "hair mist", "body spray", "deodorant",
+# gift sets (user's choice: fragrances + gift sets) - collections tried in this order
+KH_GIFT_COLLECTIONS = ["gift-sets", "gift-set", "giftsets", "gifts", "gift", "sets", "gifting"]
+# used only when none of KH_GIFT_COLLECTIONS exists: whole shop, title / type has one of these words
+KH_GIFT_WORDS = ["gift set", "giftset", "gift box", "coffret", "set", "gift", "gifts"]
+# left out EVERYWHERE (also inside the collections): not real products for sale
+KH_ALWAYS_SKIP = ["gift card", "giveaway*", "sample"]
+# whole-shop fragrance search only: title or product type with one of these words is NOT a fragrance
+KH_SKIP_WORDS = ["body mist", "hair mist", "body spray", "deodorant",
                  "deo", "body lotion", "body cream", "shower gel", "bath", "soap", "candle", "diffuser",
                  "lipstick", "mascara", "foundation", "serum", "moisturi*", "cleanser", "bag", "pouch",
                  "gift card", "sample",
@@ -113,27 +122,33 @@ def kh_volume(*texts):
     return None
 
 
-def kh_is_perfume(p, whole_shop):
-    """True = keep this Shopify product. whole_shop = read from /products.json (no perfume collection found)."""
-    text = f" {p.get('title') or ''} {p.get('product_type') or ''} ".lower()
-    text = re.sub(r"[^a-z0-9]+", " ", text)                 # "Gift-Set" -> " gift set "
-    for w in KH_SKIP_WORDS:                                 # whole words only ("set" does not hit "settings")
-        pat = rf"\b{re.escape(w.rstrip('*'))}" + ("" if w.endswith("*") else r"\b")
-        if re.search(pat, text):
+def kh_has(words, text):
+    """True when text has one of the WHOLE words ("perfume*" = word start; any capitals, "Gift-Set" = "gift set")."""
+    text = " " + re.sub(r"[^a-z0-9]+", " ", (text or "").lower()) + " "
+    return any(re.search(rf"\b{re.escape(w.rstrip('*'))}" + ("" if w.endswith("*") else r"\b"), text) for w in words)
+
+
+def kh_is_perfume(p, kind):
+    """True = keep this Shopify product. kind (see kh_sources):
+    'collection' = from a fragrance / gift-set collection -> everything except KH_ALWAYS_SKIP
+    'perfume'    = whole shop, fragrances picked by words      'gift' = whole shop, gift sets picked by words"""
+    text = f"{p.get('title') or ''} {p.get('product_type') or ''}"
+    if kh_has(KH_ALWAYS_SKIP, text):
+        return False
+    if kind == "gift":
+        return kh_has(KH_GIFT_WORDS, text)
+    if kind == "perfume":
+        if kh_has(KH_SKIP_WORDS, text):
             return False
-    if not whole_shop:
-        return True
-    ptype = re.sub(r"[^a-z0-9]+", " ", (p.get("product_type") or "").lower())
-    return (any(re.search(rf"\b{re.escape(w.rstrip('*'))}" + ("" if w.endswith("*") else r"\b"), ptype)
-                for w in KH_TYPE_WORDS)
-            or any(re.search(rf"\b{w}\b", text) for w in KH_PERFUME_WORDS))
+        return kh_has(KH_TYPE_WORDS, p.get("product_type")) or kh_has(KH_PERFUME_WORDS, text)
+    return True
 
 
-def kh_items(products, whole_shop=False):
-    """Shopify products -> one dict per variant (perfumes only, see kh_is_perfume)."""
+def kh_items(products, kind="collection"):
+    """Shopify products -> one dict per variant (fragrances / gift sets only, see kh_is_perfume)."""
     out = []
     for p in products:
-        if not kh_is_perfume(p, whole_shop):
+        if not kh_is_perfume(p, kind):
             continue
         title = (p.get("title") or "").strip()
         variants = p.get("variants", [])
@@ -161,24 +176,40 @@ def kh_items(products, whole_shop=False):
     return out
 
 
-def kh_source():
-    """Path of the perfume list: /collections/<first of KH_COLLECTIONS with products>/products.json,
-    or /products.json (whole shop, filtered by KH_PERFUME_WORDS) when none exists. Remembered in kh_state."""
-    for handle in KH_COLLECTIONS:
+def kh_collection(handles, label):
+    """Path of the first collection in handles that has products, else None."""
+    for handle in handles:
         path = f"/collections/{handle}/products.json"
         try:
             r = requests.get(f"{KH_BASE}{path}", params={"limit": 1}, headers=KH_HEADERS, timeout=60)
             n = len(r.json().get("products", [])) if r.status_code == 200 else 0
         except (requests.RequestException, ValueError) as ex:
-            kh_log(f"[KH] collection '{handle}': not readable ({str(ex)[:80]})")
+            kh_log(f"[KH] {label} collection '{handle}': not readable ({str(ex)[:80]})")
             continue
-        kh_log(f"[KH] collection '{handle}': HTTP {r.status_code}, {n} product(s) on a test read")
+        kh_log(f"[KH] {label} collection '{handle}': HTTP {r.status_code}, {n} product(s) on a test read")
         if n:
-            kh_state["source"] = path
             return path
-    kh_log("[KH] no perfume collection found -> whole shop /products.json, perfumes picked by words")
-    kh_state["source"] = "/products.json"
-    return "/products.json"
+    return None
+
+
+def kh_sources():
+    """The 2 lists to read: [(path, kind), ...] - fragrances first, then gift sets.
+    kind 'collection' = keep everything in it; 'perfume' / 'gift' = whole shop, picked by words."""
+    out = []
+    path = kh_collection(KH_COLLECTIONS, "fragrance")
+    if path:
+        out.append((path, "collection"))
+    else:
+        kh_log("[KH] no fragrance collection found -> whole shop, fragrances picked by words")
+        out.append(("/products.json", "perfume"))
+    path = kh_collection(KH_GIFT_COLLECTIONS, "gift set")
+    if path:
+        out.append((path, "collection"))
+    else:
+        kh_log("[KH] no gift set collection found -> whole shop, gift sets picked by words")
+        out.append(("/products.json", "gift"))
+    kh_state["source"] = [f"{p} ({k})" for p, k in out]
+    return out
 
 
 def kh_get(page, path="/products.json"):
@@ -220,35 +251,41 @@ def kh_run():
         cur.execute("SELECT NOW()")
         run_start = cur.fetchone()[0]
         conn.commit()
-        path = kh_source()                                  # perfume collection (or whole shop)
-        whole_shop = path == "/products.json"
-        st["source"] = path
-        for page in range(1, KH_MAX_PAGES + 1):
-            products = kh_get(page, path)
-            if products is None:
-                st["incomplete"] = True
-                kh_log(f"[KH] page {page}: gave up -> stopping (run is incomplete)")
+        sources = kh_sources()                              # fragrances + gift sets
+        st["source"] = [f"{p} ({k})" for p, k in sources]
+        seen = set()                                        # variant ids already saved (product in both lists)
+        for path, kind in sources:
+            if st["incomplete"]:
                 break
-            if not products:
-                break
-            items = kh_items(products, whole_shop)
-            st["skipped_not_perfume"] = st.get("skipped_not_perfume", 0) + sum(
-                1 for p in products if not kh_is_perfume(p, whole_shop))
-            rows = [(i["variant_id"], i["url"], i["gtin"], i["sku"], i["brand"], i["name"], i["product_type"],
-                     i["price_inc_tax"], i["price"], i["stock"], i["volume"]) for i in items if i["variant_id"]]
-            if rows:
-                execute_values(cur, KH_UPSERT, rows)
-                conn.commit()
-            st["pages"] = page
-            st["products"] += len(products)
-            st["saved"] += len(rows)
-            st["in_stock"] += sum(i["stock"] == "In stock" for i in items)
-            st["out_of_stock"] += sum(i["stock"] != "In stock" for i in items)
-            st["seconds"] = round(time.time() - started, 1)
-            kh_log(f"[KH] page {page}: {len(products)} products, {len(rows)} variants saved (total {st['saved']})")
-            if len(products) < 250:
-                break
-            time.sleep(1.5)
+            kh_log(f"[KH] reading {path} ({kind})")
+            for page in range(1, KH_MAX_PAGES + 1):
+                products = kh_get(page, path)
+                if products is None:
+                    st["incomplete"] = True
+                    kh_log(f"[KH] {path} page {page}: gave up -> stopping (run is incomplete)")
+                    break
+                if not products:
+                    break
+                items = [i for i in kh_items(products, kind) if i["variant_id"] and i["variant_id"] not in seen]
+                seen.update(i["variant_id"] for i in items)
+                st["skipped_not_perfume"] = st.get("skipped_not_perfume", 0) + sum(
+                    1 for p in products if not kh_is_perfume(p, kind))
+                rows = [(i["variant_id"], i["url"], i["gtin"], i["sku"], i["brand"], i["name"], i["product_type"],
+                         i["price_inc_tax"], i["price"], i["stock"], i["volume"]) for i in items]
+                if rows:
+                    execute_values(cur, KH_UPSERT, rows)
+                    conn.commit()
+                st["pages"] += 1
+                st["products"] += len(products)
+                st["saved"] += len(rows)
+                st["in_stock"] += sum(i["stock"] == "In stock" for i in items)
+                st["out_of_stock"] += sum(i["stock"] != "In stock" for i in items)
+                st["seconds"] = round(time.time() - started, 1)
+                kh_log(f"[KH] {path} page {page}: {len(products)} products, {len(rows)} new variants saved "
+                       f"(total {st['saved']})")
+                if len(products) < 250:
+                    break
+                time.sleep(1.5)
         if not st["incomplete"] and st["saved"]:             # products gone from the site
             cur.execute("UPDATE khaltat_catalog SET stock = 'Not on site', updated_at = NOW() "
                         "WHERE updated_at < %s AND stock <> 'Not on site'", (run_start,))
@@ -285,19 +322,19 @@ def kh_test_route():
     if not kh_secret_ok():
         return jsonify({"error": "unauthorized"}), 401
     try:
-        path = kh_source()
-        whole_shop = path == "/products.json"
-        products = kh_get(1, path)
+        lists = []
+        for path, kind in kh_sources():                     # fragrances + gift sets, page 1 of each
+            products = kh_get(1, path) or []
+            items = kh_items(products, kind)
+            lists.append({"source": f"{path} ({kind})", "page1_products": len(products),
+                          "page1_variants": len(items),
+                          "skipped": [p.get("title") for p in products if not kh_is_perfume(p, kind)][:30],
+                          "product_types": sorted({i["product_type"] or "-" for i in items})[:20],
+                          "first_3": items[:3]})
     except RuntimeError as ex:
         kh_log(f"[KH-TEST] {ex}")
         return jsonify({"ok": False, "error": str(ex)})
-    items = kh_items(products or [], whole_shop)
-    result = {"ok": bool(items), "source": path, "page1_products": len(products or []), "page1_variants": len(items),
-              "skipped_not_perfume": [p.get("title") for p in (products or []) if not kh_is_perfume(p, whole_shop)][:30],
-              "with_sku": sum(1 for i in items if i["sku"]), "with_barcode": sum(1 for i in items if i["gtin"]),
-              "brands_seen": sorted({i["brand"] or "-" for i in items})[:20],
-              "product_types": sorted({i["product_type"] or "-" for i in items})[:20],
-              "first_3": items[:3]}
+    result = {"ok": any(x["page1_variants"] for x in lists), "lists": lists}
     kh_log(f"[KH-TEST] {result}")
     return jsonify(result)
 
