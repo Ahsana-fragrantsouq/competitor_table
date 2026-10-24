@@ -12,8 +12,8 @@ What is saved (one row per Airtable record, key = fi_record_id = the Airtable re
      (so Airtable can be removed later; "Load from Airtable" is then only an import)
   + airtable_fields  = EVERY field of the record exactly as Airtable gave it (JSON) -> nothing is ever lost
                        (except DROP_FIELDS, e.g. "Item ID": never saved anywhere)
-The page HIDES the prices, stock qty, UAE comparison price, Shopify description and Airtable record id;
-they are only in the database:
+The page SHOWS the 5 prices (UAE / Asia / Kuwait / America / Qatar, admins can Edit them -> Shopify, item_edit.py).
+The page HIDES stock qty, UAE comparison price, Shopify description and Airtable record id; they are only in the database:
   python sql.py "SELECT sku, uae_price, asia_price, america_price, kuwait_price, qatar_price,
                  uae_comparison_price, stock_qty FROM item_master WHERE sku = 'AMF1085'"
 
@@ -66,17 +66,17 @@ def log(*a):
 
 # ============================================================ SECTION 1: settings
 # (column in item_master, SQL type, Airtable field names tried in this order, shown on the page?)
-# Prices, stock qty and UAE comparison price are saved but NOT shown (shown=False).
+# Stock qty and UAE comparison price are saved but NOT shown (shown=False). The 5 prices ARE shown (+ Edit).
 FIELDS = [
     ("sku",                  "TEXT",          ["SKU"],                                                 True),
     ("brand",                "TEXT",          ["Brand"],                                               True),
     ("product_type",         "TEXT",          ["Product Type"],                                        True),
     ("perfume_name",         "TEXT",          ["Perfume Name"],                                        True),
-    ("uae_price",            "NUMERIC(12,2)", ["UAE Price"],                                           False),
-    ("asia_price",           "NUMERIC(12,2)", ["Asia Price"],                                          False),
-    ("america_price",        "NUMERIC(12,2)", ["America Price", "USA Price", "US Price"],              False),
-    ("kuwait_price",         "NUMERIC(12,2)", ["Kuwait Price"],                                        False),
-    ("qatar_price",          "NUMERIC(12,2)", ["Qatar Price"],                                         False),
+    ("uae_price",            "NUMERIC(12,2)", ["UAE Price"],                                           True),
+    ("asia_price",           "NUMERIC(12,2)", ["Asia Price"],                                          True),
+    ("america_price",        "NUMERIC(12,2)", ["America Price", "USA Price", "US Price"],              True),
+    ("kuwait_price",         "NUMERIC(12,2)", ["Kuwait Price"],                                        True),
+    ("qatar_price",          "NUMERIC(12,2)", ["Qatar Price"],                                         True),
     ("uae_comparison_price", "NUMERIC(12,2)", ["UAE Comparison Price", "UAE Compare Price",
                                                "UAE Compare At Price", "UAE Compare at price"],        False),
     ("stock_qty",            "NUMERIC(12,2)", ["Qty given in shopify", "Shopify Qty"],                False),
@@ -115,7 +115,9 @@ SHOWN = [c for c, _, _, shown in FIELDS if shown]              # page columns (A
 LABELS = {"sku": "SKU", "brand": "Brand", "product_type": "Product type", "perfume_name": "Perfume name",
           "type": "Type", "category": "Category", "size": "Size", "barcode": "Barcode", "top_notes": "Top notes",
           "middle_notes": "Middle notes", "base_notes": "Base notes", "shopify_description": "Shopify description",
-          "product_name": "Product name"}
+          "product_name": "Product name", "uae_price": "UAE price",
+          "asia_price": "Asia price", "kuwait_price": "Kuwait price", "america_price": "America price",
+          "qatar_price": "Qatar price"}
 SEARCH_COLS = ["sku", "brand", "perfume_name", "product_name", "barcode", "fi_record_id"]
 
 PER_PAGE = 50
@@ -405,6 +407,8 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
  .plabel{color:var(--muted);font-size:13px}
  .pval{font-size:17px;font-weight:600;margin-top:2px}
  .pval.gold{color:#f2d675}
+ /* prices row: UAE | Asia | Kuwait | America | Qatar */
+ .prices{display:flex;flex-wrap:wrap;gap:10px 28px;margin:10px 0 2px;padding:8px 14px;border:1px solid var(--line);border-radius:12px}
  /* one section per line: notes, description (like one competitor shop) */
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
  .notes{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
@@ -449,7 +453,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
 {% if last.missing %}<div class="info warn">Not found in Airtable (left empty): {{ last.missing|join(', ') }}
   - tell Claude the real Airtable field names.</div>{% endif %}
 
-{# one card per product. Prices, stock qty and UAE comparison price are NOT on the page (database only) #}
+{# one card per product. Stock qty and UAE comparison price are NOT on the page (database only) #}
 {% for r in rows %}
 <div class="card">
   <div class="titlerow">
@@ -480,6 +484,13 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
     <div><div class="plabel">Type</div><div class="pval">{{ r.type or '-' }}</div></div>
     <div><div class="plabel">Category</div><div class="pval">{{ r.category or '-' }}</div></div>
     <div><div class="plabel">Size</div><div class="pval">{{ r.size or '-' }}</div></div>
+  </div>
+
+  {# our prices (Shopify markets). UAE = competitor_table price when there is one (automatic prices) #}
+  <div class="prices">
+    {% for c in ['uae_price', 'asia_price', 'kuwait_price', 'america_price', 'qatar_price'] %}
+    <div><div class="plabel">{{ labels[c] }}</div><div class="pval">{% if r[c] is not none %}{{ '{:,.2f}'.format(r[c]) }}{% else %}<span class="none">-</span>{% endif %}</div></div>
+    {% endfor %}
   </div>
 
   <div class="shop notes">
@@ -536,7 +547,7 @@ def ensure_table(conn):
 
 @item_master_bp.route("/item-master")
 def item_master_page():
-    """The Item Master page: search + 50 per page. Prices / stock / comparison price are not selected at all."""
+    """The Item Master page: search + 50 per page. Stock qty / comparison price are not selected at all."""
     q = request.args.get("q", "").strip()
     try:
         page = max(1, int(request.args.get("page", "1")))
@@ -565,7 +576,10 @@ def item_master_page():
             link_join = "LEFT JOIN competitor_table ct ON ct.fi_record_id = im.fi_record_id"
         else:                                              # competitor table not created yet -> no links
             link_cols, link_join = "NULL AS our_link, NULL AS our_title, NULL AS our_stock, NULL AS our_stock_qty", ""
-        cur.execute(f"SELECT im.fi_record_id, im.loaded_at, {', '.join('im.' + c for c in SHOWN)}, "
+        cols = ["im." + c for c in SHOWN]
+        if link_join:                                      # our current UAE price: automatic prices change
+            cols[SHOWN.index("uae_price")] = "COALESCE(ct.uae_price, im.uae_price) AS uae_price"   # competitor_table
+        cur.execute(f"SELECT im.fi_record_id, im.loaded_at, {', '.join(cols)}, "
                     f"(COALESCE(im.shopify_description, '') <> '') AS has_desc, "     # button asks before replacing
                     f"(TRIM(CONCAT(im.top_notes, im.middle_notes, im.base_notes)) <> '') AS has_notes, "  # no notes -> description button off
                     f"{link_cols} FROM item_master im {link_join} {where} "
@@ -601,7 +615,7 @@ def item_master_edit():
         changed, added, err = item_edit.save_edit(conn, fid, body.get("fields") or {}, g.get("user"))
         shopify = None
         if not err and body.get("to_shopify"):          # "Update in shopify" ticked (item_edit.py SECTION 5)
-            shopify = item_edit.shopify_update(conn, fid)
+            shopify = item_edit.shopify_update(conn, fid, changed)   # changed prices only are sent
     except Exception as ex:
         conn.rollback()
         log(f"[ITEM-EDIT] {fid}: ERROR {ex}")

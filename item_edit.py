@@ -18,9 +18,11 @@ Where things are (change them here):
   SECTION 3  card parts    -> EDIT_CSS, EDIT_BTN (button), EDIT_FORM (the boxes), EDIT_JS (pick list + Save -> POST)
   SECTION 4  save          -> save_edit()   (route POST /item-master/edit is in item_master.py)
   SECTION 5  Update in shopify -> shopify_update(): Shopify Admin API directly (same env as shopify_create.py)
+  SECTION 6  Competitor table 'Update price' -> shopify_set_uae_price() (no Airtable)
 """
 
 import json
+from decimal import Decimal, InvalidOperation
 
 
 def log(*a):
@@ -42,11 +44,23 @@ EDIT_COLS = [
     ("top_notes",    "Top notes",    "notes"),
     ("middle_notes", "Middle notes", "notes"),
     ("base_notes",   "Base notes",   "notes"),
+    # prices (numbers). Sent to Shopify ONLY when changed in this Save (SECTION 5) - see MARKET_NAMES
+    ("uae_price",     "UAE price",     "money"),
+    ("asia_price",    "Asia price",    "money"),
+    ("kuwait_price",  "Kuwait price",  "money"),
+    ("america_price", "America price", "money"),
+    ("qatar_price",   "Qatar price",   "money"),
 ]
 EDITABLE = [c for c, _, _ in EDIT_COLS]
 PICK_COLS = [c for c, _, k in EDIT_COLS if k.startswith("pick")]
 ADD_COLS = [c for c, _, k in EDIT_COLS if k == "pick"]          # these may get new options
-CT_SYNC = ["brand", "barcode"]            # also changed in competitor_table (the Competitor table cards)
+MONEY_COLS = [c for c, _, k in EDIT_COLS if k == "money"]
+CT_SYNC = ["brand", "barcode", "uae_price"]   # also changed in competitor_table (the Competitor table cards: our price)
+# price column -> Shopify Markets CATALOG TITLE (same names as Combined_codes syncing_my_price.py MARKET_NAMES).
+# The price is sent in that catalog's price list currency, AS IS (no conversion - e.g. Qatar = QAR).
+# UAE price is also the product's normal price (variant price), like the Airtable price sync did.
+MARKET_NAMES = {"uae_price": "United Arab Emirates", "asia_price": "Asia Market with 55 rate",
+                "america_price": "America catlog", "kuwait_price": "Kuwait", "qatar_price": "Qatar"}
 SAVE_URL = "/item-master/edit"
 # "Update in shopify" (ticked by default): after Save the product is ALSO changed in Shopify, DIRECTLY with the
 # Shopify Admin API (Render env SHOPIFY_SHOP + SHOPIFY_API_TOKEN, same as "Create in website" / shopify_create.py).
@@ -55,8 +69,11 @@ SAVE_URL = "/item-master/edit"
 #   Brand    -> Vendor + metafield custom.brands        Barcode  -> variant barcode
 #   Type     -> Shopify "Type" (product_type, e.g. EDT)  Size     -> metafield custom.size
 #   Category -> tag (old category tag swapped) + variant google_shopping.gender (male / female / unisex)
+#   Prices   -> Shopify Markets price lists (MARKET_NAMES); UAE price also = variant price. ONLY the prices the admin
+#               CHANGED in this Save are sent (item_master prices can be older than Shopify: automatic prices go
+#               Airtable -> Shopify, not into item_master -> sending all would put old prices back).
 # Perfume name / Product type / notes have NO Shopify field (notes are inside the description) -> not sent.
-# Title, prices, stock, description are NOT changed.
+# Title, stock, description are NOT changed.
 EDIT_SQL = """ALTER TABLE item_master ADD COLUMN IF NOT EXISTS edited_fields JSONB;
 CREATE TABLE IF NOT EXISTS item_options (           -- options added with "Add option:" (item_edit.py)
     field      TEXT NOT NULL,                       -- product_type / type / category / size
@@ -136,8 +153,11 @@ EDIT_BTN = """{% if admin %}
 def _box(col, label, kind):
     """One edit box (Jinja). pick = hidden value + button that opens the pick list."""
     val = "{{ r." + col + " or '' }}"
-    start = ' style="grid-column-start:1"' if col == "top_notes" else ""
-    if kind == "notes":
+    start = ' style="grid-column-start:1"' if col in ("top_notes", "uae_price") else ""
+    if kind == "money":                                  # price: number box, empty when no price
+        inner = (f'<input name="{col}" type="number" step="0.01" min="0" inputmode="decimal" '
+                 f'value="{{{{ r.{col} if r.{col} is not none else \'\' }}}}">')
+    elif kind == "notes":
         inner = f'<textarea name="{col}">{val}</textarea>'
     elif kind == "text":
         inner = f'<input name="{col}" value="{val}">'
@@ -267,7 +287,14 @@ def save_edit(conn, fid, fields, user):
     for col in EDITABLE:
         if col in fields:
             v = str(fields.get(col) or "").strip()
-            new[col] = v or None                          # empty box -> empty in the database
+            if col in MONEY_COLS and v:                   # price -> number (2 decimals), refuse nonsense
+                try:
+                    v = Decimal(v.replace(",", "")).quantize(Decimal("0.01"))
+                except InvalidOperation:
+                    return [], [], f"{col.replace('_', ' ')}: '{v}' is not a number"
+                if v < 0 or v >= 1_000_000:
+                    return [], [], f"{col.replace('_', ' ')}: {v} is not a real price"
+            new[col] = None if v in ("", None) else v     # empty box -> empty in the database (price 0 stays 0)
     if not new:
         return [], [], "nothing to save"
     cur = conn.cursor()
@@ -276,7 +303,7 @@ def save_edit(conn, fid, fields, user):
     if row is None:
         return [], [], "product not in Item Master"
     old = dict(zip(EDITABLE, row))
-    changed = [c for c, v in new.items() if (old.get(c) or None) != v]
+    changed = [c for c, v in new.items() if (old.get(c) if old.get(c) not in ("",) else None) != v]
     if not changed:
         log(f"[ITEM-EDIT] {fid}: nothing changed")
         return [], [], None
@@ -301,7 +328,8 @@ def save_edit(conn, fid, fields, user):
     if ct:                                                # same product in the Competitor table
         cur.execute("SELECT to_regclass('competitor_table') IS NOT NULL")
         if cur.fetchone()[0]:
-            cur.execute(f"UPDATE competitor_table SET {', '.join(c + ' = %s' for c in ct)} WHERE fi_record_id = %s",
+            web = ", uae_price_website = TRUE" if "uae_price" in ct else ""   # app.py: Airtable load keeps it
+            cur.execute(f"UPDATE competitor_table SET {', '.join(c + ' = %s' for c in ct)}{web} WHERE fi_record_id = %s",
                         [new[c] for c in ct] + [fid])
             log(f"[ITEM-EDIT] {fid}: competitor_table {', '.join(ct)} updated ({cur.rowcount} row)")
     conn.commit()
@@ -310,6 +338,46 @@ def save_edit(conn, fid, fields, user):
 
 
 # ============================================================ SECTION 5: Update in shopify (after Save, box ticked)
+CATALOGS = """{ catalogs(first: 50, type: MARKET) { nodes { title status priceList { id currency } } } }"""
+PRICE_ADD = """mutation($pl: ID!, $prices: [PriceListPriceInput!]!) {
+  priceListFixedPricesAdd(priceListId: $pl, prices: $prices) { userErrors { field message } } }"""
+
+
+def _price_lists(sc):
+    """{catalog title: {"id", "currency"}} of the ACTIVE market catalogs (same as Combined_codes)."""
+    res = sc.shopify_graphql(CATALOGS)
+    out = {}
+    for c in ((res.get("data") or {}).get("catalogs") or {}).get("nodes") or []:
+        if c.get("status") == "ACTIVE" and c.get("priceList"):
+            out[c["title"]] = c["priceList"]
+    log("[ITEM-SHOPIFY] price lists: " + ", ".join(f"{t} ({v.get('currency')})" for t, v in out.items()))
+    return out
+
+
+def _send_prices(sc, fid, vid, prices):
+    """{price column: price} -> Shopify Markets price lists (MARKET_NAMES) of variant vid. Returns error list."""
+    bad = []
+    if not prices:
+        return bad
+    lists = _price_lists(sc)
+    for col, price in prices.items():
+        pl = lists.get(MARKET_NAMES[col])
+        if not pl:
+            bad.append(f"{col.replace('_', ' ')}: catalog '{MARKET_NAMES[col]}' not found in Shopify")
+            continue
+        res = sc.shopify_graphql(PRICE_ADD, {"pl": pl["id"], "prices": [{
+            "variantId": f"gid://shopify/ProductVariant/{vid}",
+            "price": {"amount": str(price), "currencyCode": pl["currency"]}}]})
+        errs = ((res.get("data") or {}).get("priceListFixedPricesAdd") or {}).get("userErrors") or res.get("errors")
+        if errs:
+            bad.append(f"{col.replace('_', ' ')}: {errs}")
+        else:
+            log(f"[ITEM-SHOPIFY] {fid}: {MARKET_NAMES[col]} price {price} {pl['currency']}")
+    if bad:
+        log(f"[ITEM-SHOPIFY] {fid}: prices NOT set: {bad}")
+    return bad
+
+
 FIND_BY_SKU = """query($q: String!) { productVariants(first: 10, query: $q) { edges { node {
   id legacyResourceId sku product { id legacyResourceId tags } } } } }"""
 
@@ -336,20 +404,23 @@ def _find_in_shopify(sc, sku, shopify_id):
     return None
 
 
-def shopify_update(conn, fid):
+def shopify_update(conn, fid, changed=()):
     """Change THIS product in Shopify from item_master (brand, barcode, type, size, category - see SECTION 1).
+    changed = columns the admin changed in this Save: only those PRICES are sent.
     Returns {"ok": True, "answer": ...} or {"ok": False, "error": ...}. Nothing is retried automatically."""
     import shopify_create as sc                              # Shopify helpers + env (loaded here: no import loop)
     if not (sc.SHOP and sc.TOKEN):
         log("[ITEM-SHOPIFY] SHOPIFY_SHOP / SHOPIFY_API_TOKEN not set in Render -> not sent")
         return {"ok": False, "error": "SHOPIFY_SHOP / SHOPIFY_API_TOKEN are not set in Render -> Environment"}
     cur = conn.cursor()
-    cur.execute("SELECT sku, brand, barcode, type, size, category, shopify_id FROM item_master "
-                "WHERE fi_record_id = %s", (fid,))
+    cur.execute(f"SELECT sku, brand, barcode, type, size, category, shopify_id, {', '.join(MONEY_COLS)} "
+                f"FROM item_master WHERE fi_record_id = %s", (fid,))
     row = cur.fetchone()
     if not row or not (row[0] or "").strip():
         return {"ok": False, "error": "product has no SKU"}
-    sku, brand, barcode, ptype, size, category, shopify_id = row
+    sku, brand, barcode, ptype, size, category, shopify_id = row[:7]
+    prices = {c: row[7 + i] for i, c in enumerate(MONEY_COLS)
+              if c in changed and row[7 + i] is not None}     # only changed prices (empty price = nothing to send)
     sku = sku.strip().upper()
     txt = lambda v: str(v).strip() if v not in (None, "") else ""
     try:
@@ -375,10 +446,13 @@ def shopify_update(conn, fid):
             return {"ok": False, "error": f"product not changed ({r.status_code}): {r.text[:150]}"}
         log(f"[ITEM-SHOPIFY] {fid}: product {product}")
 
-        r = sc.shopify_rest("PUT", f"variants/{vid}.json", {"variant": {"id": vid, "barcode": txt(barcode)}})
+        variant = {"id": vid, "barcode": txt(barcode)}
+        if "uae_price" in prices:                            # UAE price = the normal (default) price too
+            variant["price"] = str(prices["uae_price"])
+        r = sc.shopify_rest("PUT", f"variants/{vid}.json", {"variant": variant})
         if not r.ok:
-            return {"ok": False, "error": f"barcode not changed ({r.status_code}): {r.text[:150]}"}
-        log(f"[ITEM-SHOPIFY] {fid}: variant barcode {txt(barcode)!r}")
+            return {"ok": False, "error": f"barcode / price not changed ({r.status_code}): {r.text[:150]}"}
+        log(f"[ITEM-SHOPIFY] {fid}: variant {variant}")
 
         gender = {"men": "male", "man": "male", "women": "female", "woman": "female"}.get(
             txt(category).lower(), txt(category).lower())   # our "Men" / "Women" -> Google's male / female
@@ -396,8 +470,50 @@ def shopify_update(conn, fid):
         if bad:
             log(f"[ITEM-SHOPIFY] {fid}: metafields NOT set: {bad}")
             return {"ok": False, "error": f"metafields not set: {'; '.join(bad)[:150]}"}
+
+        bad = _send_prices(sc, fid, vid, prices)              # changed prices -> market price lists
+        if bad:
+            return {"ok": False, "error": f"prices not set: {'; '.join(bad)[:200]}"}
     except Exception as ex:
         log(f"[ITEM-SHOPIFY] {fid}: ERROR {ex}")
         return {"ok": False, "error": f"Shopify error: {str(ex)[:150]}"}
     log(f"[ITEM-SHOPIFY] {fid}: Shopify product {pid} updated")
     return {"ok": True, "answer": f"Shopify product {pid} updated"}
+
+
+# ============================================================ SECTION 6: "Update price" button (Competitor table)
+def shopify_set_uae_price(conn, fid, price):
+    """'Update price' on /competitors: UAE price of ONE product straight into Shopify (NO Airtable):
+    variant price + 'United Arab Emirates' price list (same as an Item Master UAE price edit).
+    Product found by item_master.shopify_id, else its exact SKU (item_master, else competitor_table).
+    Returns {"ok": True, "answer": ...} or {"ok": False, "error": ...}."""
+    import shopify_create as sc
+    if not (sc.SHOP and sc.TOKEN):
+        log("[PRICE-SHOPIFY] SHOPIFY_SHOP / SHOPIFY_API_TOKEN not set in Render -> not sent")
+        return {"ok": False, "error": "SHOPIFY_SHOP / SHOPIFY_API_TOKEN are not set in Render -> Environment"}
+    cur = conn.cursor()
+    cur.execute("SELECT COALESCE(NULLIF(TRIM(im.sku), ''), ct.sku), im.shopify_id FROM competitor_table ct "
+                "LEFT JOIN item_master im ON im.fi_record_id = ct.fi_record_id WHERE ct.fi_record_id = %s", (fid,))
+    row = cur.fetchone()
+    conn.commit()                                            # no open transaction while Shopify answers
+    sku = ((row or [None])[0] or "").strip().upper()
+    if not sku:
+        return {"ok": False, "error": "product has no SKU"}
+    try:
+        found = _find_in_shopify(sc, sku, ((row[1] or "") if row else "").strip())
+        if not found:
+            log(f"[PRICE-SHOPIFY] {fid}: SKU {sku} not found in Shopify")
+            return {"ok": False, "error": f"SKU {sku} not found in Shopify"}
+        pid, vid, _ = found
+        r = sc.shopify_rest("PUT", f"variants/{vid}.json", {"variant": {"id": vid, "price": f"{price:.2f}"}})
+        if not r.ok:
+            return {"ok": False, "error": f"Shopify price not changed ({r.status_code}): {r.text[:150]}"}
+        log(f"[PRICE-SHOPIFY] {fid}: SKU {sku} variant {vid} price = {price:.2f}")
+        bad = _send_prices(sc, fid, vid, {"uae_price": f"{price:.2f}"})
+        if bad:
+            return {"ok": False, "error": f"normal price changed, but UAE price list not: {'; '.join(bad)[:150]}"}
+    except Exception as ex:
+        log(f"[PRICE-SHOPIFY] {fid}: ERROR {ex}")
+        return {"ok": False, "error": f"Shopify error: {str(ex)[:150]}"}
+    return {"ok": True, "answer": f"Shopify product {pid} price {price:.2f}"}
+
