@@ -10,7 +10,7 @@ Made automatically on Submit (like Airtable did) - NOT shown on the form:
   * SKU          = the brand's SKU Prefix + Next SKU number (table brand_sku, Settings -> Automate), then that
                    brand's Next SKU number + 1. e.g. Afnan AFN 1057 -> SKU AFN1057, Afnan's next = 1058.
                    Brand without a prefix (e.g. added with "+ Add brand") -> saved without SKU.
-  * Product Name = Brand + Perfume Name + Size + Category + Type + Product type
+  * Product Name = Brand + Perfume Name + Size (no space) + Type + Category (capital) + Product type
                    e.g. "Abdul Samad Al Qurashi Amber touch 30 ml EDP Unisex Spray"
 The new row: id "new" + 14 letters/digits (Airtable ids start with "rec"), source = 'website'
 -> "Load from Airtable now" never deletes or changes it. After saving, the Item Master shows it and
@@ -213,9 +213,14 @@ def choices(cur):
 
 
 def product_name(v):
-    """Brand + Perfume Name + Size + Category + Type + Product type (empty ones left out)."""
-    return " ".join(x for x in [v.get("brand"), v.get("perfume_name"), v.get("size"), v.get("category"),
-                                v.get("type"), v.get("product_type")] if x)
+    """Brand + Perfume Name + Size + Type + Category + Product type (empty ones left out), e.g.
+    'Mercedes Benz Man Fresh 100ml EDT Men Perfume': size without space ('100 ml' -> '100ml'),
+    category with a capital first letter ('men' -> 'Men'). Used by Create a new item AND Item Master Edit."""
+    size = re.sub(r"\s+", "", v.get("size") or "")                     # "100 ml" -> "100ml"
+    cat = (v.get("category") or "").strip()
+    cat = cat[:1].upper() + cat[1:]                                     # "men" -> "Men"
+    return " ".join(x.strip() for x in [v.get("brand"), v.get("perfume_name"), size, v.get("type"), cat,
+                                        v.get("product_type")] if x and x.strip())
 
 
 def take_sku(cur, brand):

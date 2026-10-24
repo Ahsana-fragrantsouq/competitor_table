@@ -175,7 +175,7 @@ EDIT_FORM = """{% if admin %}
     <div class="editbtns">
       {# ticked = after Save also update the product in Shopify (Shopify API, SECTION 5); no name -> not a field #}
       <label class="toshop"><input type="checkbox" class="toshop-box" checked> Update in shopify</label>
-      <span class="editmsg" id="editmsg-{{ r.fi_record_id }}">SKU is not editable. Product title = Brand + Perfume name + Size + Category + Type + Product type.</span>
+      <span class="editmsg" id="editmsg-{{ r.fi_record_id }}">SKU is not editable. Product title = Brand + Perfume name + Size + Type + Category + Product type.</span>
       <button type="button" class="cancel" onclick="editClose('{{ r.fi_record_id }}')">Cancel</button>
       <button type="submit" class="save">Save</button>
     </div>
@@ -303,6 +303,17 @@ def save_edit(conn, fid, fields, user):
         return [], [], "product not in Item Master"
     old = dict(zip(EDITABLE, row))
     changed = [c for c, v in new.items() if (old.get(c) if old.get(c) not in ("",) else None) != v]
+    # product name ALWAYS rebuilt in today's format (= Shopify title): when its parts changed OR the saved name
+    # is in an old format (e.g. '100 ml men EDT') -> a plain Save also fixes old names
+    import item_create                                # (loaded here: item_create imports item_master)
+    cur.execute(f"SELECT product_name, {', '.join(NAME_COLS)} FROM item_master WHERE fi_record_id = %s", (fid,))
+    cur_row = cur.fetchone()
+    parts = {c: (new[c] if c in new else cur_row[1 + i]) for i, c in enumerate(NAME_COLS)}
+    name = item_create.product_name({c: str(v).strip() for c, v in parts.items() if v}) or None
+    if name and name != cur_row[0]:
+        new["product_name"] = name
+        changed.append("product_name")
+        log(f"[ITEM-EDIT] {fid}: product name {cur_row[0]!r} -> {name!r}")
     if not changed:
         log(f"[ITEM-EDIT] {fid}: nothing changed")
         return [], [], None
@@ -310,16 +321,6 @@ def save_edit(conn, fid, fields, user):
     if "brand" in changed and new["brand"] and new["brand"].lower() not in {b.lower() for b in opts["brand"]}:
         log(f"[ITEM-EDIT] {fid}: refused - brand {new['brand']!r} is not in the brand list")
         return [], [], f"brand '{new['brand']}' is not in the brand list"
-    if any(c in NAME_COLS for c in changed):              # name parts changed -> new product name (Shopify title)
-        import item_create                                # (loaded here: item_create imports item_master)
-        cur.execute(f"SELECT product_name, {', '.join(NAME_COLS)} FROM item_master WHERE fi_record_id = %s", (fid,))
-        cur_row = cur.fetchone()
-        parts = {c: (new[c] if c in new else cur_row[1 + i]) for i, c in enumerate(NAME_COLS)}
-        name = item_create.product_name({c: str(v).strip() for c, v in parts.items() if v}) or None
-        if name and name != cur_row[0]:
-            new["product_name"] = name
-            changed.append("product_name")
-            log(f"[ITEM-EDIT] {fid}: product name {cur_row[0]!r} -> {name!r}")
     added = []
     for c in changed:                                     # new option -> saved in the list (item_options)
         if c in ADD_COLS and new[c] and new[c].lower() not in {o.lower() for o in opts[c]}:
