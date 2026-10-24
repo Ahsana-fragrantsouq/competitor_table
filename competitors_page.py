@@ -56,7 +56,8 @@ SOURCES = [
      "shops": [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"), ("Essenzi", "es"),
                ("V Perfumes", "vp"), ("Al Injaz", "aj"),
                ("Ounass", "on"), ("Amberiya", "am"), ("Niche Gallerie", "ng"), ("Perfume Dubai", "pd"),
-               ("MHG Boutique", "mh"), ("Emirates Pride", "ep")],
+               ("MHG Boutique", "mh"), ("Emirates Pride", "ep"),
+               ("Anfasic", "an")],
      "cols": {"code": "french_inventory_code", "sku": "sku", "brand": "brand", "barcode": "barcode", "name": "product_name",
               "uae_price": "uae_price",
               "samawa_url": "samawa_link", "samawa_price": "samawa_price", "samawa_stock": "samawa_stock",
@@ -80,6 +81,8 @@ SOURCES = [
               "mh_title": "mh_title", "mh_confirmed": "mh_confirmed",
               "ep_url": "ep_link", "ep_price": "ep_price", "ep_stock": "ep_stock", "ep_suggestion": "ep_suggestion",
               "ep_title": "ep_title", "ep_confirmed": "ep_confirmed",
+              "an_url": "an_link", "an_price": "an_price", "an_stock": "an_stock", "an_suggestion": "an_suggestion",
+              "an_title": "an_title", "an_confirmed": "an_confirmed",
               # competitor's own product name, used as the link text
               "samawa_title": "samawa_title", "ff_title": "ff_title", "bp_title": "bp_title",
               "es_title": "es_title", "vp_title": "vp_title",
@@ -147,6 +150,11 @@ SOURCES = [
     # Emirates Pride = emiratespride.com/ae PERFUMES only (Shopify), emiratespride.py.
     # "menu": "brands" -> listed in the BRANDS menu (not Competitors); everything else = like a competitor
     {"key": "ep", "label": "Emirates Pride", "table": "emiratespride_catalog", "menu": "brands",
+     "cols": {"name": "name", "brand": "brand", "gtin": "COALESCE(gtin, sku)", "url": "product_url",
+              "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
+              "updated": "updated_at"}},
+    # Anfasic = anfasic.ae PERFUMES only (Shopify), anfasic.py - menu BRANDS like Emirates Pride
+    {"key": "an", "label": "Anfasic", "table": "anfasic_catalog", "menu": "brands",
      "cols": {"name": "name", "brand": "brand", "gtin": "COALESCE(gtin, sku)", "url": "product_url",
               "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
               "updated": "updated_at"}},
@@ -802,7 +810,8 @@ HTML = """
                   'Branded Perfume': r.bp_url, 'Essenzi': r.es_url, 'V Perfumes': r.vp_url, 'Al Injaz': r.aj_url,
                   'Ounass': r.on_url, 'Amberiya': r.am_url,
                   'Niche Gallerie': r.ng_url, 'Perfume Dubai': r.pd_url,
-                  'MHG Boutique': r.mh_url, 'Emirates Pride': r.ep_url} %}
+                  'MHG Boutique': r.mh_url, 'Emirates Pride': r.ep_url,
+                  'Anfasic': r.an_url} %}
              <span class="{{ 'in' if 'Fragrant Souq' in (r.least_site or '') else 'out' }}">
                {%- for site in (r.least_site or '').split(', ') -%}
                  {%- if site_links.get(site) -%}
@@ -1146,6 +1155,7 @@ LINK_BARCODES = {
     "pd": ("perfumedubai_catalog", "product_url", "sku"),
     "mh": ("mhgboutique_catalog", "product_url", "sku"),
     "ep": ("emiratespride_catalog", "product_url", "sku"),
+    "an": ("anfasic_catalog", "product_url", "sku"),
 }
 
 
@@ -1906,7 +1916,7 @@ def run2_rows(rs):
     except Exception as ex:                                # daily_update.py missing -> fixed order
         print(f"[RUN2-BOX] daily_update.py not importable ({ex}) -> default shop order", flush=True)
         order = [("samawa", "Samawa"), ("vp", "V Perfumes"), ("am", "Amberiya"), ("pd", "Perfume Dubai"),
-                 ("mh", "MHG Boutique")]
+                 ("mh", "MHG Boutique"), ("an", "Anfasic")]
     rs = rs or {}
     start = rs.get("round_start")
     results = rs.get("weekly_results") or {}
