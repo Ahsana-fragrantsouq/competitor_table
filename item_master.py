@@ -232,13 +232,15 @@ def read_summary(cur):
         return {}
 
 
-def load_all(by="auto"):
+def load_all(by="auto", only_brands=None):
     """Copy EVERY French Inventories record (all fields) from Airtable into item_master.
     1. brand record id -> brand name (Brand is a linked field)
     2. all records, all fields (Airtable only sends fields that are not empty)
     3. find the real field name for each column (FIELDS), list the ones not found
     4. save 500 at a time (new = insert, existing = update); records gone from Airtable are deleted
-    Returns the summary (also saved in app_settings 'item_master'). Only one load at a time."""
+    Returns the summary (also saved in app_settings 'item_master'). Only one load at a time.
+    only_brands = list of brand names -> only those brands' products are saved, nothing is deleted
+    (Item Master -> Brands -> Refresh one brand)."""
     if not _load_lock.acquire(blocking=False):
         log("[ITEM-MASTER] A load is already running -> not started again")
         return {"error": "already running"}
@@ -305,6 +307,11 @@ def load_all(by="auto"):
             raw = {k: v for k, v in f.items() if k not in DROP_FIELDS}       # "Item ID" is never saved
             rows.append((rec["id"], json.dumps(raw), *vals))
 
+        if only_brands:                               # Brands page -> Refresh one brand: only its products
+            wanted = {b.strip().lower() for b in only_brands}
+            bi = 2 + cols.index("brand")                 # row = (record id, raw json, *columns)
+            rows = [r for r in rows if (r[bi] or "").strip().lower() in wanted]
+            log(f"[ITEM-MASTER] Only brands {sorted(wanted)}: {len(rows)} products to save")
         conn = h["connect"]()
         try:
             cur = conn.cursor()
@@ -318,10 +325,12 @@ def load_all(by="auto"):
                 execute_values(cur, sql, rows[i:i + 500], template=template)
                 conn.commit()
                 log(f"[ITEM-MASTER] Saved {min(i + 500, len(rows))}/{len(rows)}")
-            # products deleted in Airtable -> deleted here too (only after a full download)
-            cur.execute("DELETE FROM item_master WHERE NOT (fi_record_id = ANY(%s)) "
-                        "AND COALESCE(source, '') <> 'website'", ([r[0] for r in rows],))   # our own new items stay
-            deleted = cur.rowcount
+            # products deleted in Airtable -> deleted here too (only after a full download of ALL brands)
+            deleted = 0
+            if not only_brands:
+                cur.execute("DELETE FROM item_master WHERE NOT (fi_record_id = ANY(%s)) "
+                            "AND COALESCE(source, '') <> 'website'", ([r[0] for r in rows],))   # our own new items stay
+                deleted = cur.rowcount
             conn.commit()
         finally:
             conn.close()

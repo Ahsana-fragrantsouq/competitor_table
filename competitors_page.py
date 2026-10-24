@@ -36,6 +36,7 @@ import price_limits                                       # LOP / MOP boxes on t
 import link_edit                                          # 'Edit link' for admins on the cards (link_edit.py)
 import barcode_edit                                       # 'Edit' our barcode for admins (barcode_edit.py)
 import skip_auto                                          # 'Skip automatic price' checkbox on the cards (skip_auto.py)
+import brand_refresh                                      # Refresh all / one brand on Item Master -> Brands (brand_refresh.py)
 from discount_rate import get_discount_rate               # kept here so competitors_page.get_discount_rate() still works
 
 competitors_bp = Blueprint("competitors", __name__)
@@ -1488,6 +1489,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
  .inl .pwwrap input{width:150px;padding-right:36px}
  .sbtn{background:none;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 12px;font-size:14px;cursor:pointer}
  .sbtn:hover{border-color:var(--muted)} .sbtn.red{color:#e0806c}
+@@RF_CSS@@
 {{ nav_css|safe }}
 </style></head><body><div class="page">
 <div class="topbar"><h1>{{ title }}</h1>
@@ -1581,7 +1583,10 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 {% if msg %}<p class="ok">{{ msg }}</p>{% endif %}
 {# ---- Create new brand (admins): Brand name + SKU prefix -> POST /brand-sku/create (brand_sku.py checks both are new) ---- #}
 {% if admin %}
-<div class="newbrand-bar"><button type="button" class="newbrand-btn" id="nbopen" onclick="nbOpen()">Create new</button></div>
+{# Refresh all (brand_refresh.py) + Create new #}
+<div class="newbrand-bar">@@RF_TOP@@<button type="button" class="newbrand-btn" id="nbopen" onclick="nbOpen()">Create new</button></div>
+@@RF_MSG@@
+@@RF_JS@@
 <form class="newbrand" id="nbform" hidden onsubmit="nbSave(this); return false;">
   <div class="nbrow">
     <label>Brand name *<input name="brand" required maxlength="100" autocomplete="off"></label>
@@ -1636,6 +1641,8 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
     <a href="/competitors?tab=competitor&ff=brand&fo=anyof&fv={{ b.brand|urlencode }}" title="Open {{ b.brand }} in the competitor table">{{ b.brand }}</a>
     {% if b.brand|lower in auto_set %}<span class="auto">AUTO</span>{% endif %}
     {% if b.created_by %}<span class="newtagb" title="Created on our website by {{ b.created_by }}">NEW BRAND</span>{% endif %}
+    {# round arrow = refresh only this brand (brand_refresh.py) #}
+    @@RF_ROW@@
     <span class="n">{{ b.n }}</span>
     {# ticked = automatic. data-was = saved state, so only real changes are sent #}
     <input type="checkbox" class="apick" data-brand="{{ b.brand }}" data-was="{{ 1 if b.brand|lower in auto_set else 0 }}"
@@ -1808,6 +1815,10 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 </div>
 {% endif %}
 </div></body></html>"""
+# Refresh buttons on the Brands page (part 8d) come from brand_refresh.py
+SETTINGS_HTML = (SETTINGS_HTML.replace("@@RF_CSS@@", brand_refresh.RF_CSS).replace("@@RF_TOP@@", brand_refresh.RF_TOP)
+                 .replace("@@RF_MSG@@", brand_refresh.RF_MSG).replace("@@RF_JS@@", brand_refresh.RF_JS)
+                 .replace("@@RF_ROW@@", brand_refresh.RF_ROW))
 
 
 # ============================================================ SECTION 9: Settings page route (/settings, /settings/<key>)

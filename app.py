@@ -142,6 +142,7 @@ from perfumedubai import perfumedubai_bp           # /perfumedubai/test, /perfum
 from mhgboutique import mhgboutique_bp             # /mhgboutique/test, /mhgboutique/run, /mhgboutique/status
 from emiratespride import emiratespride_bp         # /emiratespride/test, /emiratespride/run, /emiratespride/status
 from anfasic import anfasic_bp                     # /anfasic/test, /anfasic/run, /anfasic/status
+import brand_refresh                               # Item Master -> Brands: Refresh all / one brand (brand_refresh.py)
 # price_check.py is optional: if the file is not uploaded to GitHub, the app still starts (without /price-check)
 try:
     from price_check import price_check_bp         # /price-check/run, /price-check/status (daily price check)
@@ -176,6 +177,7 @@ app.register_blueprint(perfumedubai_bp)            # Perfume Dubai (perfumedubai
 app.register_blueprint(mhgboutique_bp)             # MHG Boutique (mhgboutique.py)
 app.register_blueprint(emiratespride_bp)           # Emirates Pride (emiratespride.py, menu Brands)
 app.register_blueprint(anfasic_bp)                 # Anfasic (anfasic.py, menu Brands)
+app.register_blueprint(brand_refresh.refresh_bp)   # POST /brands/refresh, GET /brands/refresh/status
 if price_check_bp is not None:
     app.register_blueprint(price_check_bp)
     print("[PC] Daily price check routes registered: /price-check/run, /price-check/status", flush=True)
@@ -1114,8 +1116,10 @@ def first_number(v):
 # ============================================================ SECTION 9: load our products (French Inventories -> competitor_table)
 # /competitor/load-fi
 # ---------------------------------------------------------------- step 1: French Inventories -> Postgres
-def ct_load_fi():
+def ct_load_fi(only_brands=None, least=True):
     """STEP 1 - copy ALL French Inventories products from Airtable into competitor_table.
+    only_brands = list of brand names -> only those brands' products are saved (Brands page -> Refresh).
+    least=False -> least / suggested price NOT recalculated here (the caller does it once at the end).
 
     1. Read the brands table (Brand in French Inventories is a link, so we need id -> brand name).
     2. Read every French Inventories product (Item ID, SKU, Product Name, UAE Price, Brand, Barcode, Perfume Name).
@@ -1159,6 +1163,10 @@ def ct_load_fi():
             uae_price, brand, first_text(f.get(F_BARCODE)), first_text(f.get(F_PERFUME)),
         ))
 
+    if only_brands:                               # Brands page -> Refresh one brand: keep only its products
+        wanted = {b.strip().lower() for b in only_brands}
+        rows = [r for r in rows if (r[5] or "").strip().lower() in wanted]
+        log(f"[CT-LOAD] Only brands {sorted(wanted)}: {len(rows)} products to save")
     conn = pg_conn()
     cur = conn.cursor()
     try:
@@ -1176,7 +1184,8 @@ def ct_load_fi():
 
     summary["seconds"] = round(time.time() - started, 1)
     log(f"[CT-LOAD DONE] {summary}")
-    summary["least"] = ct_update_least()          # our UAE prices may have changed -> recalculate least price
+    if least:
+        summary["least"] = ct_update_least()      # our UAE prices may have changed -> recalculate least price
     return summary
 
 
@@ -1463,7 +1472,7 @@ SHOPS = {
 }
 
 
-def ct_match_shop(shop_key):
+def ct_match_shop(shop_key, only_brands=None, least=True):
     """STEP 2 / 3 - find every competitor_table product on ONE shop and save link / price / stock / suggestion.
 
     1. Load all products of the shop from Postgres (samawa_catalog or french_fragrance_catalog).
@@ -1473,6 +1482,8 @@ def ct_match_shop(shop_key):
          not matched  -> link/price cleared, suggestion = best guess if its score >= 0.5
     4. Save every ~500 products, so results appear on /competitors while it runs.
     Size, EDP/EDT and gender are read from the product name.
+    only_brands = list of brand names -> only those brands are matched (Brands page -> Refresh).
+    least=False -> least / suggested price NOT recalculated here (the caller does it once at the end).
     """
     shop = SHOPS[shop_key]
     tag = f"CT-{shop_key.upper()}"                # log prefix: [CT-SAMAWA ...] / [CT-FF ...]
@@ -1515,6 +1526,10 @@ def ct_match_shop(shop_key):
             fields = {F_PRODUCT: pname, F_PERFUME: perfume, F_SIZE: None, F_TYPE: None,
                       F_CATEGORY: pname, F_BARCODE: barcode}
             groups.setdefault(brand, []).append((fid, fields))
+        if only_brands:                           # Brands page -> Refresh: only these brands
+            wanted = {b.strip().lower() for b in only_brands}
+            groups = {b: g for b, g in groups.items() if b.strip().lower() in wanted}
+            log(f"[{tag}] Only brands {sorted(wanted)}: {sum(len(g) for g in groups.values())} of our products")
         brands = sorted(groups)
         summary["brands_total"] = len(brands)
         log(f"[{tag}] {summary['products']} products in {len(brands)} brands "
@@ -1591,7 +1606,8 @@ def ct_match_shop(shop_key):
 
     summary["seconds"] = round(time.time() - started, 1)
     log(f"[{tag} DONE] {summary}")
-    summary["least"] = ct_update_least()          # new shop prices -> recalculate least price
+    if least:
+        summary["least"] = ct_update_least()      # new shop prices -> recalculate least price
     return summary
 
 
@@ -2348,9 +2364,10 @@ def ct_update_prices_route():
 OUR_SITE = os.environ.get("OUR_SITE", "https://fragrantsouq.com")
 
 
-def ct_load_our_links():
+def ct_load_our_links(only_brands=None):
     """Read every product of our Shopify store (public products.json, 250 per page) and save
-    our_link + our_title in competitor_table, matched by SKU (Shopify variant SKU = French Inventories SKU)."""
+    our_link + our_title in competitor_table, matched by SKU (Shopify variant SKU = French Inventories SKU).
+    only_brands = list of brand names -> only those brands' rows are changed (Brands page -> Refresh)."""
     started = time.time()
     summary = {"step": "load-our-links", "shopify_products": 0, "shopify_skus": 0, "linked": 0}
     state["last_summary"] = summary
@@ -2401,13 +2418,18 @@ def ct_load_our_links():
     cur = conn.cursor()
     try:
         cur.execute(CT_CREATE)
-        cur.execute("UPDATE competitor_table SET our_link = NULL, our_title = NULL, our_stock = NULL")
+        wanted = [b.strip().lower() for b in only_brands] if only_brands else None
+        brand_sql = " AND LOWER(TRIM(c.brand)) = ANY(%s)" if wanted else ""
+        cur.execute("UPDATE competitor_table c SET our_link = NULL, our_title = NULL, our_stock = NULL WHERE TRUE"
+                    + brand_sql, [wanted] if wanted else [])
         if by_sku:
-            execute_values(cur, """
-                UPDATE competitor_table c SET our_link = v.url, our_title = v.title, our_stock = v.stock
-                FROM (VALUES %s) AS v(sku, url, title, stock)
-                WHERE UPPER(TRIM(c.sku)) = v.sku""", [(k, u, t, st) for k, (u, t, st) in by_sku.items()],
-                page_size=1000)
+            rows = [(k, u, t, st) for k, (u, t, st) in by_sku.items()]
+            sql = """UPDATE competitor_table c SET our_link = v.url, our_title = v.title, our_stock = v.stock
+                     FROM (VALUES %s) AS v(sku, url, title, stock)
+                     WHERE UPPER(TRIM(c.sku)) = v.sku"""
+            if wanted:                                # only these brands (values are quoted by mogrify)
+                sql += cur.mogrify(brand_sql, [wanted]).decode().replace("%", "%%")   # % in a name stays literal
+            execute_values(cur, sql, rows, page_size=1000)
             out = sum(1 for _, _, st in by_sku.values() if not st)
             log(f"[OUR] {out} of {len(by_sku)} SKUs are OUT OF STOCK on fragrantsouq.com")
         cur.execute("SELECT COUNT(*), COUNT(our_link) FROM competitor_table")
@@ -2552,6 +2574,10 @@ description_gen.init(connect=pg_conn,                           # 'Create produc
 shopify_create.init(connect=pg_conn)                           # 'Create in website' (shopify_create.py)
 run_history.init(connect=pg_conn)                              # Run history of the buttons (run_history.py)
 item_create.init(connect=pg_conn)                              # Create a new item (item_create.py)
+brand_refresh.init(run_lock=run_lock, load_fi=ct_load_fi,       # Brands page -> Refresh (brand_refresh.py)
+                   load_item_master=item_master.load_all, load_our_links=ct_load_our_links,
+                   match_shop=ct_match_shop, shops=[(k, s["label"]) for k, s in SHOPS.items()],
+                   update_least=ct_update_least)
 brand_sku.init(connect=pg_conn, read_airtable=at_list,          # SKU Prefix + Next SKU number (brand_sku.py)
                brands_table=BRANDS_TABLE, brands_name_field=BRANDS_NAME_FIELD, run_secret=RUN_SECRET)
 
