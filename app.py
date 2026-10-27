@@ -123,6 +123,8 @@ import link_edit                                   # admins: edit / remove a com
 from link_edit import link_bp                      # POST /competitor/link
 import barcode_edit                                # admins: edit OUR barcode on the cards (barcode_edit.py)
 from barcode_edit import barcode_bp                # POST /competitor/barcode
+import stock_edit                                  # admins: edit OUR stock -> Shopify (stock_edit.py)
+from stock_edit import stock_bp                    # POST /stock/edit
 import item_master                                 # Item Master page: all French Inventories fields (item_master.py)
 from item_master import item_master_bp             # /item-master, /item-master/reload, /load, /status
 import description_gen                             # 'Create product description' on Item Master (description_gen.py)
@@ -167,6 +169,7 @@ app.register_blueprint(limits_bp)                  # LOP / MOP Save on the produ
 app.register_blueprint(skip_bp)                    # 'Skip automatic price' checkbox on the cards (skip_auto.py)
 app.register_blueprint(link_bp)                    # 'Edit link' for admins on the cards (link_edit.py)
 app.register_blueprint(barcode_bp)                 # 'Edit' our barcode for admins (barcode_edit.py)
+app.register_blueprint(stock_bp)                   # 'Edit' our stock for admins -> Shopify (stock_edit.py)
 app.register_blueprint(item_master_bp)             # Item Master page (item_master.py)
 app.register_blueprint(desc_bp)                    # 'Create product description' button (description_gen.py)
 app.register_blueprint(web_bp)                     # 'Create in website' button (shopify_create.py)
@@ -2727,6 +2730,7 @@ skip_auto.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Skip automatic
 link_edit.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Edit link' for admins (link_edit.py)
                link_sisters=link_sisters_for, recalc_one=least_for)
 barcode_edit.init(connect=pg_conn, airtable_barcode=airtable_set_barcode)   # 'Edit' our barcode (barcode_edit.py)
+stock_edit.init(connect=pg_conn)                                             # 'Edit' our stock -> Shopify (stock_edit.py)
 item_master.init(connect=pg_conn, read_airtable=at_list,       # Item Master: Airtable -> item_master (item_master.py)
                  fi_table=FI_TABLE, brands_table=BRANDS_TABLE, brands_name_field=BRANDS_NAME_FIELD,
                  run_secret=RUN_SECRET)

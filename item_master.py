@@ -54,6 +54,7 @@ import competitors_page                     # menu bar (render_nav, NAV_CSS) + m
 import description_gen                      # 'Create product description' button (description_gen.py)
 import shopify_create                       # 'Create in website' button (shopify_create.py)
 import item_edit                            # 'Edit' button on each card (item_edit.py)
+import stock_edit                           # 'Edit' our stock -> Shopify (stock_edit.py)
 from auth import is_admin
 
 item_master_bp = Blueprint("item_master", __name__)
@@ -417,6 +418,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
 @@DESC_CSS@@
 @@WEB_CSS@@
 @@EDIT_CSS@@
+@@STOCK_CSS@@
  /* button row: Create in website first (left), Create product description (right), messages on their own line */
  .btnrow{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:8px;margin-top:8px}
  .btnrow .desc-btn{margin:0}
@@ -463,7 +465,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
       {% if r.our_link and r.our_stock == false %}<div class="out">Out of stock</div>{% endif %}
       {% if r.our_link %}<a href="{{ r.our_link }}" target="_blank" title="{{ r.our_title or r.our_link }}">View on fragrantsouq.com &#8599;</a>
       {# stock NUMBER on our website (same as the Competitor table card; from Shopify admin via load-our-links / Refresh) #}
-      {% if r.our_stock_qty is not none %}<div class="stockqty">Stock {{ r.our_stock_qty }}</div>{% endif %}
+      @@STOCK_HTML@@
       {% else %}<span class="nolink">Not on fragrantsouq.com</span>{% endif %}
       {# admins: the 2 buttons on ONE line - [Create in website] [Create product description], messages below #}
       <div class="btnrow">
@@ -519,6 +521,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
 @@DESC_JS@@
 @@WEB_JS@@
 @@EDIT_JS@@
+@@STOCK_JS@@
 </script>
 </div></body></html>"""
 # card parts from description_gen.py (button, its look and its script)
@@ -528,6 +531,9 @@ IM_HTML = (IM_HTML.replace("@@DESC_HTML@@", description_gen.DESC_HTML).replace("
            .replace("@@WEB_JS@@", shopify_create.WEB_JS)
            .replace("@@EDIT_BTN@@", item_edit.EDIT_BTN).replace("@@EDIT_FORM@@", item_edit.EDIT_FORM)
            .replace("@@EDIT_CSS@@", item_edit.EDIT_CSS).replace("@@EDIT_JS@@", item_edit.EDIT_JS)
+           # Edit our stock -> Shopify (stock_edit.py SECTION 2)
+           .replace("@@STOCK_CSS@@", stock_edit.STOCK_CSS).replace("@@STOCK_JS@@", stock_edit.STOCK_JS)
+           .replace("@@STOCK_HTML@@", stock_edit.stock_html("r.fi_record_id", "stockqty"))
            .replace("@@EDIT_OPTS@@", item_edit.EDIT_OPTS))
 
 

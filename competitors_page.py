@@ -35,6 +35,7 @@ import discount_rate                                      # Settings -> Auto dis
 import price_limits                                       # LOP / MOP boxes on the product card (own file: price_limits.py)
 import link_edit                                          # 'Edit link' for admins on the cards (link_edit.py)
 import barcode_edit                                       # 'Edit' our barcode for admins (barcode_edit.py)
+import stock_edit                                         # 'Edit' our stock for admins -> Shopify (stock_edit.py)
 import skip_auto                                          # 'Skip automatic price' checkbox on the cards (skip_auto.py)
 import brand_refresh                                      # Refresh all / one brand on Item Master -> Brands (brand_refresh.py)
 from discount_rate import get_discount_rate               # kept here so competitors_page.get_discount_rate() still works
@@ -616,6 +617,8 @@ HTML = """
  @@EDIT_CSS@@
  /* Edit our barcode (admins): barcode_edit.py BC_CSS */
  @@BC_CSS@@
+/* Edit our stock (admins): stock_edit.py STOCK_CSS */
+@@STOCK_CSS@@
  .upd-msg{font-size:13px;margin-top:6px;min-height:16px}
  .sitelink{color:inherit;text-decoration:underline;text-underline-offset:3px}
  .sitelink:hover{color:#f2d675}
@@ -871,8 +874,8 @@ HTML = """
         {% if r.our_link %}<a class="link" href="{{ r.our_link }}" target="_blank" title="Open on fragrantsouq.com">{{ r.our_title or r.name }}</a>
         {% else %}<span class="gtin">Not on fragrantsouq.com</span>{% endif %}
         {% if r.barcode %}<div class="bcode">Barcode {{ r.barcode }}</div>{% endif %}
-        {# stock NUMBER on our website only (our_stock_qty, filled by load-our-links / Refresh from Shopify admin) #}
-        {% if r.our_link and r.our_stock_qty is not none %}<div class="bcode">Stock {{ r.our_stock_qty }}</div>{% endif %}</div>
+        {# stock NUMBER on our website + admin Edit -> Shopify: stock_edit.py stock_html #}
+        @@STOCK_HTML@@</div>
     </div>
     {# only shops that have this product (a match) or a suggestion to check; "No match" shops are hidden.
          IN-STOCK matches + suggestions are shown; OUT-OF-STOCK matches are hidden under "Show out of stock". #}
@@ -1117,6 +1120,8 @@ HTML = """
   @@EDIT_JS@@
   {# Edit our barcode script (admins): barcode_edit.py BC_JS #}
   @@BC_JS@@
+  {# Edit our stock script (admins): stock_edit.py STOCK_JS #}
+  @@STOCK_JS@@
   async function updatePrice(fi, btn) {
     var input = document.getElementById("sp-" + fi), msg = document.getElementById("msg-" + fi);
     var price = parseFloat(input.value);
@@ -1157,7 +1162,11 @@ HTML = (HTML.replace("@@LIMITS_CSS@@", price_limits.LIMITS_CSS)
             .replace("@@BC_CSS@@", barcode_edit.BC_CSS)
             .replace("@@BC_BUTTON@@", barcode_edit.BC_BUTTON)
             .replace("@@BC_HTML@@", barcode_edit.BC_HTML)
-            .replace("@@BC_JS@@", barcode_edit.BC_JS))
+            .replace("@@BC_JS@@", barcode_edit.BC_JS)
+            # Edit our stock -> Shopify (stock_edit.py SECTION 2)
+            .replace("@@STOCK_CSS@@", stock_edit.STOCK_CSS)
+            .replace("@@STOCK_HTML@@", stock_edit.stock_html("r.fi", "bcode"))
+            .replace("@@STOCK_JS@@", stock_edit.STOCK_JS))
 
 
 # ============================================================ SECTION 7: competitors page route (/competitors)
