@@ -59,6 +59,8 @@ SHOP_LISTS = {
            "COALESCE(price_inc_tax, price)", "stock"),
     "oe": ("Oud Elite", "oudelite_catalog", "product_url", "CONCAT_WS(' ', brand, name)",
            "COALESCE(price_inc_tax, price)", "stock"),
+    "br": ("Brands Perfume", "brandsperfume_catalog", "product_url", "CONCAT_WS(' ', brand, name)",
+           "COALESCE(price_inc_tax, price)", "stock"),
 }
 
 
