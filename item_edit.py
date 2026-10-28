@@ -59,7 +59,7 @@ CT_SYNC = ["brand", "barcode", "uae_price", "product_name"]   # also changed in 
 # price column -> Shopify Markets CATALOG TITLE (same names as Combined_codes syncing_my_price.py MARKET_NAMES).
 # The price is sent in that catalog's price list currency, AS IS (no conversion - e.g. Qatar = QAR).
 # UAE price is also the product's normal price (variant price), like the Airtable price sync did.
-MARKET_NAMES = {"uae_price": "United Arab Emirates", "asia_price": "Asia Market with 55 rate",
+MARKET_NAMES = {"uae_price": "United Arab Emirates", "asia_price": "Asia Price",   # live Shopify title (log 2026-10-28)
                 "america_price": "America catlog", "kuwait_price": "Kuwait", "qatar_price": "Qatar"}
 SAVE_URL = "/item-master/edit"
 # "Update in shopify" (ticked by default): after Save ONLY these go to Shopify (Admin API directly, Render env
