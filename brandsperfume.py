@@ -267,6 +267,44 @@ def br_secret_ok():
     return not secret or request.args.get("secret") == secret
 
 
+# ---------------------------------------------------------------- shop check (when products.json gives nothing)
+# (name, path to try, word that must be in the answer) - the usual public product lists of other shop systems
+BR_PROBES = [("Shopify products.json", "/products.json?limit=1", '"products"'),
+             ("WooCommerce Store API", "/wp-json/wc/store/v1/products?per_page=1", '"prices"'),
+             ("WooCommerce sitemap", "/product-sitemap.xml", "<loc>"),
+             ("Sitemap", "/sitemap.xml", "<loc>"),
+             ("Magento GraphQL", "/graphql?query={storeConfig{store_name}}", "storeConfig")]
+# words in the HOME page that tell the shop system
+BR_PLATFORM_WORDS = {"Shopify": ["cdn.shopify.com", "Shopify.theme"], "WooCommerce": ["woocommerce", "wp-content"],
+                     "Salla": ["salla.sa", "salla.network"], "Zid": ["zid.store", "zidcdn"],
+                     "Magento": ["Magento_", "mage/cookies"], "OpenCart": ["route=product"],
+                     "Wix": ["wixstatic.com"], "Squarespace": ["squarespace"], "BigCommerce": ["bigcommerce"],
+                     "Cloudflare block": ["cf-chl", "Just a moment..."]}
+
+
+def br_check_shop():
+    """What answers at brandsperfume.com from Render: home page status, shop system, which product list works."""
+    out = {"home": None, "platform": [], "probes": {}}
+    try:
+        r = requests.get(BR_BASE + "/", headers={**BR_HEADERS, "Accept": "text/html"}, timeout=40)
+        html = r.text or ""
+        out["home"] = {"status": r.status_code, "final_url": r.url, "server": r.headers.get("server"),
+                       "powered_by": r.headers.get("x-powered-by"), "size": len(html),
+                       "title": (re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I) or [None, None])[1]}
+        out["platform"] = [name for name, words in BR_PLATFORM_WORDS.items() if any(w.lower() in html.lower() for w in words)]
+    except requests.RequestException as ex:
+        out["home"] = {"error": str(ex)[:200]}
+    for name, path, word in BR_PROBES:
+        try:
+            r = requests.get(BR_BASE + path, headers={**BR_HEADERS, "Accept": "*/*"}, timeout=40)
+            out["probes"][name] = {"status": r.status_code, "works": r.ok and word in (r.text or ""),
+                                   "start": (r.text or "")[:120]}
+        except requests.RequestException as ex:
+            out["probes"][name] = {"error": str(ex)[:120]}
+    br_log(f"[BR-CHECK] {out}")
+    return out
+
+
 @brandsperfume_bp.route("/brandsperfume/test")
 def br_test_route():
     """Read page 1 only - shows whether Render can read Brands Perfume and what is read."""
@@ -278,7 +316,7 @@ def br_test_route():
         products = br_get(1, path)
     except RuntimeError as ex:
         br_log(f"[BR-TEST] {ex}")
-        return jsonify({"ok": False, "error": str(ex)})
+        return jsonify({"ok": False, "error": str(ex), "shop_check": br_check_shop()})
     items = br_items(products or [], whole_shop)
     result = {"ok": bool(items), "source": path, "page1_products": len(products or []), "page1_variants": len(items),
               "skipped_not_perfume": [p.get("title") for p in (products or []) if not br_is_perfume(p, whole_shop)][:30],
@@ -286,6 +324,8 @@ def br_test_route():
               "brands_seen": sorted({i["brand"] or "-" for i in items})[:20],
               "product_types": sorted({i["product_type"] or "-" for i in items})[:20],
               "first_3": items[:3]}
+    if not items:                                       # nothing read -> show what the site really is (send to Claude)
+        result["shop_check"] = br_check_shop()
     br_log(f"[BR-TEST] {result}")
     return jsonify(result)
 
