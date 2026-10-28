@@ -301,7 +301,57 @@ def br_check_shop():
                                    "start": (r.text or "")[:120]}
         except requests.RequestException as ex:
             out["probes"][name] = {"error": str(ex)[:120]}
+    out.update(br_check_deeper())
     br_log(f"[BR-CHECK] {out}")
+    return out
+
+
+def br_locs(xml):
+    """All <loc> links of a sitemap (index or list)."""
+    return re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", xml or "")
+
+
+def br_check_deeper():
+    """Custom web app (no shop system found): read the sitemap, open ONE product page and look in the site's
+    JavaScript for the API it loads its products from. Everything shown -> Claude builds the reader from it."""
+    out = {"sitemaps": {}, "product_page": None, "api_hints": []}
+    try:
+        index = requests.get(BR_BASE + "/sitemap.xml", headers={**BR_HEADERS, "Accept": "*/*"}, timeout=40).text
+        children = br_locs(index)
+        out["sitemap_index"] = children[:20]
+        product_url = None
+        for sm in [c for c in children if c.endswith(".xml")][:6] or ([BR_BASE + "/sitemap.xml"] if not children else []):
+            r = requests.get(sm, headers={**BR_HEADERS, "Accept": "*/*"}, timeout=40)
+            links = br_locs(r.text)
+            out["sitemaps"][sm] = {"status": r.status_code, "links": len(links), "sample": links[:4]}
+            product_url = product_url or next((l for l in links if re.search(r"/(product|products|p|item)s?/", l)), None)
+        if not product_url and children and not children[0].endswith(".xml"):    # plain list of pages
+            product_url = next((l for l in children if re.search(r"/(product|products|p|item)s?/", l)), None)
+        if not product_url:                              # no product link -> read the home page's code instead
+            product_url = BR_BASE + "/"
+        if product_url:
+            r = requests.get(product_url, headers={**BR_HEADERS, "Accept": "text/html"}, timeout=40)
+            html = r.text or ""
+            out["product_page"] = {
+                "url": product_url, "status": r.status_code, "size": len(html),
+                "title": (re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I) or [None, None])[1],
+                "ld_json": "application/ld+json" in html, "og_price": bool(re.search(r"product:price|og:price", html)),
+                "aed_in_page": len(re.findall(r"AED|د\.إ", html)),
+                "scripts": re.findall(r'<script[^>]+src="([^"]+)"', html)[:8],
+            }
+            # API address: look inside the site's own JavaScript files
+            hints = set()
+            for src in out["product_page"]["scripts"][:4]:
+                js_url = src if src.startswith("http") else BR_BASE + "/" + src.lstrip("/")
+                try:
+                    js = requests.get(js_url, headers={**BR_HEADERS, "Accept": "*/*"}, timeout=40).text
+                except requests.RequestException:
+                    continue
+                hints.update(re.findall(r'https?://[a-zA-Z0-9.\-]+(?:/[a-zA-Z0-9_\-./]*)?(?:api|graphql|products?)[a-zA-Z0-9_\-./]*', js))
+                hints.update(re.findall(r'["\'`](/(?:api|v1|v2|graphql)/[a-zA-Z0-9_\-./]*)', js))
+            out["api_hints"] = sorted(hints)[:40]
+    except requests.RequestException as ex:
+        out["deeper_error"] = str(ex)[:200]
     return out
 
 
