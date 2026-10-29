@@ -17,7 +17,8 @@ ONLY PERFUMES are saved (no make up, skincare, bags, gift sets, body mists ...):
   1. the shop's PERFUME collection is read: the first of EP_COLLECTIONS that has products, e.g.
        https://emiratespride.com/ae/collections/perfume/products.json?limit=250&page=1, 2, 3 ...
      (no such collection -> the whole shop /products.json, and only products that look like perfume: EP_PERFUME_WORDS)
-  2. then products whose title / type has a word of EP_SKIP_WORDS are left out (gift set, body mist, deodorant ...)
+  2. then products whose title / type has a word of EP_SKIP_WORDS are left out (body mist, deodorant, oils ...)
+  3. GIFT SETS (user's choice): the first of EP_GIFT_COLLECTIONS with products, EVERYTHING in it except EP_GIFT_SKIP
   /emiratespride/test shows which collection was used + the product types / skipped titles -> check it first.
 One row per variant (a product with 50ml + 100ml = 2 rows).
 Brand = Shopify "vendor" (e.g. "Emirates Pride"), name = product title + size, link opens the right size.
@@ -59,9 +60,13 @@ EP_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebK
               "Accept": "application/json"}
 EP_MAX_PAGES = 100              # Shopify limit: max 100 pages x 250 = 25,000 products
 EP_RETRY_WAITS = [10, 30, 60, 120]
-# ONLY PERFUMES - change these lists if /emiratespride/test shows wrong products:
+# PERFUMES (+ GIFT SETS below) - change these lists if /emiratespride/test shows wrong products:
 # Emirates Pride menu "ALL FRAGRANCES" = their perfumes (Gift Sets / Home Collection: oud, dakhoon, oils = separate)
 EP_COLLECTIONS = ["all-fragrances", "fragrances", "perfumes", "perfume", "fragrance"]   # tried in this order
+# GIFT SETS too (user's choice 2026-10-29): first of these collections that has products -> EVERYTHING in it is kept
+# (only EP_GIFT_SKIP left out; the "100ml + oil" size rule ep_variant_ok is NOT used there - sets are combos)
+EP_GIFT_COLLECTIONS = ["gift-sets", "gift-set", "giftsets", "gifts", "gift", "gifting"]
+EP_GIFT_SKIP = ["gift card", "giveaway*", "sample"]
 # used only when none of EP_COLLECTIONS exists: a product must have one of these words in its title / type
 EP_PERFUME_WORDS = ["perfume", "parfum", "toilette", "cologne", "edp", "edt", "extrait", "fragrance", "attar", "oud"]
 # always left out: title or product type has one of these WHOLE words (any capitals). "moisturi*" = word start.
@@ -129,10 +134,14 @@ def ep_volume(*texts):
     return None
 
 
-def ep_is_perfume(p, whole_shop):
-    """True = keep this Shopify product. whole_shop = read from /products.json (no perfume collection found)."""
+def ep_is_perfume(p, whole_shop, gift=False):
+    """True = keep this Shopify product. whole_shop = read from /products.json (no perfume collection found).
+    gift = from the GIFT SETS collection -> everything kept except EP_GIFT_SKIP."""
     text = f" {p.get('title') or ''} {p.get('product_type') or ''} ".lower()
     text = re.sub(r"[^a-z0-9]+", " ", text)                 # "Gift-Set" -> " gift set "
+    if gift:
+        return not any(re.search(rf"\b{re.escape(w.rstrip('*'))}" + ("" if w.endswith("*") else r"\b"), text)
+                       for w in EP_GIFT_SKIP)
     for w in EP_SKIP_WORDS:                                 # whole words only ("set" does not hit "settings")
         pat = rf"\b{re.escape(w.rstrip('*'))}" + ("" if w.endswith("*") else r"\b")
         if re.search(pat, text):
@@ -231,13 +240,13 @@ def ep_variant_ok(vtitle):
     return "+" not in t and not re.search(r"\boils?\b", t)
 
 
-def ep_items(products, whole_shop=False, check_uae=True, skipped=None):
+def ep_items(products, whole_shop=False, check_uae=True, skipped=None, gift=False):
     """Shopify products -> one dict per variant (perfumes only, see ep_is_perfume).
     check_uae: every product is looked up in the UAE shop (ep_uae): not sold there -> left out;
     sold there -> UAE price + stock. skipped (list) collects the left-out names for /emiratespride/test."""
     out = []
     for p in products:
-        if not ep_is_perfume(p, whole_shop):
+        if not ep_is_perfume(p, whole_shop, gift):
             continue
         title = (p.get("title") or "").strip()
         uae = ep_uae(p.get("handle")) if check_uae else {"price": None, "available": None}   # list only: no price
@@ -248,9 +257,9 @@ def ep_items(products, whole_shop=False, check_uae=True, skipped=None):
             continue
         if check_uae:
             time.sleep(0.3)                               # be gentle: one request per product
-        variants = [v for v in p.get("variants", []) if ep_variant_ok(v.get("title"))]
+        variants = [v for v in p.get("variants", []) if gift or ep_variant_ok(v.get("title"))]   # gift set: all
         for v in p.get("variants", []):
-            if not ep_variant_ok(v.get("title")) and skipped is not None:
+            if not gift and not ep_variant_ok(v.get("title")) and skipped is not None:
                 skipped.append(f"{title} - {v.get('title')} (set / oil)")
         for v in variants:
             vtitle = (v.get("title") or "").strip()
@@ -311,6 +320,18 @@ def ep_source():
     return "/products.json"
 
 
+def ep_gift_source():
+    """Path of the GIFT SETS collection on the address ep_source() found (None when there is none)."""
+    base = ep_state.get("api_base") or EP_API_BASES[0]
+    for h in EP_GIFT_COLLECTIONS:
+        n, _ = ep_try(f"{base}/collections/{h}/products.json")
+        if n:
+            ep_log(f"[EP] gift sets: using {base}/collections/{h}/products.json")
+            return f"/collections/{h}/products.json"
+    ep_log("[EP] no gift set collection found -> gift sets not read")
+    return None
+
+
 def ep_get(page, path="/products.json"):
     """One page of products.json (retries when busy). Returns list of products, [] at the end, None on failure."""
     for attempt, wait in enumerate([0] + EP_RETRY_WAITS):
@@ -351,37 +372,51 @@ def ep_run():
         run_start = cur.fetchone()[0]
         conn.commit()
         path = ep_source()                                  # perfume collection (or whole shop)
-        whole_shop = path == "/products.json"
         st["source"] = path
         st["api_base"] = ep_state.get("api_base")
-        for page in range(1, EP_MAX_PAGES + 1):
-            products = ep_get(page, path)
-            if products is None:
-                st["incomplete"] = True
-                ep_log(f"[EP] page {page}: gave up -> stopping (run is incomplete)")
+        sources = [(path, False)]                           # (path, gift?) - perfumes first, then gift sets
+        gift_path = ep_gift_source()
+        if gift_path:
+            sources.append((gift_path, True))
+        st["gift_source"] = gift_path
+        seen = set()                                        # variant ids already saved (product in both lists)
+        for path, gift in sources:
+            whole_shop = path == "/products.json"
+            for page in range(1, EP_MAX_PAGES + 1):
+                products = ep_get(page, path)
+                if products is None:
+                    st["incomplete"] = True
+                    ep_log(f"[EP] {path} page {page}: gave up -> stopping (run is incomplete)")
+                    break
+                if not products:
+                    break
+                skipped = []
+                items = [i for i in ep_items(products, whole_shop, check_uae=EP_CHECK_UAE, skipped=skipped, gift=gift)
+                         if i["variant_id"] and i["variant_id"] not in seen]
+                seen.update(i["variant_id"] for i in items)
+                st["skipped_not_perfume"] = st.get("skipped_not_perfume", 0) + sum(
+                    1 for p in products if not ep_is_perfume(p, whole_shop, gift))
+                st["skipped_not_in_uae_or_set"] = st.get("skipped_not_in_uae_or_set", 0) + len(skipped)
+                rows = [(i["variant_id"], i["url"], i["gtin"], i["sku"], i["brand"], i["name"], i["product_type"],
+                         i["price_inc_tax"], i["price"], i["stock"], i["volume"]) for i in items]
+                if rows:
+                    execute_values(cur, EP_UPSERT, rows)
+                    conn.commit()
+                st["pages"] += 1
+                st["products"] += len(products)
+                st["saved"] += len(rows)
+                if gift:
+                    st["gift_sets_saved"] = st.get("gift_sets_saved", 0) + len(rows)
+                st["in_stock"] += sum(i["stock"] == "In stock" for i in items)
+                st["out_of_stock"] += sum(i["stock"] != "In stock" for i in items)
+                st["seconds"] = round(time.time() - started, 1)
+                ep_log(f"[EP] {path} page {page}: {len(products)} products, {len(rows)} variants saved "
+                       f"(total {st['saved']})")
+                if len(products) < 250:
+                    break
+                time.sleep(1.5)
+            if st["incomplete"]:
                 break
-            if not products:
-                break
-            skipped = []
-            items = ep_items(products, whole_shop, check_uae=EP_CHECK_UAE, skipped=skipped)
-            st["skipped_not_perfume"] = st.get("skipped_not_perfume", 0) + sum(
-                1 for p in products if not ep_is_perfume(p, whole_shop))
-            st["skipped_not_in_uae_or_set"] = st.get("skipped_not_in_uae_or_set", 0) + len(skipped)
-            rows = [(i["variant_id"], i["url"], i["gtin"], i["sku"], i["brand"], i["name"], i["product_type"],
-                     i["price_inc_tax"], i["price"], i["stock"], i["volume"]) for i in items if i["variant_id"]]
-            if rows:
-                execute_values(cur, EP_UPSERT, rows)
-                conn.commit()
-            st["pages"] = page
-            st["products"] += len(products)
-            st["saved"] += len(rows)
-            st["in_stock"] += sum(i["stock"] == "In stock" for i in items)
-            st["out_of_stock"] += sum(i["stock"] != "In stock" for i in items)
-            st["seconds"] = round(time.time() - started, 1)
-            ep_log(f"[EP] page {page}: {len(products)} products, {len(rows)} variants saved (total {st['saved']})")
-            if len(products) < 250:
-                break
-            time.sleep(1.5)
         if not st["incomplete"] and st["saved"]:             # products gone from the site
             cur.execute("UPDATE emiratespride_catalog SET stock = 'Not on site', updated_at = NOW() "
                         "WHERE updated_at < %s AND stock <> 'Not on site'", (run_start,))
@@ -436,6 +471,14 @@ def ep_test_route():
               "brands_seen": sorted({i["brand"] or "-" for i in items})[:20],
               "product_types": sorted({i["product_type"] or "-" for i in items})[:20],
               "first_3": items[:3]}
+    gift_path = ep_gift_source()                         # gift sets (user's choice): page 1 of that collection
+    result["gift_source"] = gift_path
+    if gift_path:
+        gproducts = ep_get(1, gift_path) or []
+        gitems = ep_items(gproducts, False, check_uae=EP_CHECK_UAE, gift=True)
+        result["gift_page1_products"] = len(gproducts)
+        result["gift_first_5"] = [f"{i['name']} | {i['brand']}" for i in gitems[:5]]
+        result["ok"] = result["ok"] or bool(gitems)
     ep_log(f"[EP-TEST] {result}")
     return jsonify(result)
 
