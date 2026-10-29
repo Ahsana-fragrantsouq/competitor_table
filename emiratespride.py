@@ -67,6 +67,10 @@ EP_COLLECTIONS = ["all-fragrances", "fragrances", "perfumes", "perfume", "fragra
 # (only EP_GIFT_SKIP left out; the "100ml + oil" size rule ep_variant_ok is NOT used there - sets are combos)
 EP_GIFT_COLLECTIONS = ["gift-sets", "gift-set", "giftsets", "gifts", "gift", "gifting"]
 EP_GIFT_SKIP = ["gift card", "giveaway*", "sample"]
+# Emirates Pride has NO separate gift-set collection on its product list (live test 2026-10-29: all 0) - its gift sets
+# ("White Oud Set Box", "Reflection Set Box") are INSIDE all-fragrances -> a title with one of these words is KEPT there
+# (before EP_SKIP_WORDS), unless it is a gift card / sample
+EP_GIFT_WORDS = ["gift set", "giftset", "gift box", "set box", "set", "coffret", "collection"]
 # used only when none of EP_COLLECTIONS exists: a product must have one of these words in its title / type
 EP_PERFUME_WORDS = ["perfume", "parfum", "toilette", "cologne", "edp", "edt", "extrait", "fragrance", "attar", "oud"]
 # always left out: title or product type has one of these WHOLE words (any capitals). "moisturi*" = word start.
@@ -139,9 +143,12 @@ def ep_is_perfume(p, whole_shop, gift=False):
     gift = from the GIFT SETS collection -> everything kept except EP_GIFT_SKIP."""
     text = f" {p.get('title') or ''} {p.get('product_type') or ''} ".lower()
     text = re.sub(r"[^a-z0-9]+", " ", text)                 # "Gift-Set" -> " gift set "
+    has = lambda words: any(re.search(rf"\b{re.escape(w.rstrip('*'))}" + ("" if w.endswith("*") else r"\b"), text)
+                            for w in words)
     if gift:
-        return not any(re.search(rf"\b{re.escape(w.rstrip('*'))}" + ("" if w.endswith("*") else r"\b"), text)
-                       for w in EP_GIFT_SKIP)
+        return not has(EP_GIFT_SKIP)
+    if has(EP_GIFT_WORDS) and not has(EP_GIFT_SKIP):     # gift set inside the perfume list -> kept
+        return True
     for w in EP_SKIP_WORDS:                                 # whole words only ("set" does not hit "settings")
         pat = rf"\b{re.escape(w.rstrip('*'))}" + ("" if w.endswith("*") else r"\b")
         if re.search(pat, text):

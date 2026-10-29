@@ -54,9 +54,10 @@ AN_TYPE_WORDS = ["perfume*", "parfum*", "fragrance*"]
 # gift sets (user's choice: fragrances + gift sets) - collections tried in this order
 AN_GIFT_COLLECTIONS = ["gift-sets", "gift-set", "giftsets", "gifts", "gift", "sets", "gifting"]
 # used only when none of AN_GIFT_COLLECTIONS exists: whole shop, title / type has one of these words
-AN_GIFT_WORDS = ["gift set", "giftset", "gift box", "coffret", "set", "gift", "gifts"]
+AN_GIFT_WORDS = ["gift set", "giftset", "gift box", "coffret", "set", "gift", "gifts",
+                 "collection", "trio", "duo"]           # Anfasic perfume sets: "SHAY MUCH COLLECTION", "TRIO COLLECTION" ...
 # left out EVERYWHERE (also inside the collections): not real products for sale
-AN_ALWAYS_SKIP = ["gift card", "giveaway*", "sample"]
+AN_ALWAYS_SKIP = ["gift card", "giveaway*", "sample", "discovery"]   # discovery kit = minis, like Brands Perfume
 # perfume collection + whole-shop fragrance search: title or product type with one of these words is NOT a fragrance
 AN_SKIP_WORDS = ["body mist", "hair mist", "body spray", "deodorant",
                  "deo", "body lotion", "body cream", "shower gel", "bath", "soap", "candle", "diffuser",
