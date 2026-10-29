@@ -10,7 +10,8 @@ How it is read (live test 2026-10-28: products.json = 404, sitemap works):
   2. every product page is opened (BR_WORKERS at the same time) and read from its built-in product data
      (schema.org JSON-LD "Product": name, brand, sku, barcode, price, currency, availability; one row per offer/size)
      - no JSON-LD -> page meta tags (og:title, product:price:amount, availability)
-  3. PERFUMES ONLY: names / categories with a word of BR_SKIP_WORDS are left out (gift set, body mist ...)
+  3. PERFUMES + GIFT SETS only (user's choice; the site's menu also has Makeup, Hair / Skin Care, Bath & Body,
+     Home Fragrances, Accessories, Discovery Scents, Nail Care -> left out), see br_keep()
   /brandsperfume/test reads 3 product pages and SHOWS what was found (+ the raw page data when nothing could be read)
 Row id (variant_id) = number made from link + SKU (the site has no numeric variant id).
 
@@ -46,12 +47,18 @@ BR_SITEMAP_WORD = "AE-products"           # UAE product sitemaps in /sitemap.xml
 BR_COUNTRY_PATH = "/ae/en/"               # UAE shop, English pages (prices in AED)
 BR_WORKERS = 4                            # product pages read at the same time (be polite: small number)
 BR_BATCH = 100                            # rows saved per database write
-# ONLY PERFUMES - change this list if /brandsperfume/test shows wrong products:
-# always left out: title or product type has one of these WHOLE words (any capitals). "moisturi*" = word start.
-BR_SKIP_WORDS = ["gift set", "giftset", "coffret", "set", "body mist", "hair mist", "body spray", "deodorant",
-                 "deo", "body lotion", "body cream", "shower gel", "bath", "soap", "candle", "diffuser",
-                 "lipstick", "mascara", "foundation", "serum", "moisturi*", "cleanser", "bag", "pouch",
-                 "gift card", "sample"]
+# PERFUMES + GIFT SETS ONLY (br_keep, in this order) - change these lists if /brandsperfume/test shows wrong products.
+# Words are WHOLE words, any capitals; "moisturi*" = word start. Checked in name + category (page category / breadcrumb).
+BR_ALWAYS_SKIP = ["gift card", "discovery", "sample", "samples", "vial", "tester strip"]   # never (Discovery Scents ...)
+BR_GIFT_WORDS = ["gift set", "gift sets", "giftset", "gift box", "coffret", "set"]          # gift set -> ALWAYS kept
+BR_SKIP_WORDS = ["makeup", "make up", "hair care", "hair mist", "hair perfume", "skin care", "skincare",
+                 "bath", "body", "shower", "deodorant", "deo", "soap", "lotion", "cream", "home fragrance",
+                 "home fragrances", "candle", "diffuser", "reed", "room spray", "incense", "bakhoor", "accessories",
+                 "accessory", "bag", "pouch", "nail", "polish", "lipstick", "mascara", "foundation", "serum",
+                 "moisturi*", "cleanser", "shampoo", "conditioner"]                        # not perfume -> dropped
+# when the page gives a category / breadcrumb: it must have one of these (else dropped)
+BR_KEEP_CATEGORIES = ["perfume*", "parfum*", "fragrance*", "eau", "cologne", "attar", "oud", "gift*"]
+
 
 br_lock = threading.Lock()
 br_state = {"running": False, "last": None}
@@ -212,10 +219,26 @@ def br_row(url, name, brand, sku, gtin, price, currency, avail, category):
             "volume": br_volume(name, sku), "currency": currency}
 
 
+def br_crumbs(objs):
+    """BreadcrumbList names (e.g. "Home > Perfumes > Men") -> "Perfumes Men" (used as category when none given)."""
+    for d in objs:
+        if d.get("@type") == "BreadcrumbList":
+            names = []
+            for it in d.get("itemListElement") or []:
+                item = it.get("item") if isinstance(it, dict) else None
+                n = (it.get("name") or (item.get("name") if isinstance(item, dict) else None)) if isinstance(it, dict) else None
+                if n and str(n).strip().lower() not in ("home", "brands perfume"):
+                    names.append(str(n).strip())
+            return " ".join(names[:-1] if len(names) > 1 else names)   # last crumb = the product itself
+    return ""
+
+
 def br_parse(url, html):
     """Product page -> list of rows (one per offer / size). [] when no product data was found."""
     rows = []
-    for d in br_ld_objects(html):
+    objs = br_ld_objects(html)
+    crumbs = br_crumbs(objs)
+    for d in objs:
         types = d.get("@type") if isinstance(d.get("@type"), list) else [d.get("@type")]
         if not any(t in ("Product", "ProductModel") for t in types):
             continue
@@ -237,7 +260,7 @@ def br_parse(url, html):
             name = o.get("name") if o.get("name") and o.get("name") != d.get("name") else d.get("name")
             rows.append(br_row(o.get("url") or url, name, brand, o.get("sku") or d.get("sku"),
                                o.get("gtin13") or o.get("gtin") or gtin, price,
-                               o.get("priceCurrency"), o.get("availability"), d.get("category")))
+                               o.get("priceCurrency"), o.get("availability"), d.get("category") or crumbs))
     if not rows:                                                  # no JSON-LD product -> meta tags
         name = br_meta(html, "og:title")
         price = br_num(br_meta(html, "product:price:amount") or br_meta(html, "og:price:amount"))
@@ -254,8 +277,19 @@ def br_parse(url, html):
 
 
 def br_keep(r):
-    """PERFUMES ONLY: False when name / category has a word of BR_SKIP_WORDS."""
-    return not br_has(BR_SKIP_WORDS, f"{r['name'] or ''} {r['product_type'] or ''}")
+    """PERFUMES + GIFT SETS only. Order: BR_ALWAYS_SKIP -> dropped | gift set word -> kept (also "EDP + Body Lotion")
+    | BR_SKIP_WORDS -> dropped | page category given -> must have a BR_KEEP_CATEGORIES word | else kept (perfume)."""
+    name, cat = r["name"] or "", r["product_type"] or ""
+    text = f"{name} {cat}"
+    if br_has(BR_ALWAYS_SKIP, text):
+        return False
+    if br_has(BR_GIFT_WORDS, text):
+        return True
+    if br_has(BR_SKIP_WORDS, text):
+        return False
+    if cat:                                                     # e.g. "Home Fragrances" already dropped above
+        return br_has(BR_KEEP_CATEGORIES, cat)
+    return True
 
 
 def br_page(url):
