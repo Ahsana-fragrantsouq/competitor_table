@@ -96,6 +96,7 @@ import safe_output                                 # FIRST: logs can never get s
 safe_output.install()
 
 import os
+import gzip                                        # pack big pages (gzip_response)
 import re
 import time
 import difflib
@@ -167,6 +168,38 @@ except ImportError as ex:
 from auth import auth_bp, init_auth                # /login, /logout + login check on every page
 
 app = Flask(__name__)
+
+
+# ---- gzip: pages are big (Competitor table 500-600 KB HTML). Unpacked, a slow / dropped browser connection kept one
+# of the 4 threads busy for minutes (log 2026-11-01: "TimeoutError ... sock.sendall") -> with 4 stuck the site hung.
+# Packed they are ~85-90% smaller -> sent fast. Only for browsers that accept gzip; small / file / streamed answers skipped.
+GZIP_MIN_BYTES = 2000
+GZIP_TYPES = ("text/html", "application/json", "text/css", "application/javascript", "text/plain")
+
+
+@app.after_request
+def gzip_response(resp):
+    try:
+        if (resp.direct_passthrough or resp.status_code < 200 or resp.status_code >= 300
+                or "gzip" not in (request.headers.get("Accept-Encoding") or "").lower()
+                or resp.headers.get("Content-Encoding")
+                or not (resp.mimetype or "").startswith(GZIP_TYPES)):
+            return resp
+        data = resp.get_data()
+        if len(data) < GZIP_MIN_BYTES:
+            return resp
+        packed = gzip.compress(data, compresslevel=5)
+        resp.set_data(packed)
+        resp.headers["Content-Encoding"] = "gzip"
+        resp.headers["Content-Length"] = str(len(packed))
+        resp.headers.add("Vary", "Accept-Encoding")
+        if len(data) > 200_000:                       # log only the big pages
+            log(f"[GZIP] {request.path}: {len(data) // 1024} KB -> {len(packed) // 1024} KB")
+    except Exception as ex:                           # never break a page because of packing
+        log(f"[GZIP] skipped ({ex})")
+    return resp
+
+
 app.register_blueprint(ff_catalog_bp)
 app.register_blueprint(samawa_catalog_bp)
 app.register_blueprint(competitors_bp)
