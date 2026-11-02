@@ -43,6 +43,7 @@ Files in this project
   oudelite.py         -> downloads ae.oudelite.com PERFUMES only (Shopify) into oudelite_catalog (menu Brands Store)
   brandsperfume.py    -> downloads brandsperfume.com PERFUMES only (Shopify) into brandsperfume_catalog (prefix br)
   abdulsamad.py       -> ae.abdulsamadalqurashi.com perfumes + gift sets into abdulsamad_catalog (prefix aq, Brands Store)
+  arabianoud.py       -> ae.arabianoud.com perfumes + gift sets into arabianoud_catalog (prefix ao, Brands Store)
   price_check.py      -> DAILY: re-checks price + stock at the EXISTING competitor links of 50 products
                          (Render Cron Job "python price_check.py"; never changes our price or Airtable)
 
@@ -66,6 +67,7 @@ Normal order to run things (open these URLs in the browser)
  17. /oudelite/run?secret=XXX then /competitor/match-oe?secret=XXX  Oud Elite (test first: /oudelite/test)
  18. /brandsperfume/run?secret=XXX then /competitor/match-br?secret=XXX  Brands Perfume (test first: /brandsperfume/test)
  19. /abdulsamad/run?secret=XXX then /competitor/match-aq?secret=XXX  Abdul Samad Al Qurashi (test first: /abdulsamad/test)
+ 20. /arabianoud/run?secret=XXX then /competitor/match-ao?secret=XXX  Arabian Oud (test first: /arabianoud/test)
      (least price is also recalculated automatically at the end of steps 2, 3 and 4)
   Progress: step 1 -> /samawa-catalog/status | steps 2, 3, 4 -> /samawa/status | Result -> /competitors
 
@@ -158,6 +160,7 @@ from khaltat import khaltat_bp                     # /khaltat/test, /khaltat/run
 from oudelite import oudelite_bp                   # /oudelite/test, /oudelite/run, /oudelite/status
 from brandsperfume import brandsperfume_bp         # /brandsperfume/test, /brandsperfume/run, /brandsperfume/status
 from abdulsamad import abdulsamad_bp               # /abdulsamad/test, /abdulsamad/run, /abdulsamad/status
+from arabianoud import arabianoud_bp               # /arabianoud/test, /arabianoud/run, /arabianoud/status
 import brand_refresh                               # Item Master -> Brands: Refresh all / one brand (brand_refresh.py)
 # price_check.py is optional: if the file is not uploaded to GitHub, the app still starts (without /price-check)
 try:
@@ -230,6 +233,7 @@ app.register_blueprint(khaltat_bp)                 # Khaltat (khaltat.py, menu B
 app.register_blueprint(oudelite_bp)                # Oud Elite (oudelite.py, menu Brands Store)
 app.register_blueprint(brandsperfume_bp)           # Brands Perfume (brandsperfume.py, menu Competitors)
 app.register_blueprint(abdulsamad_bp)              # Abdul Samad Al Qurashi (abdulsamad.py, menu Brands Store)
+app.register_blueprint(arabianoud_bp)              # Arabian Oud (arabianoud.py, menu Brands Store)
 app.register_blueprint(brand_refresh.refresh_bp)   # POST /brands/refresh, GET /brands/refresh/status
 if price_check_bp is not None:
     app.register_blueprint(price_check_bp)
@@ -953,6 +957,7 @@ def run_match(brands, rematch=False, fi_groups=None):
 #   oe_link / oe_price / oe_stock / oe_suggestion / oe_method / oe_score   Oud Elite (Shopify, menu Brands Store)
 #   br_link / br_price / br_stock / br_suggestion / br_method / br_score   Brands Perfume (Shopify, brandsperfume.com)
 #   aq_link / aq_price / aq_stock / aq_suggestion / aq_method / aq_score   Abdul Samad Al Qurashi (menu Brands Store)
+#   ao_link / ao_price / ao_stock / ao_suggestion / ao_method / ao_score   Arabian Oud (menu Brands Store)
 #   <shop>_title           the competitor's own product name (shown as the link text on the page)
 #   our_link / our_title   OUR product page on fragrantsouq.com (matched by SKU) - /competitor/load-our-links
 #   <shop>_confirmed       TRUE = suggestion accepted with "OK" -> later match runs keep this link
@@ -1132,6 +1137,15 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aq_score NUMERIC(5,3);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aq_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aq_confirmed BOOLEAN DEFAULT FALSE;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS aq_rejected TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ao_link TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ao_price NUMERIC(10,2);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ao_stock BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ao_suggestion TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ao_method TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ao_score NUMERIC(5,3);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ao_title TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ao_confirmed BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ao_rejected TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_link TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_stock BOOLEAN;
@@ -1522,6 +1536,11 @@ def aq_entries_from_db(cur):
     return am_entries_from_db(cur, "abdulsamad_catalog", "Abdul Samad Al Qurashi")
 
 
+def ao_entries_from_db(cur):
+    """arabianoud_catalog rows (same columns as Amberiya) -> entries for matching."""
+    return am_entries_from_db(cur, "arabianoud_catalog", "Arabian Oud")
+
+
 def ng_entries_from_db(cur):
     """nichegallerie_catalog rows -> same entry format (WooCommerce like Al Injaz: brand is inside the name)."""
     cur.execute("SELECT to_regclass('nichegallerie_catalog')")
@@ -1599,6 +1618,9 @@ SHOPS = {
     "aq": {"label": "Abdul Samad Al Qurashi", "prefix": "aq", "loader": aq_entries_from_db,
            "empty_hint": "abdulsamad_catalog is empty - run /abdulsamad/run first",
            "trust_barcode": False},      # barcode must also agree by name
+    "ao": {"label": "Arabian Oud", "prefix": "ao", "loader": ao_entries_from_db,
+           "empty_hint": "arabianoud_catalog is empty - run /arabianoud/run first",
+           "trust_barcode": False},      # barcode must also agree by name
 }
 
 
@@ -1615,6 +1637,13 @@ def brand_core(bnorm):
     if len(core) == len(words) or len("".join(core)) < 4:
         return None
     return " " + " ".join(core) + " "
+
+
+# Our product WITHOUT a size (not in the name, Item Master Size empty) -> a NAME match is only a SUGGESTION
+# (OK / Not OK on the card), never an automatic link (Creed "Aventus Tester" was linked to Aventus 50 ml, 2026-11).
+# Barcode matches, links confirmed with OK and links set by an admin stay as they are. False = old behaviour.
+# OFF (user's choice 2026-11-02): wrong links are fixed by hand with "Remove link" on the shop pages (link_edit.py).
+NO_SIZE_ONLY_SUGGEST = False
 
 
 def ct_match_shop(shop_key, only_brands=None, least=True):
@@ -1660,15 +1689,22 @@ def ct_match_shop(shop_key, only_brands=None, least=True):
         by_url = {e["url"]: e for e in entries}
         log(f"[{tag}] {len(confirmed)} confirmed links kept, {len(rejected)} refused suggestions remembered")
 
-        cur.execute("SELECT fi_record_id, brand, product_name, perfume_name, barcode FROM competitor_table")
+        # our SIZE: from the product name ("... 100 ml EDP ..."), else Item Master's Size field (item_master.size)
+        cur.execute("SELECT to_regclass('item_master') IS NOT NULL")
+        if cur.fetchone()[0]:
+            cur.execute("""SELECT ct.fi_record_id, ct.brand, ct.product_name, ct.perfume_name, ct.barcode, im.size
+                           FROM competitor_table ct LEFT JOIN item_master im ON im.fi_record_id = ct.fi_record_id""")
+        else:
+            cur.execute("SELECT fi_record_id, brand, product_name, perfume_name, barcode, NULL FROM competitor_table")
         groups = {}
-        for fid, brand, pname, perfume, barcode in cur.fetchall():
+        for fid, brand, pname, perfume, barcode, im_size in cur.fetchall():
             summary["products"] += 1
             if not brand:
                 summary["skipped_no_brand"] += 1
                 continue
-            # size, type (EDP/EDT) and gender are read from the product name, e.g. "... 100 ml EDP Men Perfume"
-            fields = {F_PRODUCT: pname, F_PERFUME: perfume, F_SIZE: None, F_TYPE: None,
+            # size, type (EDP/EDT) and gender are read from the product name, e.g. "... 100 ml EDP Men Perfume";
+            # F_SIZE = Item Master size ("100 ml") - match_one uses it first, the name second
+            fields = {F_PRODUCT: pname, F_PERFUME: perfume, F_SIZE: im_size, F_TYPE: None,
                       F_CATEGORY: pname, F_BARCODE: barcode}
             groups.setdefault(brand, []).append((fid, fields))
         if only_brands:                           # Brands page -> Refresh: only these brands
@@ -1728,6 +1764,14 @@ def ct_match_shop(shop_key, only_brands=None, least=True):
                     # an admin removed this exact link ("Edit link" -> Remove, link_edit.py) -> never put it back
                     log(f"[{tag}-REFUSED] {pname} -> {e['title']} was removed by an admin -> no match")
                     e, method, guess = None, "removed by admin", None
+                if (e and NO_SIZE_ONLY_SUGGEST and not method.startswith("barcode")
+                        and not (parse_size(fields[F_SIZE]) or parse_size(fields[F_PRODUCT]))):
+                    # OUR product has NO size (name "Aventus Tester", Item Master Size empty) -> the matcher cannot
+                    # tell 50 / 100 ml apart -> NOT linked automatically, only a suggestion to check (OK / Not OK).
+                    # A barcode match is kept (the barcode itself is one exact size).
+                    log(f"[{tag}-NO SIZE] {pname} -> {e['title']} only suggested (our product has no size)")
+                    summary["no_size_suggested"] = summary.get("no_size_suggested", 0) + 1
+                    e, guess, method = None, e, "no size on our product - check suggestion"
                 if e:
                     summary["matched_barcode" if method.startswith("barcode") else "matched_fuzzy"] += 1
                     log(f"[{tag}-MATCH:{method} {score}] {pname} -> {e['title']} | AED {e['price']} | stock={e['available']}")
@@ -1852,6 +1896,12 @@ def ct_match_aq():
     return ct_match_shop("aq")
 
 
+def ct_match_ao():
+    """Match all products to Arabian Oud."""
+    log("[CT-AO] Started: match all products to Arabian Oud")
+    return ct_match_shop("ao")
+
+
 # ============================================================ SECTION 11: PRICES: least price + suggested price
 # LEAST_SQL = cheapest of our price + in-stock competitors | SUGGEST_SQL = cheapest in-stock competitor - discount rate (discount_rate.py) | ct_update_least() runs both.
 # ---------------------------------------------------------------- Branded Perfume / Essenzi + least price
@@ -1925,6 +1975,9 @@ WITH offers AS (
     UNION ALL
     SELECT fi_record_id, 'Abdul Samad Al Qurashi', aq_price, 18
       FROM competitor_table WHERE aq_stock AND aq_link IS NOT NULL AND aq_price > 0
+    UNION ALL
+    SELECT fi_record_id, 'Arabian Oud', ao_price, 19
+      FROM competitor_table WHERE ao_stock AND ao_link IS NOT NULL AND ao_price > 0
 ),
 best AS (
     SELECT fi_record_id, MIN(price) AS min_price FROM offers GROUP BY fi_record_id
@@ -1990,6 +2043,8 @@ WITH competitor_offers AS (
     SELECT fi_record_id, br_price FROM competitor_table WHERE br_stock AND br_link IS NOT NULL AND br_price > 0
     UNION ALL
     SELECT fi_record_id, aq_price FROM competitor_table WHERE aq_stock AND aq_link IS NOT NULL AND aq_price > 0
+    UNION ALL
+    SELECT fi_record_id, ao_price FROM competitor_table WHERE ao_stock AND ao_link IS NOT NULL AND ao_price > 0
 )
 UPDATE competitor_table c
 -- LOP / MOP (price_limits.py clamp_sql): below LOP -> LOP, above MOP -> MOP, empty = no limit
@@ -2252,6 +2307,8 @@ SUGGESTION_SHOPS = {
                              "FROM brandsperfume_catalog WHERE product_url = %s LIMIT 1"),
     "aq": ("Abdul Samad Al Qurashi", "SELECT CONCAT_WS(' ', brand, name), COALESCE(price_inc_tax, price), stock "
                                      "FROM abdulsamad_catalog WHERE product_url = %s LIMIT 1"),
+    "ao": ("Arabian Oud", "SELECT CONCAT_WS(' ', brand, name), COALESCE(price_inc_tax, price), stock "
+                          "FROM arabianoud_catalog WHERE product_url = %s LIMIT 1"),
 }
 LEAST_ORDER = [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"),
                ("Essenzi", "es"), ("V Perfumes", "vp"), ("Al Injaz", "aj"),
@@ -2259,7 +2316,7 @@ LEAST_ORDER = [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfu
                ("Niche Gallerie", "ng"), ("Perfume Dubai", "pd"), ("MHG Boutique", "mh"),
                ("Emirates Pride", "ep"), ("Anfasic", "an"), ("Khaltat", "kh"),
                ("Oud Elite", "oe"), ("Brands Perfume", "br"),
-               ("Abdul Samad Al Qurashi", "aq")]
+               ("Abdul Samad Al Qurashi", "aq"), ("Arabian Oud", "ao")]
 
 
 def link_sisters_for(cur, fid):
@@ -2714,6 +2771,13 @@ def ct_match_oe_route():
     # /competitor/match-oe?secret=XXX -> Oud Elite link / price / stock / suggestion for every product
     log("[ROUTE] /competitor/match-oe called")
     return _ct_start(ct_match_oe, "CT-OE")
+
+
+@app.get("/competitor/match-ao")
+def ct_match_ao_route():
+    # /competitor/match-ao?secret=XXX -> Arabian Oud link / price / stock / suggestion for every product
+    log("[ROUTE] /competitor/match-ao called")
+    return _ct_start(ct_match_ao, "CT-AO")
 
 
 @app.get("/competitor/match-aq")
