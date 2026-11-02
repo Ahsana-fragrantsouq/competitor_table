@@ -6,7 +6,8 @@ burners, home / body / hair items are left out (aq_keep).
 
 The shop system could NOT be checked from Claude's side (network blocked), so the reader tries 2 ways (aq_mode):
   1. "shopify":  /products.json works -> whole shop list (like Khaltat / Anfasic), filtered by aq_keep
-  2. "sitemap":  else /sitemap.xml -> product sitemaps (name has "product") -> English links (AQ_LANG_PATH "/en/")
+  2. "sitemap":  else /sitemap.xml -> product sitemaps (live: SALLA shop, ar/sitemap-1.xml ... -> product links
+                 ".../p123456", switched to English AQ_LANG_PATH "/en/")
                  -> every product page read from its schema.org JSON-LD (same reader as brandsperfume.py: br_parse)
   /abdulsamad/test shows which way works + 3 products read (+ the raw page data when nothing could be read)
 
@@ -161,24 +162,37 @@ def aq_shopify_rows(products):
 
 
 # ===== SECTION 5: way 2 - sitemap + product pages (JSON-LD, brandsperfume.py reader)
+AQ_PRODUCT_LINK = r"/p\d+/?$"             # Salla product page: .../<name>/p123456 (live test 2026-11-02: Salla shop)
+
+
 def aq_product_links():
-    """English product links from the product sitemaps -> (links, {sitemap: counts})."""
+    """Product links from the sitemaps -> (links, {sitemap: counts}, info).
+    Salla: /sitemap.xml lists ar/sitemap-1.xml, -2 ... (no "product" in the name) -> every non-blog sitemap is read,
+    product links = AQ_PRODUCT_LINK, Arabic links switched to English ("/ar/" -> AQ_LANG_PATH; Salla finds the page
+    by its p-number)."""
     status, index = br.br_get(AQ_BASE + "/sitemap.xml", "*/*")
     locs = br.br_locs(index)
-    maps = [u for u in locs if u.endswith(".xml") and AQ_SITEMAP_WORD in u.lower()]
+    xmls = [u for u in locs if u.endswith(".xml")]
+    maps = [u for u in xmls if AQ_SITEMAP_WORD in u.lower()] or [u for u in xmls if "blog" not in u.lower()]
     counts, links = {}, []
-    if not maps and locs and not any(u.endswith(".xml") for u in locs):   # sitemap.xml itself lists the pages
-        maps, links = [], [u for u in locs if re.search(r"/products?/|/p/", u)]
+    if not xmls:                                        # sitemap.xml itself lists the pages
+        links = [u for u in locs if re.search(AQ_PRODUCT_LINK, u) or re.search(r"/products?/", u)]
         counts[AQ_BASE + "/sitemap.xml"] = {"status": status, "links": len(locs), "product_links": len(links)}
     for sm in maps:
         st, xml = br.br_get(sm, "*/*")
         found = br.br_locs(xml)
-        mine = [u for u in found if AQ_LANG_PATH in u] or found
-        counts[sm] = {"status": st, "links": len(found), "english": len(mine)}
-        links.extend(mine)
-    links = list(dict.fromkeys(links))
-    aq_log(f"[AQ] sitemap.xml HTTP {status}: {len(maps)} product sitemap(s), {len(links)} product links")
-    return links, counts, {"status": status, "index_sample": locs[:15]}
+        prods = [u for u in found if re.search(AQ_PRODUCT_LINK, u) or re.search(r"/products?/", u)]
+        counts[sm] = {"status": st, "links": len(found), "product_links": len(prods)}
+        links.extend(prods)
+    links = [u.replace("/ar/", AQ_LANG_PATH) for u in links]                 # English page of the same product
+    pnum = lambda u: (re.search(r"/p(\d+)/?$", u) or [None, u])[1]          # same p-number twice -> once
+    seen, out = set(), []
+    for u in links:
+        if pnum(u) not in seen:
+            seen.add(pnum(u))
+            out.append(u)
+    aq_log(f"[AQ] sitemap.xml HTTP {status}: {len(maps)} sitemap(s) read, {len(out)} product links")
+    return out, counts, {"status": status, "index_sample": locs[:15]}
 
 
 def aq_page(url):
