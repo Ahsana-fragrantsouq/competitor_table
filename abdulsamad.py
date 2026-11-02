@@ -53,7 +53,8 @@ AQ_GIFT_WORDS = ["gift set", "gift sets", "giftset", "gift box", "coffret", "set
 AQ_SKIP_WORDS = ["oil", "oils", "dehn", "dahn", "bakhoor", "bukhoor", "bakhour", "incense", "dokhoon", "dakhoon",
                  "mabkhara", "mubakhar", "burner", "wood", "chips", "muattar", "candle", "diffuser", "reed",
                  "room spray", "home spray", "car", "body", "lotion", "cream", "shower", "soap", "hair", "deodorant",
-                 "accessories", "bag", "pouch", "box only"]                                       # -> left out
+                 "accessories", "bag", "pouch", "box only",
+                 "gm", "gms", "gram", "grams", "kg"]   # sold by WEIGHT = oud wood / bakhoor ("Oud 350 - 30 gm"), not perfume
 AQ_PERFUME_WORDS = ["perfume*", "parfum*", "eau", "edp", "edt", "cologne", "fragrance*", "spray", "extrait"]
 
 aq_lock = threading.Lock()
