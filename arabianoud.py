@@ -21,6 +21,7 @@ Env vars (already set on Render): FF_DATABASE_URL, RUN_SECRET
 """
 
 import os
+from urllib.parse import urlsplit, urlunsplit
 import re
 import json
 import time
@@ -163,7 +164,9 @@ def ao_shopify_rows(products):
 
 
 # ===== SECTION 5: way 2 - sitemap + product pages (JSON-LD, brandsperfume.py reader)
-AO_PRODUCT_LINK = r"/p\d+/?$"             # Salla product page: .../<name>/p123456 (live test 2026-11-02: Salla shop)
+AO_PRODUCT_LINK = r"/p/?\d{3,}(?:[/?#]|$)"  # Salla product page: .../<name>/p123456 (also /p/123456; anywhere in link)
+# Arabian Oud = SALLA (live test 2026-11-03). Its sitemap lists the MAIN store links (arabianoud.com/ar/...): the same
+# products exist on the UAE site -> every link is moved to OUR host (AO_BASE = ae.arabianoud.com) -> AED prices
 
 
 def ao_product_links():
@@ -184,10 +187,13 @@ def ao_product_links():
         found = br.br_locs(xml)
         prods = (found if AO_SITEMAP_WORD in sm.lower()                    # a "products" sitemap: every link
                  else [u for u in found if re.search(AO_PRODUCT_LINK, u) or re.search(r"/products?/", u)])
-        counts[sm] = {"status": st, "links": len(found), "product_links": len(prods)}
+        counts[sm] = {"status": st, "links": len(found), "product_links": len(prods),
+                      "sample": found[:5]}                                   # shown on /arabianoud/test
         links.extend(prods)
-    links = [u.replace("/ar/", AO_LANG_PATH) for u in links]                 # English page of the same product
-    pnum = lambda u: (re.search(r"/p(\d+)/?$", u) or [None, u])[1]          # same p-number twice -> once
+    host = urlsplit(AO_BASE).netloc                                          # ae.arabianoud.com
+    links = [urlunsplit(urlsplit(u)._replace(netloc=host, scheme="https")).replace("/ar/", AO_LANG_PATH)
+             for u in links]                                                 # UAE site, English page
+    pnum = lambda u: (re.search(r"/p/?(\d{3,})(?:[/?#]|$)", u) or [None, u])[1]   # same p-number twice -> once
     seen, out = set(), []
     for u in links:
         if pnum(u) not in seen:
