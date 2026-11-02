@@ -632,6 +632,8 @@ HTML = """
  @@EDIT_CSS@@
  /* Edit our barcode (admins): barcode_edit.py BC_CSS */
  @@BC_CSS@@
+/* Remove link / Add link on the shop pages (admins): link_edit.py SHOP_CSS */
+@@SHOP_LINK_CSS@@
 /* Edit our stock (admins): stock_edit.py STOCK_CSS */
 @@STOCK_CSS@@
  .upd-msg{font-size:13px;margin-top:6px;min-height:16px}
@@ -933,6 +935,8 @@ HTML = """
         <span class="{{ 'in' if r.stock=='In stock' else ('gone' if r.stock=='Not on site' else 'out') }}">{{ r.stock or '' }}</span>
       </span>
     </div>
+    {# under the stock (admins): "Linked to SKU ... Remove link" / "Add link" - link_edit.py SECTION 2b SHOP_HTML #}
+    @@SHOP_LINK_HTML@@
     <div class="row">
       {% if r.url %}<a class="link" href="{{ r.url }}" target="_blank">View product</a>{% else %}<span></span>{% endif %}
       <span class="gtinbox">
@@ -1136,6 +1140,8 @@ HTML = """
   @@EDIT_JS@@
   {# Edit our barcode script (admins): barcode_edit.py BC_JS #}
   @@BC_JS@@
+  {# Remove link / Add link on the shop pages (admins): link_edit.py SHOP_JS #}
+  @@SHOP_LINK_JS@@
   {# Edit our stock script (admins): stock_edit.py STOCK_JS #}
   @@STOCK_JS@@
   async function updatePrice(fi, btn) {
@@ -1182,7 +1188,11 @@ HTML = (HTML.replace("@@LIMITS_CSS@@", price_limits.LIMITS_CSS)
             # Edit our stock -> Shopify (stock_edit.py SECTION 2)
             .replace("@@STOCK_CSS@@", stock_edit.STOCK_CSS)
             .replace("@@STOCK_HTML@@", stock_edit.stock_html("r.fi", "bcode"))
-            .replace("@@STOCK_JS@@", stock_edit.STOCK_JS))
+            .replace("@@STOCK_JS@@", stock_edit.STOCK_JS)
+            # Remove link / Add link on the shop pages (link_edit.py SECTION 2b)
+            .replace("@@SHOP_LINK_CSS@@", link_edit.SHOP_CSS)
+            .replace("@@SHOP_LINK_HTML@@", link_edit.SHOP_HTML)
+            .replace("@@SHOP_LINK_JS@@", link_edit.SHOP_JS))
 
 
 # ============================================================ SECTION 7: competitors page route (/competitors)
@@ -1396,6 +1406,13 @@ def competitors():
             if missing_sql:
                 print(f"[MISSING] {src['label']} page {page}: "
                       f"{sum(1 for r in rows if r['missing'])} of {len(rows)} are missing items", flush=True)
+            if src.get("kind") != "competitor" and missing_sql and is_admin() and src["key"] in link_edit.SHOP_LISTS:
+                # which of OUR products each competitor product is linked to (Remove link / Add link, link_edit.py)
+                linked = link_edit.linked_products(cur, src["key"], {r["url"] for r in rows if r.get("url")})
+                for r in rows:
+                    r["linked"] = linked.get(r.get("url")) or []
+                print(f"[SHOP-LINK] {src['label']} page {page}: {sum(1 for r in rows if r['linked'])} of {len(rows)} "
+                      f"linked to our products", flush=True)
             if src.get("kind") == "competitor":
                 add_next_cheapest(rows, src["shops"])
                 add_link_barcodes(cur, rows, src["shops"])      # barcode under each competitor link
@@ -1413,6 +1430,7 @@ def competitors():
           f"{'Competitor table' if active == 'competitor' else 'Competitors'})", flush=True)
     return render_template_string(HTML, sources=SOURCES, src=src, counts=counts, rows=rows, same_barcode=same_barcode,
                                   admin=is_admin(),             # 'Edit link' buttons only for admins (link_edit.py)
+                                  shop_lists=link_edit.SHOP_LISTS,   # shops that can Remove / Add link (link_edit.py)
                                   nav_html=render_nav(active, src["key"], counts), nav_css=NAV_CSS,
                                   total=total, page=page, pages=pages, q=q, stock=stock, exists=exists,
                                   brands=brands, competitors=list(COMPETITORS), conds=conds,

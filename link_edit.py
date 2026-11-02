@@ -18,7 +18,9 @@ Non-admins do not see the button, and the server refuses them too (403).
 Where things are (change them here):
   SECTION 1  settings      -> SHOP_LISTS (each shop's product list: table, name, price), SAVE_URL
   SECTION 2  card parts    -> EDIT_CSS, EDIT_HTML (button + box under a competitor link), EDIT_JS (Save / Cancel)
-  SECTION 3  save (route)  -> POST /competitor/link
+  SECTION 2b shop pages    -> SHOP_CSS, SHOP_HTML, SHOP_JS: "Remove link" / "Add link" under the stock of every
+                              competitor product on the shop pages (Competitors / Brands Store tabs)
+  SECTION 3  save (route)  -> POST /competitor/link   (+ GET /competitor/our-products: search box of "Add link")
   SECTION 4  hooks         -> init(): functions from app.py (database, French Fragrance sisters, recalculation)
 """
 
@@ -130,6 +132,121 @@ EDIT_JS = """  // ---- Edit link (admins only, link_edit.py): open the box, Save
 """
 
 
+# ============================================================ SECTION 2b: shop pages - Remove link / Add link
+# On a shop page (e.g. Competitors -> Samawa) every card = ONE competitor product. Admins see under the stock:
+#   linked to our product(s)  -> "Linked to SKU ..." + "Remove link"  (= action "remove" above: link cleared + remembered
+#                                as refused, the next match run will not put it back; not for Branded Perfume / Essenzi)
+#   not linked (Missing item) -> "Add link": search our products (name / SKU / brand), pick one, Save
+#                                (= action "save" above: name, price, stock copied, link CONFIRMED so matching keeps it,
+#                                 least + suggested price recalculated, French Fragrance -> BP / ES follow)
+SEARCH_URL = "/competitor/our-products"
+SHOP_CSS = """ /* Remove link / Add link on the shop pages (admins only, link_edit.py SECTION 2b) */
+ .sl-wrap{margin-top:6px;text-align:right;font-size:12px;color:var(--muted)}
+ .sl-linked{display:block;margin-top:2px}
+ .sl-btn{background:none;border:0;color:var(--muted);font-size:12px;cursor:pointer;text-decoration:underline;padding:0;margin-left:6px}
+ .sl-box{margin-top:6px;text-align:left}
+ .sl-box[hidden]{display:none}
+ .sl-box input{width:100%;box-sizing:border-box;background:var(--bg);color:var(--text);border:1px solid var(--line);
+               border-radius:8px;padding:7px 9px;font-size:13px}
+ .sl-list{max-height:220px;overflow:auto;margin-top:4px;border:1px solid var(--line);border-radius:8px}
+ .sl-list:empty{display:none}
+ .sl-opt{padding:6px 9px;cursor:pointer;font-size:13px;color:var(--text);border-bottom:1px solid var(--line)}
+ .sl-opt:hover,.sl-opt.on{background:rgba(242,214,117,.15)}
+ .sl-opt small{color:var(--muted)}
+ .sl-btns{display:flex;gap:6px;justify-content:flex-end;margin-top:6px}
+ .sl-btns button{border-radius:8px;padding:6px 12px;font-weight:600;cursor:pointer;font-size:13px}
+ .sl-save{background:#f2d675;color:#1c1b19;border:0} .sl-save:disabled{opacity:.5;cursor:default}
+ .sl-cancel{background:none;color:var(--muted);border:1px solid var(--line)}
+ .sl-msg{margin-top:4px} .sl-msg.err{color:#e0806c} .sl-msg.ok{color:#8fd19e}
+"""
+
+# r = competitor product row of a shop page; loop.index makes the ids unique on the page
+SHOP_HTML = """{% if admin and src.key in shop_lists and r.url %}
+    <div class="sl-wrap" id="sl-{{ loop.index }}" data-url="{{ r.url }}" data-shop="{{ src.key }}"
+         data-q="{{ (r.brand or '') ~ ' ' ~ (r.name or '') }}">
+      {% for p in r.linked or [] %}
+        <span class="sl-linked">Linked to <b>{{ p.sku or p.fi }}</b>{% if p.confirmed %} ✓{% endif %}
+          {% if src.key not in ('bp', 'es') %}<button type="button" class="sl-btn" onclick="slRemove('{{ p.fi }}', this)">Remove link</button>{% endif %}</span>
+      {% endfor %}
+      {% if not r.linked %}<button type="button" class="sl-btn" onclick="slOpen({{ loop.index }})">Add link</button>{% endif %}
+      <div class="sl-box" hidden>
+        <input type="text" placeholder="Search our product: name, SKU or brand" oninput="slSearch({{ loop.index }})">
+        <div class="sl-list"></div>
+        <div class="sl-btns">
+          <button type="button" class="sl-cancel" onclick="slClose({{ loop.index }})">Cancel</button>
+          <button type="button" class="sl-save" disabled onclick="slSave({{ loop.index }}, this)">Save</button>
+        </div>
+      </div>
+      <div class="sl-msg"></div>
+    </div>
+    {% endif %}"""
+
+SHOP_JS = """  // ---- Remove link / Add link on the shop pages (admins only, link_edit.py SECTION 2b) ----
+  var slTimer = null;
+  function slEl(n) { return document.getElementById("sl-" + n); }
+  function slMsg(w, cls, text) { var m = w.querySelector(".sl-msg"); m.className = "sl-msg " + cls; m.textContent = text; }
+  async function slPost(body) {
+    var r = await fetch("@@SAVE_URL@@", {method: "POST", headers: {"Content-Type": "application/json"},
+                                        body: JSON.stringify(body)});
+    var d = await r.json().catch(function () { return {ok: false, error: "HTTP " + r.status}; });
+    if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
+    return d;
+  }
+  async function slRemove(fi, btn) {                // remove THIS competitor product from our product fi
+    var w = btn.closest(".sl-wrap");
+    if (!confirm("Remove this link? The next match will not put it back.")) return;
+    btn.disabled = true; slMsg(w, "", "Removing ...");
+    try {
+      await slPost({fi_record_id: fi, shop: w.dataset.shop, action: "remove"});
+      btn.closest(".sl-linked").remove();
+      slMsg(w, "ok", "Link removed - reload the page to link it again");
+      console.log("[SHOP-LINK] removed " + w.dataset.url + " from " + fi);
+    } catch (e) { slMsg(w, "err", "Not removed: " + e.message); btn.disabled = false; }
+  }
+  function slOpen(n) {
+    var w = slEl(n), box = w.querySelector(".sl-box"), inp = box.querySelector("input");
+    box.hidden = false; slMsg(w, "", "");
+    if (!inp.value) inp.value = (w.dataset.q || "").trim().split(/\\s+/).slice(0, 3).join(" ");   // brand + first words
+    inp.focus(); slSearch(n);
+  }
+  function slClose(n) { var w = slEl(n); w.querySelector(".sl-box").hidden = true; }
+  function slSearch(n) {                                 // search our products (waits 300 ms after typing)
+    clearTimeout(slTimer);
+    slTimer = setTimeout(async function () {
+      var w = slEl(n), q = w.querySelector(".sl-box input").value.trim(), list = w.querySelector(".sl-list");
+      w.querySelector(".sl-save").disabled = true; delete w.dataset.fi;
+      if (q.length < 2) { list.innerHTML = ""; return; }
+      var r = await fetch("@@SEARCH_URL@@?shop=" + encodeURIComponent(w.dataset.shop) + "&q=" + encodeURIComponent(q));
+      var d = await r.json().catch(function () { return {items: []}; });
+      list.innerHTML = "";
+      (d.items || []).forEach(function (p) {
+        var o = document.createElement("div"); o.className = "sl-opt";
+        o.textContent = (p.sku ? p.sku + " · " : "") + (p.name || p.fi);
+        if (p.has_link) { var s = document.createElement("small"); s.textContent = "  (already has a link - Save replaces it)"; o.appendChild(s); }
+        o.onclick = function () {
+          list.querySelectorAll(".sl-opt").forEach(function (x) { x.classList.remove("on"); });
+          o.classList.add("on"); w.dataset.fi = p.fi; w.querySelector(".sl-save").disabled = false;
+        };
+        list.appendChild(o);
+      });
+      if (!(d.items || []).length) list.innerHTML = '<div class="sl-opt"><small>No product found</small></div>';
+    }, 300);
+  }
+  async function slSave(n, btn) {                        // link THIS competitor product to the chosen product
+    var w = slEl(n);
+    if (!w.dataset.fi) return;
+    btn.disabled = true; slMsg(w, "", "Saving ...");
+    try {
+      var d = await slPost({fi_record_id: w.dataset.fi, shop: w.dataset.shop, action: "save", url: w.dataset.url});
+      slClose(n);
+      slMsg(w, "ok", "Linked: AED " + (d.price == null ? "-" : d.price) + " | " + (d.stock || "") + " (price + least price updated)");
+      var miss = w.closest(".card").querySelector(".missing"); if (miss) miss.remove();
+      console.log("[SHOP-LINK] linked " + w.dataset.url + " to " + w.dataset.fi);
+    } catch (e) { slMsg(w, "err", "Not saved: " + e.message); btn.disabled = false; }
+  }
+""".replace("@@SAVE_URL@@", SAVE_URL).replace("@@SEARCH_URL@@", SEARCH_URL)
+
+
 # ============================================================ SECTION 3: save (POST /competitor/link)
 @link_bp.post(SAVE_URL)
 def link_save():
@@ -194,6 +311,43 @@ def link_save():
         + (f"{url} ({name} | AED {price} | {stock})" if action == "save" else "removed (remembered as refused)"))
     return jsonify({"ok": True, "action": action, "name": name, "stock": stock,
                     "price": float(price) if price is not None else None})
+
+
+@link_bp.get(SEARCH_URL)
+def our_products():
+    """Search box of "Add link": our products whose name / SKU / brand has ALL the typed words (max 15).
+    has_link = it already has a link on this shop (Save would replace it)."""
+    if g.get("role") != "admin":
+        return jsonify({"items": []}), 403
+    q, shop = (request.args.get("q") or "").strip(), request.args.get("shop")
+    words = [w for w in q.split() if len(w) >= 1][:6]
+    if shop not in SHOP_LISTS or not words or not HOOKS:
+        return jsonify({"items": []})
+    conn = HOOKS["connect"]()
+    cur = conn.cursor()
+    try:
+        where = " AND ".join("CONCAT_WS(' ', sku, product_name, brand) ILIKE %s" for _ in words)
+        cur.execute(f"""SELECT fi_record_id, sku, product_name, ({shop}_link IS NOT NULL) FROM competitor_table
+                        WHERE {where} ORDER BY brand, product_name LIMIT 15""", [f"%{w}%" for w in words])
+        items = [{"fi": f, "sku": sk, "name": nm, "has_link": hl} for f, sk, nm, hl in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+    log(f"[SHOP-LINK] search {shop} {q!r}: {len(items)} found")
+    return jsonify({"items": items})
+
+
+def linked_products(cur, shop, urls):
+    """{competitor link: [our products linked to it]} for the cards of a shop page (dict cursor)."""
+    if shop not in SHOP_LISTS or not urls:
+        return {}
+    cur.execute(f"""SELECT {shop}_link AS link, fi_record_id AS fi, sku, product_name AS name,
+                           COALESCE({shop}_confirmed, FALSE) AS confirmed
+                    FROM competitor_table WHERE {shop}_link = ANY(%s)""", (list(urls),))
+    out = {}
+    for r in cur.fetchall():
+        out.setdefault(r["link"], []).append(dict(r))
+    return out
 
 
 # ============================================================ SECTION 4: hooks from app.py
