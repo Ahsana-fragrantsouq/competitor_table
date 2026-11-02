@@ -59,7 +59,8 @@ SOURCES = [
                ("V Perfumes", "vp"), ("Al Injaz", "aj"),
                ("Ounass", "on"), ("Amberiya", "am"), ("Niche Gallerie", "ng"), ("Perfume Dubai", "pd"),
                ("MHG Boutique", "mh"), ("Emirates Pride", "ep"),
-               ("Anfasic", "an"), ("Khaltat", "kh"), ("Oud Elite", "oe"), ("Brands Perfume", "br")],
+               ("Anfasic", "an"), ("Khaltat", "kh"), ("Oud Elite", "oe"), ("Brands Perfume", "br"),
+               ("Abdul Samad Al Qurashi", "aq")],
      "cols": {"code": "french_inventory_code", "sku": "sku", "brand": "brand", "barcode": "barcode", "name": "product_name",
               "uae_price": "uae_price",
               "samawa_url": "samawa_link", "samawa_price": "samawa_price", "samawa_stock": "samawa_stock",
@@ -91,6 +92,8 @@ SOURCES = [
               "oe_title": "oe_title", "oe_confirmed": "oe_confirmed",
               "br_url": "br_link", "br_price": "br_price", "br_stock": "br_stock", "br_suggestion": "br_suggestion",
               "br_title": "br_title", "br_confirmed": "br_confirmed",
+              "aq_url": "aq_link", "aq_price": "aq_price", "aq_stock": "aq_stock", "aq_suggestion": "aq_suggestion",
+              "aq_title": "aq_title", "aq_confirmed": "aq_confirmed",
               # competitor's own product name, used as the link text
               "samawa_title": "samawa_title", "ff_title": "ff_title", "bp_title": "bp_title",
               "es_title": "es_title", "vp_title": "vp_title",
@@ -179,6 +182,11 @@ SOURCES = [
               "updated": "updated_at"}},
     # Brands Perfume = brandsperfume.com PERFUMES only (Shopify), brandsperfume.py - menu COMPETITORS (prefix br)
     {"key": "br", "label": "Brands Perfume", "table": "brandsperfume_catalog",
+     "cols": {"name": "name", "brand": "brand", "gtin": "COALESCE(gtin, sku)", "url": "product_url",
+              "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
+              "updated": "updated_at"}},
+    # Abdul Samad Al Qurashi = ae.abdulsamadalqurashi.com perfumes + gift sets, abdulsamad.py - menu BRANDS STORE (prefix aq)
+    {"key": "aq", "label": "Abdul Samad Al Qurashi", "table": "abdulsamad_catalog", "menu": "brands",
      "cols": {"name": "name", "brand": "brand", "gtin": "COALESCE(gtin, sku)", "url": "product_url",
               "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
               "updated": "updated_at"}},
@@ -838,7 +846,8 @@ HTML = """
                   'Niche Gallerie': r.ng_url, 'Perfume Dubai': r.pd_url,
                   'MHG Boutique': r.mh_url, 'Emirates Pride': r.ep_url,
                   'Anfasic': r.an_url, 'Khaltat': r.kh_url,
-                  'Oud Elite': r.oe_url, 'Brands Perfume': r.br_url} %}
+                  'Oud Elite': r.oe_url, 'Brands Perfume': r.br_url,
+                  'Abdul Samad Al Qurashi': r.aq_url} %}
              <span class="{{ 'in' if 'Fragrant Souq' in (r.least_site or '') else 'out' }}">
                {%- for site in (r.least_site or '').split(', ') -%}
                  {%- if site_links.get(site) -%}
@@ -1194,6 +1203,7 @@ LINK_BARCODES = {
     "kh": ("khaltat_catalog", "product_url", "sku"),
     "oe": ("oudelite_catalog", "product_url", "sku"),
     "br": ("brandsperfume_catalog", "product_url", "sku"),
+    "aq": ("abdulsamad_catalog", "product_url", "sku"),
 }
 
 
@@ -1964,7 +1974,8 @@ def run2_rows(rs):
     except Exception as ex:                                # daily_update.py missing -> fixed order
         print(f"[RUN2-BOX] daily_update.py not importable ({ex}) -> default shop order", flush=True)
         order = [("samawa", "Samawa"), ("vp", "V Perfumes"), ("am", "Amberiya"), ("pd", "Perfume Dubai"),
-                 ("mh", "MHG Boutique"), ("an", "Anfasic"), ("kh", "Khaltat"), ("br", "Brands Perfume")]
+                 ("mh", "MHG Boutique"), ("an", "Anfasic"), ("kh", "Khaltat"), ("br", "Brands Perfume"),
+                 ("aq", "Abdul Samad Al Qurashi")]
     rs = rs or {}
     start = rs.get("round_start")
     results = rs.get("weekly_results") or {}
