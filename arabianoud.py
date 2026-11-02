@@ -46,7 +46,10 @@ AO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebK
 AO_BRAND = "Arabian Oud"        # brand when the shop does not say one (it is their own shop)
 AO_LANG_PATH = "/en/"                      # English pages (the user's link: ae.arabianoud.com/en)
 AO_SITEMAP_WORD = "product"                # product sitemaps in /sitemap.xml
-AO_WORKERS = 4                             # product pages read at the same time (sitemap way)
+AO_WORKERS = 1                             # ONE page at a time: Arabian Oud (Cloudflare) answers 429 "too many
+                                           # requests" when 4 pages are asked at once (log 2026-11-02)
+AO_PAGE_PAUSE = 1.5                        # seconds between 2 product pages (be polite -> no 429)
+AO_BUSY_WAITS = [60, 120]                  # still 429 after br_get's own retries -> wait this long, try again
 AO_BATCH = 100                             # rows saved per database write
 AO_MAX_PAGES = 100                         # Shopify: max 100 pages x 250
 # PERFUMES + GIFT SETS (ao_keep, in this order). WHOLE words, any capitals; "x*" = word start.
@@ -212,8 +215,16 @@ def ao_product_links():
 
 
 def ao_page(url):
-    """One product page -> (status, rows kept, names skipped)."""
+    """One product page -> (status, rows kept, names skipped). Pauses AO_PAGE_PAUSE first; when the shop still
+    says "too busy" (429 -> br_get gives up with status 0) it waits AO_BUSY_WAITS and tries again."""
+    time.sleep(AO_PAGE_PAUSE)
     status, html = br.br_get(url)
+    for wait in AO_BUSY_WAITS:
+        if status != 0:
+            break
+        ao_log(f"[AO] {url}: still too busy -> waiting {wait}s and trying again")
+        time.sleep(wait)
+        status, html = br.br_get(url)
     if status != 200:
         return status, [], []
     rows = br.br_parse(url, html)
