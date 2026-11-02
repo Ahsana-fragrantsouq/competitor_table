@@ -164,6 +164,7 @@ def ao_shopify_rows(products):
 
 
 # ===== SECTION 5: way 2 - sitemap + product pages (JSON-LD, brandsperfume.py reader)
+AO_NOT_PRODUCT = r"/page-\d+|/blog|/brands?/|/c\d+/?$|/(cart|login|account|search)\b"   # English links that are NOT products
 AO_PRODUCT_LINK = r"/p/?\d{3,}(?:[/?#]|$)"  # Salla product page: .../<name>/p123456 (also /p/123456; anywhere in link)
 # Arabian Oud = SALLA (live test 2026-11-03). Its sitemap lists the MAIN store links (arabianoud.com/ar/...): the same
 # products exist on the UAE site -> every link is moved to OUR host (AO_BASE = ae.arabianoud.com) -> AED prices
@@ -187,6 +188,12 @@ def ao_product_links():
         found = br.br_locs(xml)
         prods = (found if AO_SITEMAP_WORD in sm.lower()                    # a "products" sitemap: every link
                  else [u for u in found if re.search(AO_PRODUCT_LINK, u) or re.search(r"/products?/", u)])
+        if not prods:
+            # Arabian Oud (live test 2026-11-03): product links have NO p-number, e.g.
+            # arabianoud.com/en/0201020036-oud-350-30-gm (same product in ar / en / ms / fr / de) ->
+            # take the ENGLISH links, minus info pages ("/page-164033926") and blog; pages without product data
+            # are skipped later by the JSON-LD reader
+            prods = [u for u in found if AO_LANG_PATH in u and not re.search(AO_NOT_PRODUCT, u)]
         counts[sm] = {"status": st, "links": len(found), "product_links": len(prods),
                       "sample": found[:5]}                                   # shown on /arabianoud/test
         links.extend(prods)
