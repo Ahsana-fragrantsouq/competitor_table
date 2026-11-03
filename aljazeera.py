@@ -174,7 +174,7 @@ def jz_shopify_rows(products):
 # ===== SECTION 5: way 2 - sitemap + product pages (JSON-LD, brandsperfume.py reader)
 JZ_NOT_PRODUCT = (r"/page-\d+|/blog|/brands?/|/c\d+/?$|/(cart|login|account|search|customer|checkout|"
                   r"collections?|categor(y|ies)|pages?|about|contact|faq|privacy|terms|stores?)(\b|/)")   # English links that are NOT products
-JZ_PRODUCT_LINK = r"/p/?\d{3,}(?:[/?#]|$)|/products?/|\.html?(?:[?#]|$)"   # Salla p123456 / Shopify-Woo /product(s)/
+JZ_PRODUCT_LINK = r"/product-details/|/p/?\d{3,}(?:[/?#]|$)|/products?/|\.html?(?:[?#]|$)"   # Salla p123456 / Shopify-Woo /product(s)/
                                                                            # / Magento ".html" product pages
 # A sitemap may list the MAIN store's links (other host): the same products exist on the UAE site -> every link is
 # moved to OUR host (JZ_BASE = uae.aljazeeraperfumes.com) -> AED prices
@@ -245,6 +245,41 @@ def jz_page(url):
         r["brand"] = r["brand"] or JZ_BRAND
     return status, [r for r in rows if jz_keep(r["name"], r["product_type"])], \
         [r["name"] for r in rows if not jz_keep(r["name"], r["product_type"])]
+
+
+# ===== SECTION 5b: find the shop's API (live test 2026-11-03: the site is an ANGULAR app -> pages have NO product
+# data in the HTML (0 JSON-LD, no AED), the browser gets products from an API. The API address is inside the app's
+# main-*.js file -> /aljazeera/test lists the web addresses + api / product paths found there (send to Claude).
+JZ_JS_SKIP = ("w3.org", "angular.io", "github.com", "google", "facebook", "twitter", "instagram", "youtube",
+              "apple.com", "mozilla", "jquery", "cloudflare", "gstatic", "schema.org", "tiktok", "snapchat")
+
+
+def jz_discover(html):
+    """Home page HTML -> {scripts, urls, api_paths} found in the app's main js (nothing is saved)."""
+    from urllib.parse import urljoin
+    base = (re.search(r'<base\s+href="([^"]*)"', html or "") or [None, "/"])[1]
+    scripts = re.findall(r'<script[^>]+src="([^"]+)"', html or "")
+    mains = [u for u in scripts if "main" in u.lower()][:1] or scripts[-1:]
+    out = {"base_href": base, "main_js": [], "urls": [], "api_paths": [], "env_snippets": []}
+    for src in mains:
+        for root in (JZ_BASE + base, JZ_BASE + "/"):                    # js is relative to <base href>
+            url = urljoin(root if root.endswith("/") else root + "/", src)
+            st, js = br.br_get(url, "*/*")
+            out["main_js"].append({"url": url, "status": st, "size": len(js or "")})
+            if st == 200 and js:
+                break
+        if not js:
+            continue
+        urls = sorted({u.rstrip("/\\") for u in re.findall(r"https?://[A-Za-z0-9._\-]+(?:/[A-Za-z0-9._\-/]*)?", js)
+                       if not any(w in u for w in JZ_JS_SKIP)})
+        out["urls"] = urls[:60]
+        paths = sorted({m for m in re.findall(r"[\"'`]([A-Za-z0-9_\-/{}.$]*(?:api|Api|API|product|Product)[A-Za-z0-9_\-/{}.$?=&]*)[\"'`]", js)
+                        if 3 < len(m) < 120})
+        out["api_paths"] = paths[:120]
+        out["env_snippets"] = [js[max(0, m.start() - 120):m.start() + 200]
+                               for m in re.finditer(r"(?i)(apiurl|baseurl|api_url|base_url|apibase|serverurl)", js)][:6]
+    jz_log(f"[JZ-DISCOVER] base {base}, main js {out['main_js']}, {len(out['urls'])} urls, {len(out['api_paths'])} api paths")
+    return out
 
 
 # ===== SECTION 6: full download
@@ -364,9 +399,9 @@ def jz_test_route():
         links, counts, info = jz_product_links()
         result = {"ok": False, "mode": "sitemap", "shopify_products_json": "not working", "sitemap": info,
                   "sitemaps": counts, "product_links": len(links), "first_links": links[:3], "pages": []}
-        if not links:                                       # nothing at all -> show the home page
-            st, html = br.br_get(JZ_BASE + "/en")
-            result["home_en"] = {"status": st, **br.br_raw(JZ_BASE + "/en", html)}
+        st, html = br.br_get(JZ_BASE + "/en")                # home page: what kind of site + its API (SECTION 5b)
+        result["home_en"] = {"status": st, **br.br_raw(JZ_BASE + "/en", html)}
+        result["api_search"] = jz_discover(html) if st == 200 else {"error": f"home page HTTP {st}"}
         for url in links[:3]:
             st, html = br.br_get(url)
             rows = br.br_parse(url, html) if st == 200 else []
