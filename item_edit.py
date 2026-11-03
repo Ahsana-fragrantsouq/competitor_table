@@ -50,11 +50,21 @@ EDIT_COLS = [
     ("kuwait_price",  "Kuwait price",  "money"),
     ("america_price", "America price", "money"),
     ("qatar_price",   "Qatar price",   "money"),
+    # comparison prices (= Shopify "compare at" price, shown crossed out next to the price) - one per market,
+    # shown + edited UNDER their price (user's request 2026-11-03). Same Shopify rule as prices (SEND_PRICES).
+    ("uae_comparison_price",     "UAE comparison",     "money"),
+    ("asia_comparison_price",    "Asia comparison",    "money"),
+    ("kuwait_comparison_price",  "Kuwait comparison",  "money"),
+    ("america_comparison_price", "America comparison", "money"),
+    ("qatar_comparison_price",   "Qatar comparison",   "money"),
 ]
 EDITABLE = [c for c, _, _ in EDIT_COLS]
 PICK_COLS = [c for c, _, k in EDIT_COLS if k.startswith("pick")]
 ADD_COLS = [c for c, _, k in EDIT_COLS if k == "pick"]          # these may get new options
 MONEY_COLS = [c for c, _, k in EDIT_COLS if k == "money"]
+PRICE_COLS = [c for c in MONEY_COLS if "_comparison_" not in c]                  # the 5 market prices
+COMPARE_OF = {c: c.replace("_price", "_comparison_price") for c in PRICE_COLS}  # price -> its comparison price
+EDIT_LABELS = {c: l for c, l, _ in EDIT_COLS}
 CT_SYNC = ["brand", "barcode", "uae_price", "product_name"]   # also changed in competitor_table (the Competitor table cards: our price)
 # price column -> Shopify Markets CATALOG TITLE (same names as Combined_codes syncing_my_price.py MARKET_NAMES).
 # The price is sent in that catalog's price list currency, AS IS (no conversion - e.g. Qatar = QAR).
@@ -140,6 +150,12 @@ EDIT_CSS = """ /* Edit (admins only, item_edit.py) */
  .editmsg{font-size:13px;margin-right:auto} .editmsg.err{color:#e0806c}
  .toshop{flex-basis:100%;display:flex;justify-content:flex-end;align-items:center;gap:7px;font-size:14px;color:var(--text);cursor:pointer}
  .toshop input{width:17px;height:17px;accent-color:#f2d675;margin:0}
+ /* prices block: 5 columns (UAE Asia Kuwait America Qatar), each = price box over its comparison box */
+ .editprices{display:grid;grid-template-rows:auto auto;grid-auto-flow:column;grid-auto-columns:minmax(110px,1fr);
+             gap:10px 14px;margin-top:12px;overflow-x:auto}
+ .editprices label{display:block;color:var(--muted);font-size:13px}
+ .editprices input{width:100%;box-sizing:border-box;margin-top:3px;background:var(--bg);color:var(--text);
+                   border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:14px}
  @media (max-width:640px){ .editgrid{grid-template-columns:1fr} }
 """
 
@@ -152,7 +168,7 @@ EDIT_BTN = """{% if admin %}
 def _box(col, label, kind):
     """One edit box (Jinja). pick = hidden value + button that opens the pick list."""
     val = "{{ r." + col + " or '' }}"
-    start = ' style="grid-column-start:1"' if col in ("top_notes", "uae_price") else ""
+    start = ' style="grid-column-start:1"' if col == "top_notes" else ""
     if kind == "money":                                  # price: number box, empty when no price
         inner = (f'<input name="{col}" type="number" step="0.01" min="0" inputmode="decimal" '
                  f'value="{{{{ r.{col} if r.{col} is not none else \'\' }}}}">')
@@ -171,7 +187,11 @@ def _box(col, label, kind):
 EDIT_FORM = """{% if admin %}
   <form class="editbox" id="edit-{{ r.fi_record_id }}" hidden onsubmit="editSave('{{ r.fi_record_id }}', this); return false;">
     <div class="editgrid">
-""" + "".join(_box(c, l, k) for c, l, k in EDIT_COLS) + """    </div>
+""" + "".join(_box(c, l, k) for c, l, k in EDIT_COLS if k != "money") + """    </div>
+    {# prices: one column per market, comparison price UNDER its price #}
+    <div class="editprices">
+""" + "".join(_box(c, EDIT_LABELS[c], "money") + _box(COMPARE_OF[c], EDIT_LABELS[COMPARE_OF[c]], "money")
+              for c in PRICE_COLS) + """    </div>
     <div class="editbtns">
       {# ticked = after Save also update the product in Shopify (Shopify API, SECTION 5); no name -> not a field #}
       <label class="toshop"><input type="checkbox" class="toshop-box" checked> Update in shopify</label>
@@ -367,8 +387,9 @@ def _price_lists(sc):
     return out
 
 
-def _send_prices(sc, fid, vid, prices):
-    """{price column: price} -> Shopify Markets price lists (MARKET_NAMES) of variant vid. Returns error list."""
+def _send_prices(sc, fid, vid, prices, compares=None):
+    """{price column: price} -> Shopify Markets price lists (MARKET_NAMES) of variant vid. Returns error list.
+    compares = {price column: comparison price or None} -> the list's compareAtPrice (crossed-out price)."""
     bad = []
     if not prices:
         return bad
@@ -378,9 +399,12 @@ def _send_prices(sc, fid, vid, prices):
         if not pl:
             bad.append(f"{col.replace('_', ' ')}: catalog '{MARKET_NAMES[col]}' not found in Shopify")
             continue
-        res = sc.shopify_graphql(PRICE_ADD, {"pl": pl["id"], "prices": [{
-            "variantId": f"gid://shopify/ProductVariant/{vid}",
-            "price": {"amount": str(price), "currencyCode": pl["currency"]}}]})
+        item = {"variantId": f"gid://shopify/ProductVariant/{vid}",
+                "price": {"amount": str(price), "currencyCode": pl["currency"]}}
+        cmp = (compares or {}).get(col)
+        if cmp is not None:
+            item["compareAtPrice"] = {"amount": str(cmp), "currencyCode": pl["currency"]}
+        res = sc.shopify_graphql(PRICE_ADD, {"pl": pl["id"], "prices": [item]})
         errs = ((res.get("data") or {}).get("priceListFixedPricesAdd") or {}).get("userErrors") or res.get("errors")
         if errs:
             bad.append(f"{col.replace('_', ' ')}: {errs}")
@@ -437,8 +461,11 @@ def shopify_update(conn, fid, changed=()):
         return {"ok": False, "error": "product has no SKU"}
     sku, barcode, title, shopify_id = row[:4]
     sku = sku.strip().upper()
-    prices = {c: row[4 + i] for i, c in enumerate(MONEY_COLS)
-              if c in send and row[4 + i] is not None}       # empty price = nothing to send
+    vals = {c: row[4 + i] for i, c in enumerate(MONEY_COLS)}
+    # a market is sent when its price OR its comparison price changed: price (current value) + comparison together
+    prices = {c: vals[c] for c in PRICE_COLS
+              if (c in send or COMPARE_OF[c] in send) and vals[c] is not None}   # empty price = nothing to send
+    compares = {c: vals[COMPARE_OF[c]] for c in prices}         # None = no comparison price (removed in Shopify)
     txt = lambda v: str(v).strip() if v not in (None, "") else ""
     try:
         found = _find_in_shopify(sc, sku, txt(shopify_id))
@@ -459,13 +486,15 @@ def shopify_update(conn, fid, changed=()):
             variant["barcode"] = txt(barcode)
         if "uae_price" in prices:                            # UAE price = the normal (default) price too
             variant["price"] = str(prices["uae_price"])
+            cmp = compares.get("uae_price")                  # UAE comparison = the normal "compare at" price
+            variant["compare_at_price"] = str(cmp) if cmp is not None else None
         if len(variant) > 1:
             r = sc.shopify_rest("PUT", f"variants/{vid}.json", {"variant": variant})
             if not r.ok:
                 return {"ok": False, "error": f"barcode / price not changed ({r.status_code}): {r.text[:150]}"}
             log(f"[ITEM-SHOPIFY] {fid}: variant {variant}")
 
-        bad = _send_prices(sc, fid, vid, prices)              # changed prices -> market price lists
+        bad = _send_prices(sc, fid, vid, prices, compares)    # changed prices (+ comparison) -> market price lists
         if bad:
             return {"ok": False, "error": f"prices not set: {'; '.join(bad)[:200]}"}
     except Exception as ex:
