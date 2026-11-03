@@ -323,6 +323,165 @@ def jz_api_probe(js):
     return {"api": JZ_API, "tries": tries, "app_code": code}
 
 
+# ===== SECTION 5d: THE READER - El-Dokan API product list (live test 2026-11-03)
+#   POST {JZ_API}/api/customer/products/search  body {"page": n, ...}  -> {"code":200,"data":{"products":[{id, parent_id,
+#        sku "Main_11050000", name "ONYX", name_en, description "ONYX 100 ML", image ...}, ...]}}
+#   (GET /api/customer/products?page= = 404; GET .../products/search needs "q"; GET .../products/<id> = one product)
+#   Product link = the app's own rule (goToProductDetails): /en/product-details/<name, spaces -> '-'>/<parent_id or id>?variant=<id>
+# Field names for price / stock were not visible in the test (answer cut short) -> the usual El-Dokan / Laravel names
+# are tried in this order; /aljazeera/test shows the real keys ("api_shape") to check them.
+JZ_SEARCH = "/api/customer/products/search"
+JZ_PRICE_KEYS = ["price_after_discount", "discount_price", "sale_price", "special_price", "final_price",
+                 "price_after_sale", "offer_price", "price"]                      # first one > 0 = price shown (AED)
+JZ_STOCK_KEYS = ["in_stock", "is_in_stock", "available", "is_available", "availability",
+                 "stock", "quantity", "stock_quantity", "qty", "available_quantity"]
+JZ_VARIANT_KEYS = ["variants", "variations", "children", "child_products", "options_products", "sub_products"]
+JZ_API_PAUSE = 1.0                     # seconds between 2 list pages
+JZ_API_MAX_PAGES = 200
+
+
+def jz_api_page(page):
+    """One page of the product list -> (products list, raw json). [] = end; None = failed."""
+    for attempt, wait in enumerate([0, 20, 60]):
+        if wait:
+            time.sleep(wait)
+        try:
+            r = requests.post(JZ_API + JZ_SEARCH, params={"page": page}, headers=JZ_API_HEADERS,
+                              json={"page": page, "q": "", "keyword": ""}, timeout=60)
+        except requests.RequestException as ex:
+            jz_log(f"[JZ-API] page {page}: network error {str(ex)[:80]} (try {attempt + 1})")
+            continue
+        if r.status_code == 429 or r.status_code >= 500:
+            jz_log(f"[JZ-API] page {page}: HTTP {r.status_code} busy (try {attempt + 1})")
+            continue
+        try:
+            js = r.json()
+        except ValueError:
+            jz_log(f"[JZ-API] page {page}: HTTP {r.status_code}, not JSON")
+            return None, None
+        data = js.get("data") if isinstance(js, dict) else None
+        prods = data.get("products") if isinstance(data, dict) else None
+        if isinstance(prods, dict):                       # Laravel paginator {"data":[...], "last_page":..}
+            prods = prods.get("data")
+        return (prods if isinstance(prods, list) else []), js
+    return None, None
+
+
+def jz_first(d, keys):
+    """First key of d that has a value (not None / '')."""
+    for k in keys:
+        if isinstance(d, dict) and d.get(k) not in (None, ""):
+            return k, d.get(k)
+    return None, None
+
+
+def jz_price(d):
+    """AED price: first price key > 0."""
+    for k in JZ_PRICE_KEYS:
+        v = br.br_num((d or {}).get(k))
+        if v and v > 0:
+            return v
+    return None
+
+
+def jz_in_stock(d):
+    """True / False from the first stock key; None = shop did not say."""
+    k, v = jz_first(d, JZ_STOCK_KEYS)
+    if k is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v > 0
+    t = str(v).strip().lower()
+    return t in ("1", "true", "yes", "in stock", "instock", "available") or (t.isdigit() and int(t) > 0)
+
+
+def jz_category(p):
+    """Category names of a product (for jz_keep)."""
+    out = []
+    for k in ("category", "categories", "category_name", "sub_category", "type", "product_type"):
+        v = (p or {}).get(k)
+        for x in (v if isinstance(v, list) else [v]):
+            if isinstance(x, dict):
+                x = x.get("name_en") or x.get("name")
+            if isinstance(x, str) and x.strip():
+                out.append(x.strip())
+    return " / ".join(out) or None
+
+
+def jz_api_rows(p):
+    """One API product -> rows (one per variant that has a price), perfumes + gift sets only -> (rows, skipped names)."""
+    name = (p.get("name_en") or p.get("name") or "").strip()
+    desc = (p.get("description_en") or p.get("description") or "").strip()     # "ONYX 100 ML"
+    cat = jz_category(p)
+    if not jz_keep(f"{name} {desc}", cat):
+        return [], [name]
+    variants = []
+    for k in JZ_VARIANT_KEYS:                                                   # sizes as own variants
+        v = p.get(k)
+        if isinstance(v, list):
+            variants += [x for x in v if isinstance(x, dict) and x.get("id")]
+    rows = []
+    for v in (variants or [p]):
+        price = jz_price(v) or jz_price(p)
+        if not price:
+            continue                                                            # no price / AED 0 -> skipped
+        vname = (v.get("name_en") or v.get("name") or "").strip() if v is not p else ""
+        full = name if not vname or vname.lower() == name.lower() else (vname if name.lower() in vname.lower() else f"{name} - {vname}")
+        ins = jz_in_stock(v)
+        ins = jz_in_stock(p) if ins is None else ins
+        pid, vid = p.get("parent_id") or p.get("id"), v.get("id")
+        slug = re.sub(r"\s", "-", name)                                       # app: name.replace(/\s/g, "-")
+        sku = (v.get("sku") or p.get("sku") or "").strip() or None
+        bc = str(v.get("barcode") or p.get("barcode") or "").strip()
+        rows.append({"variant_id": int(vid), "name": full, "brand": JZ_BRAND, "product_type": cat,
+                     "url": f"{JZ_BASE}/en/product-details/{slug}/{pid}?variant={vid}",
+                     "gtin": bc if bc.isdigit() and 12 <= len(bc) <= 14 else None, "sku": sku,
+                     "price_inc_tax": price, "price": round(price / 1.05, 2),
+                     "stock": "In stock" if ins is not False else "Out of stock",   # shop silent -> listed = in stock
+                     "volume": br.br_volume(vname, desc, name, v.get("description_en"), v.get("description"))})
+    return rows, []
+
+
+def jz_api_shape(js):
+    """Keys of the answer / first product / its variant (shown on /aljazeera/test to check JZ_PRICE_KEYS etc.)."""
+    data = (js or {}).get("data") or {}
+    prods = data.get("products") if isinstance(data, dict) else None
+    prods = prods.get("data") if isinstance(prods, dict) else prods
+    p = prods[0] if prods else {}
+    var = next((p[k][0] for k in JZ_VARIANT_KEYS if isinstance(p.get(k), list) and p[k]), None)
+    small = lambda d: {k: (v if not isinstance(v, (list, dict)) else f"<{type(v).__name__} {len(v)}>")
+                       for k, v in (d or {}).items() if k not in ("long_description", "long_description_ar")}
+    return {"answer_keys": list((js or {}).keys()), "data_keys": list(data.keys()) if isinstance(data, dict) else None,
+            "paging": {k: v for k, v in (data.items() if isinstance(data, dict) else []) if k != "products"},
+            "product_keys": small(p), "variant_keys": small(var) if var else None}
+
+
+def jz_api_all(on_rows):
+    """Whole list page by page -> on_rows(rows, skipped) per page. Returns (pages, products, incomplete)."""
+    seen, page, total = set(), 1, 0
+    while page <= JZ_API_MAX_PAGES:
+        prods, _ = jz_api_page(page)
+        if prods is None:
+            return page - 1, total, True
+        new = [p for p in prods if isinstance(p, dict) and p.get("id") not in seen]
+        if not new:                                     # end (or the API ignores 'page' -> same list again)
+            break
+        seen.update(p.get("id") for p in new)
+        total += len(new)
+        rows, skipped = [], []
+        for p in new:
+            r, sk = jz_api_rows(p)
+            rows += r
+            skipped += sk
+        on_rows(rows, skipped)
+        jz_log(f"[JZ-API] page {page}: {len(prods)} products ({len(new)} new), {len(rows)} rows kept, {len(skipped)} not perfume")
+        page += 1
+        time.sleep(JZ_API_PAUSE)
+    return page - 1, total, False
+
+
 # ===== SECTION 6: full download
 def jz_save(cur, conn, rows):
     execute_values(cur, JZ_UPSERT, [(r["variant_id"], r["url"], r["gtin"], r["sku"], r["brand"], r["name"],
@@ -349,8 +508,22 @@ def jz_run():
             st["in_stock"] += sum(r["stock"] == "In stock" for r in rows)
             st["out_of_stock"] += sum(r["stock"] != "In stock" for r in rows)
 
-        first = jz_shopify_page(1)
-        if first:                                           # way 1: Shopify
+        first, _ = jz_api_page(1)
+        if first:                                           # way 0: El-Dokan API (SECTION 5d) = Al Jazeera
+            st["mode"] = "api"
+            seen_ids = set()
+
+            def on_rows(rows, skipped):
+                rows = [r for r in rows if r["variant_id"] not in seen_ids]    # a variant twice -> saved once
+                seen_ids.update(r["variant_id"] for r in rows)
+                st["skipped_not_perfume"] += len(skipped)
+                if rows:
+                    jz_save(cur, conn, rows)
+                count(rows)
+            st["pages"], st["products"], st["incomplete"] = jz_api_all(on_rows)
+            first = None
+        elif jz_shopify_page(1):                            # way 1: Shopify
+            first = jz_shopify_page(1)
             st["mode"] = "shopify"
             page, products = 1, first
             while products:
@@ -368,7 +541,7 @@ def jz_run():
                 if products is None:
                     st["incomplete"] = True
                     break
-        else:                                               # way 2: sitemap + product pages
+        if st["mode"] is None:                              # way 2: sitemap + product pages
             st["mode"] = "sitemap"
             links, counts, _ = jz_product_links()
             st["links"], st["sitemaps"] = len(links), counts
@@ -430,6 +603,21 @@ def jz_test_route():
     """Which way works (Shopify / sitemap) + the first products read - nothing is saved."""
     if not jz_secret_ok():
         return jsonify({"error": "unauthorized"}), 401
+    prods, js = jz_api_page(1)
+    if prods:                                               # El-Dokan API (SECTION 5d)
+        rows, skipped = [], []
+        for p in prods:
+            r, sk = jz_api_rows(p)
+            rows += r
+            skipped += sk
+        result = {"ok": bool(rows), "mode": "api", "page1_products": len(prods), "page1_rows": len(rows),
+                  "kept_without_price": sum(1 for p in prods if not jz_api_rows(p)[0] and not jz_api_rows(p)[1]),
+                  "skipped_not_perfume": skipped[:30], "categories": sorted({r["product_type"] or "-" for r in rows})[:20],
+                  "first_5": rows[:5], "api_shape": jz_api_shape(js)}
+        p2, _ = jz_api_page(2)                              # does 'page' work?
+        result["page2_new_products"] = len({x.get("id") for x in (p2 or [])} - {x.get("id") for x in prods})
+        jz_log(f"[JZ-TEST] {json.dumps(result, default=str)[:2000]}")
+        return jsonify(result)
     first = jz_shopify_page(1)
     if first:
         rows, skipped = jz_shopify_rows(first)
