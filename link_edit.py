@@ -5,9 +5,10 @@ An admin can fix a wrong match by hand:
   Save    -> paste the correct product page of that shop. It must be in the shop's saved product list
              (the same list the matching uses). Its name, price and stock are copied, the link is marked
              CONFIRMED, so later match runs keep it (only price + stock are refreshed).
+  Remove link -> (asks first) link taken off THIS product in competitor_table only - the shop's own product list
+             (e.g. amberiya_catalog) is NOT touched; remembered as refused: app.py ct_match_shop checks <shop>_rejected,
+             so the next match run will not put it back (not for Branded Perfume / Essenzi: they follow French Fragrance).
   Cancel  -> closes the box, nothing is changed.
-  (The route still understands action "remove" - link removed and remembered as refused, app.py ct_match_shop
-   checks <shop>_rejected - but there is no button for it on the page.)
 After either: least + suggested price of the product are recalculated at once (and Airtable for automatic brands
 at the end of the next run). French Fragrance -> Branded Perfume + Essenzi follow at once (same products),
 unless their own link was set by an admin: Branded Perfume / Essenzi edited here are CONFIRMED and from then on
@@ -82,6 +83,7 @@ EDIT_CSS = """ /* Edit link (admins only): small button under a competitor link 
  .lnk-box button{border-radius:8px;padding:7px 12px;font-weight:600;cursor:pointer;font-size:13px}
  .lnk-save{background:#f2d675;color:#1c1b19;border:0}
  .lnk-cancel{background:none;color:var(--muted);border:1px solid var(--line)}
+ .lnk-remove{background:none;color:#e0806c;border:1px solid #e0806c}
 """
 
 # r = product row, k = shop prefix, label = shop name (inside competitors_page.py shop_block)
@@ -92,6 +94,11 @@ EDIT_HTML = """          {# Edit link: admins only (link_edit.py), every competi
             <input type="url" id="lnkin-{{ k }}-{{ r.fi }}" value="{{ r[k ~ '_url'] or r[k ~ '_suggestion'] or '' }}"
                    placeholder="Correct {{ label }} product link">
             <button type="button" class="lnk-save" onclick="saveLink('{{ k }}', '{{ r.fi }}', 'save', this)">Save</button>
+            {# Remove = link cleared + remembered as refused (next match will not put it back); not for BP / ES
+               (they follow French Fragrance) and only when there is a link #}
+            {% if k not in ('bp', 'es') and r[k ~ '_url'] %}
+            <button type="button" class="lnk-remove" onclick="saveLink('{{ k }}', '{{ r.fi }}', 'remove', this)">Remove link</button>
+            {% endif %}
             {# Cancel = close the box, nothing saved, the old link is put back in the box #}
             <button type="button" class="lnk-cancel" onclick="cancelLink('{{ k }}', '{{ r.fi }}')">Cancel</button>
           </div>
@@ -116,7 +123,8 @@ EDIT_JS = """  // ---- Edit link (admins only, link_edit.py): open the box, Save
     var url = document.getElementById("lnkin-" + k + "-" + fi).value.trim();
     var msg = document.getElementById("lnkmsg-" + k + "-" + fi);
     if (action === "save" && !url) { msg.className = "upd-msg out"; msg.textContent = "Paste a link first"; return; }
-    if (action === "remove" && !confirm("Remove this link? The next match will not put it back.")) return;
+    if (action === "remove" && !confirm("Remove this link from this product? The shop's own product list is not " +
+                                        "changed, and the next match will not put it back.")) return;
     console.log("[LINK-EDIT] " + action + " " + k + " " + fi + " " + url);
     btn.disabled = true; msg.className = "upd-msg gtin"; msg.textContent = "Saving...";
     try {

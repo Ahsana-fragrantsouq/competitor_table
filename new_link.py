@@ -24,7 +24,7 @@ Where things are (change them here):
 import re
 import json
 import zlib
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, urlunsplit, parse_qs, urlencode
 
 import requests
 from flask import Blueprint, request, jsonify, g
@@ -51,6 +51,30 @@ NL_HOSTS = [("samawa.ae", "samawa"), ("frenchfragrance.com", "ff"), ("vperfumes.
 NL_SHOPS = [k for k in link_edit.SHOP_LISTS if k not in ("bp", "es")]     # BP / ES follow French Fragrance
 NL_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                             "Chrome/124 Safari/537.36", "Accept": "application/json"}
+
+
+# tracking parts that Google / ads add to a pasted link ("?srsltid=..."): cut off, so the link is found in the
+# shop's saved list and saved clean (live case 2026-11-03: Al Injaz link from Google with ?srsltid=AYCX9...)
+NL_TRACKING = ("srsltid", "gclid", "gbraid", "wbraid", "fbclid", "msclkid", "_pos", "_sid", "_ss", "_psq", "_v",
+               "ref", "mc_cid", "mc_eid")
+
+
+def nl_clean_url(url):
+    """Link without tracking parts (utm_*, srsltid ...) and #...; other parts (?variant=) kept."""
+    parts = urlsplit(url.strip())
+    keep = [(k, v) for k, vs in parse_qs(parts.query, keep_blank_values=True).items() for v in vs
+            if not k.lower().startswith("utm_") and k.lower() not in NL_TRACKING]
+    return urlunsplit(parts._replace(query=urlencode(keep), fragment=""))
+
+
+def nl_name_from_url(url):
+    """Product name guessed from the link ('.../maison-crivelli-hibiscus-mahajad-extrait-50-ml/' ->
+    'Maison Crivelli Hibiscus Mahajad Extrait 50 ml') - put in the box when the site cannot be read."""
+    slug = [x for x in urlsplit(url).path.split("/") if x][-1:] or [""]
+    words = re.sub(r"\.html?$", "", slug[0]).replace("-", " ").replace("_", " ").split()
+    words = [w for w in words if not re.fullmatch(r"p?\d{5,}", w)]          # ids like p123456 / 0201020036
+    text = " ".join(w if re.fullmatch(r"\d+(ml)?", w, re.I) or w.lower() == "ml" else w.capitalize() for w in words)
+    return re.sub(r"(\d+)\s*ml\b", r"\1 ml", text, flags=re.I)
 
 
 def nl_shop_of(url):
@@ -190,6 +214,31 @@ def nl_shopify(url):
             "volume": br.br_volume(vt, p.get("title"), *(p.get("tags") or []))}
 
 
+def nl_woo(url, shop):
+    """WooCommerce shop (Al Injaz, Niche Gallerie): /product/<slug>/ -> its public Store API
+    /wp-json/wc/store/v1/products?slug=<slug> (same data alinjaz.py / nichegallerie.py download) -> row dict or None."""
+    parts = urlsplit(url)
+    m = re.search(r"/product/([^/?#]+)", parts.path)
+    if not m:
+        return None
+    try:
+        r = requests.get(f"{parts.scheme}://{parts.netloc}/wp-json/wc/store/v1/products",
+                         params={"slug": m.group(1)}, headers=NL_HEADERS, timeout=40)
+        items = r.json() if r.status_code == 200 else None
+    except (requests.RequestException, ValueError):
+        return None
+    if not isinstance(items, list) or not items:
+        log(f"[NEW-LINK] Store API {parts.netloc} slug {m.group(1)}: HTTP {r.status_code}, nothing")
+        return None
+    if shop == "ng":
+        import nichegallerie as mod
+        row = mod.ng_item(items[0])
+    else:
+        import alinjaz as mod
+        row = mod.aj_item(items[0])
+    return {**row, "url": url}
+
+
 def nl_aljazeera(url):
     """Al Jazeera link /en/product-details/<NAME>/<id>?variant=<vid> -> row dict from its API (aljazeera.py)."""
     import aljazeera as jz
@@ -225,13 +274,15 @@ def nl_read(shop, url):
     try:
         row = nl_aljazeera(url) if shop == "jz" else nl_shopify(url)
         st = 200
+        if row is None and shop in ("aj", "ng"):             # WooCommerce: Store API first (page may be a bot check)
+            row = nl_woo(url, shop)
         if row is None and shop != "jz":
             row, st = nl_page(url)
     except Exception as ex:                                 # never a 500 because of a strange page
         log(f"[NEW-LINK] read {url}: ERROR {ex}")
         return None, f"could not read the page ({str(ex)[:80]})."
     if row is None:
-        return None, ("the site blocks our server (HTTP %s)." % st if st in (403, 429, 0)
+        return None, ("the site blocks our server (HTTP %s, bot check)." % st if st in (202, 403, 429, 503, 0)
                       else "no product data found on that page." if st == 200 else f"the page answered HTTP {st}.")
     if not row.get("price_inc_tax"):
         return None, "no price found on that page."
@@ -291,6 +342,11 @@ def new_link_save():
         return jsonify({"ok": False, "error": "Only admins can add links"}), 403
     body = request.get_json(silent=True) or {}
     fid, url = str(body.get("fi_record_id") or ""), str(body.get("url") or "").strip()
+    if url.lower().startswith("http"):
+        clean = nl_clean_url(url)
+        if clean != url:
+            log(f"[NEW-LINK] tracking part cut off: {url} -> {clean}")
+        url = clean
     shop = body.get("shop") or nl_shop_of(url)
     if not fid.startswith(("rec", "new")) or not url.lower().startswith("http"):
         return jsonify({"ok": False, "error": "Paste the full product link (https://...)"}), 400
@@ -333,7 +389,8 @@ def new_link_save():
                 row, why = nl_read(shop, url)
                 if row is None:
                     log(f"[NEW-LINK] {url}: not read - {why}")
-                    return jsonify({"ok": False, "need_manual": True, "error": f"{label}: {why}"})
+                    return jsonify({"ok": False, "need_manual": True, "error": f"{label}: {why}",
+                                    "name": nl_name_from_url(url)})      # name guessed from the link -> box
                 log(f"[NEW-LINK] read: {row.get('brand') or ''} {row['name']} | AED {row['price_inc_tax']} | "
                     f"{row['stock']} | {row.get('volume') or '-'}")
             link, added = nl_save_catalog(cur, shop, row)
