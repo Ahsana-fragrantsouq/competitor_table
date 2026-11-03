@@ -16,6 +16,7 @@ Files in this project
   suggested_price.py  -> THE suggested price rule as plain functions: cheapest - X%, then <= LOP -> LOP, >= MOP -> MOP
   skip_auto.py        -> 'Skip automatic price' checkbox per product: never changed automatically in Airtable
   link_edit.py        -> 'Edit link' (admins only): set / remove a competitor link on a product card
+  new_link.py         -> 'Add new link' (admins only): competitor link read + saved in that shop's list + linked
   barcode_edit.py     -> 'Edit' barcode (admins only): our barcode -> Airtable French Inventories 'Barcode' + competitor_table
   item_master.py      -> Item Master page: every French Inventories field copied into table item_master
   description_gen.py  -> 'Create product description' (admins, Item Master): item_master notes -> AI API -> item_master (no Airtable)
@@ -130,6 +131,7 @@ import skip_auto                                   # 'Skip automatic price' chec
 from skip_auto import skip_bp                      # POST /competitor/no-auto (save the checkbox)
 import link_edit                                   # admins: edit / remove a competitor link on the cards (link_edit.py)
 from link_edit import link_bp                      # POST /competitor/link
+from new_link import new_link_bp                   # POST /competitor/new-link ('Add new link', new_link.py)
 import barcode_edit                                # admins: edit OUR barcode on the cards (barcode_edit.py)
 from barcode_edit import barcode_bp                # POST /competitor/barcode
 import stock_edit                                  # admins: edit OUR stock -> Shopify (stock_edit.py)
@@ -213,6 +215,7 @@ app.register_blueprint(discount_bp)                # Settings -> Auto discount r
 app.register_blueprint(limits_bp)                  # LOP / MOP Save on the product cards (price_limits.py)
 app.register_blueprint(skip_bp)                    # 'Skip automatic price' checkbox on the cards (skip_auto.py)
 app.register_blueprint(link_bp)                    # 'Edit link' for admins on the cards (link_edit.py)
+app.register_blueprint(new_link_bp)                # 'Add new link' for admins on the cards (new_link.py)
 app.register_blueprint(barcode_bp)                 # 'Edit' our barcode for admins (barcode_edit.py)
 app.register_blueprint(stock_bp)                   # 'Edit' our stock for admins -> Shopify (stock_edit.py)
 app.register_blueprint(item_master_bp)             # Item Master page (item_master.py)

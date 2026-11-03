@@ -302,11 +302,7 @@ def link_save():
                 return jsonify({"ok": False, "error": f"This link is not in the saved {label} product list. Open the "
                                                       f"product on {label} and copy the link from the address bar."}), 400
             link, name, price, stock = item
-            extra = "" if sister else f", {shop}_suggestion = NULL, {shop}_method = 'set by ' || %s, {shop}_score = NULL"
-            cur.execute(f"""UPDATE competitor_table SET {shop}_link = %s, {shop}_title = %s, {shop}_price = %s,
-                               {shop}_stock = %s, {shop}_confirmed = TRUE{extra}, updated_at = NOW()
-                            WHERE fi_record_id = %s""",
-                        (link, name, price, stock == "In stock") + (() if sister else (user,)) + (fid,))
+            set_link(cur, fid, shop, link, name, price, stock, user, recalc=False)
         if shop == "ff":
             HOOKS["link_sisters"](cur, fid)            # Branded Perfume + Essenzi follow the French Fragrance link
         HOOKS["recalc_one"](cur, fid)                  # least + suggested price of this product
@@ -318,6 +314,21 @@ def link_save():
         + (f"{url} ({name} | AED {price} | {stock})" if action == "save" else "removed (remembered as refused)"))
     return jsonify({"ok": True, "action": action, "name": name, "stock": stock,
                     "price": float(price) if price is not None else None})
+
+
+def set_link(cur, fid, shop, link, name, price, stock, user, recalc=True):
+    """Put ONE competitor product on OUR product (competitor_table <shop>_*), CONFIRMED so matching keeps it.
+    Also used by new_link.py ("Add new link"). recalc=True: FF sisters + least / suggested price at once (no commit)."""
+    sister = shop in ("bp", "es")                     # no suggestion / method / score columns
+    extra = "" if sister else f", {shop}_suggestion = NULL, {shop}_method = 'set by ' || %s, {shop}_score = NULL, {shop}_rejected = NULL"
+    cur.execute(f"""UPDATE competitor_table SET {shop}_link = %s, {shop}_title = %s, {shop}_price = %s,
+                       {shop}_stock = %s, {shop}_confirmed = TRUE{extra}, updated_at = NOW()
+                    WHERE fi_record_id = %s""",
+                (link, name, price, stock == "In stock") + (() if sister else (user,)) + (fid,))
+    if recalc:
+        if shop == "ff":
+            HOOKS["link_sisters"](cur, fid)
+        HOOKS["recalc_one"](cur, fid)
 
 
 @link_bp.get(SEARCH_URL)

@@ -410,12 +410,12 @@ def jz_category(p):
     return " / ".join(out) or None
 
 
-def jz_api_rows(p):
+def jz_api_rows(p, keep_all=False):
     """One API product -> rows (one per variant that has a price), perfumes + gift sets only -> (rows, skipped names)."""
     name = (p.get("name_en") or p.get("name") or "").strip()
     desc = (p.get("description_en") or p.get("description") or "").strip()     # "ONYX 100 ML"
     cat = jz_category(p)
-    if not jz_keep(f"{name} {desc}", cat):
+    if not keep_all and not jz_keep(f"{name} {desc}", cat):        # keep_all: "Add new link" (new_link.py)
         return [], [name]
     variants = []
     for k in JZ_VARIANT_KEYS:                                                   # sizes as own variants

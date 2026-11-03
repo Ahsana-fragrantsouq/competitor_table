@@ -36,6 +36,7 @@ import price_limits                                       # LOP / MOP boxes on t
 import link_edit                                          # 'Edit link' for admins on the cards (link_edit.py)
 import barcode_edit                                       # 'Edit' our barcode for admins (barcode_edit.py)
 import stock_edit                                         # 'Edit' our stock for admins -> Shopify (stock_edit.py)
+import new_link                                           # 'Add new link' for admins on the cards (new_link.py)
 import skip_auto                                          # 'Skip automatic price' checkbox on the cards (skip_auto.py)
 import brand_refresh                                      # Refresh all / one brand on Item Master -> Brands (brand_refresh.py)
 from discount_rate import get_discount_rate               # kept here so competitors_page.get_discount_rate() still works
@@ -645,6 +646,8 @@ HTML = """
  @@SKIP_CSS@@
  /* Edit link (admins): link_edit.py EDIT_CSS */
  @@EDIT_CSS@@
+/* Add new link (admins): new_link.py NL_CSS */
+@@NL_CSS@@
  /* Edit our barcode (admins): barcode_edit.py BC_CSS */
  @@BC_CSS@@
 /* Remove link / Add link on the shop pages (admins): link_edit.py SHOP_CSS */
@@ -931,6 +934,8 @@ HTML = """
     {# Skip automatic price checkbox: skip_auto.py SKIP_CARD_HTML #}
     @@SKIP_CARD@@
     </div>
+    {# "Add new link" (admins): bottom right, under Skip automatic price - new_link.py NL_HTML #}
+    @@NL_HTML@@
     {% if shown.out %}
     <div class="outlist" hidden>
       {% for label, k in src.shops %}
@@ -1156,6 +1161,8 @@ HTML = """
   @@EDIT_JS@@
   {# Edit our barcode script (admins): barcode_edit.py BC_JS #}
   @@BC_JS@@
+  {# Add new link on the Competitor table cards (admins): new_link.py NL_JS #}
+  @@NL_JS@@
   {# Remove link / Add link on the shop pages (admins): link_edit.py SHOP_JS #}
   @@SHOP_LINK_JS@@
   {# Edit our stock script (admins): stock_edit.py STOCK_JS #}
@@ -1196,6 +1203,10 @@ HTML = (HTML.replace("@@LIMITS_CSS@@", price_limits.LIMITS_CSS)
             .replace("@@EDIT_CSS@@", link_edit.EDIT_CSS)
             .replace("@@EDIT_HTML@@", link_edit.EDIT_HTML)
             .replace("@@EDIT_JS@@", link_edit.EDIT_JS)
+            # Add new link for admins (new_link.py SECTION 2)
+            .replace("@@NL_CSS@@", new_link.NL_CSS)
+            .replace("@@NL_HTML@@", new_link.NL_HTML)
+            .replace("@@NL_JS@@", new_link.nl_js())
             # Edit our barcode for admins (barcode_edit.py SECTION 2)
             .replace("@@BC_CSS@@", barcode_edit.BC_CSS)
             .replace("@@BC_BUTTON@@", barcode_edit.BC_BUTTON)
@@ -1450,6 +1461,7 @@ def competitors():
           f"{'Competitor table' if active == 'competitor' else 'Competitors'})", flush=True)
     return render_template_string(HTML, sources=SOURCES, src=src, counts=counts, rows=rows, same_barcode=same_barcode,
                                   admin=is_admin(),             # 'Edit link' buttons only for admins (link_edit.py)
+                                  nl_shops=[(k, link_edit.SHOP_LISTS[k][0]) for k in new_link.NL_SHOPS],   # Add new link
                                   shop_lists=link_edit.SHOP_LISTS,   # shops that can Remove / Add link (link_edit.py)
                                   nav_html=render_nav(active, src["key"], counts), nav_css=NAV_CSS,
                                   total=total, page=page, pages=pages, q=q, stock=stock, exists=exists,
