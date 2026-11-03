@@ -305,6 +305,14 @@ JM_PRICE = "price_range{minimum_price{final_price{value currency}}}"
 # Agarwood category -> checked on the NAME (JM_NAME_SKIP) and the size label (JM_WEIGHT_WORDS), not the category.
 JM_NAME_SKIP = ["agarwood*", "bakhoor", "bukhoor", "dahn", "dehn", "oud chips", "mamoul", "muattar"]
 JM_WEIGHT_WORDS = ["gm", "gms", "gram", "grams", "kg", "g", "tola", "tolas"]
+# "50GM" / "100 g" / "1kg" / "1 Tola" (number + unit, also written together) = sold by weight (live test 2026-11-03:
+# 'Ramadan online Exclusive Cambodi - 50GM', 'RAW - Flakes - 50GM' got through the word check)
+JM_WEIGHT_RE = r"\d\s*(g|gm|gms|gram|grams|kg|kgs|tola|tolas)\b"
+
+
+def jm_by_weight(text):
+    """Size / name sold by weight?"""
+    return bool(re.search(JM_WEIGHT_RE, text or "", re.I)) or br.br_has(JM_WEIGHT_WORDS, text)
 JM_ITEM = ("__typename sku name url_key url_suffix stock_status categories{name} " + JM_PRICE +
            " ... on ConfigurableProduct{variants{attributes{label code} product{sku name stock_status " + JM_PRICE + "}}}")
 # Magento needs a filter or a search word to list products; tried in this order, the first that answers is used
@@ -375,7 +383,7 @@ def jm_api_rows(p, keep_all=False):
     for v in (sizes or [None]):
         prod = v["product"] if v else p
         label = " ".join(a.get("label") or "" for a in (v.get("attributes") or [])).strip() if v else ""
-        if not keep_all and br.br_has(JM_WEIGHT_WORDS, label):
+        if not keep_all and jm_by_weight(label):
             continue                                                  # size sold by WEIGHT (50GM) = oud wood, not perfume
         price = jm_final(prod) or jm_final(p)
         if not price:
@@ -394,6 +402,9 @@ def jm_api_rows(p, keep_all=False):
                      "price_inc_tax": price, "price": round(price / 1.05, 2),
                      "stock": "In stock" if (prod.get("stock_status") or p.get("stock_status")) != "OUT_OF_STOCK" else "Out of stock",
                      "volume": br.br_volume(label, name, prod.get("name"))})
+    if not keep_all and not rows and sizes and all(jm_by_weight(" ".join(a.get("label") or "" for a in (v.get("attributes") or [])))
+                                                   for v in sizes):
+        return [], [name]                                             # every size by weight -> listed as left out
     return rows, []
 
 
@@ -622,3 +633,4 @@ def jm_run_route():
 @ajmal_bp.route("/ajmal/status")
 def jm_status_route():
     return jsonify({"running": jm_state["running"], "last": jm_state["last"]})
+
