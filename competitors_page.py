@@ -1206,9 +1206,10 @@ HTML = (HTML.replace("@@LIMITS_CSS@@", price_limits.LIMITS_CSS)
             .replace("@@STOCK_HTML@@", stock_edit.stock_html("r.fi", "bcode"))
             .replace("@@STOCK_JS@@", stock_edit.STOCK_JS)
             # Remove link / Add link on the shop pages (link_edit.py SECTION 2b)
-            .replace("@@SHOP_LINK_CSS@@", link_edit.SHOP_CSS)
-            .replace("@@SHOP_LINK_HTML@@", link_edit.SHOP_HTML)
-            .replace("@@SHOP_LINK_JS@@", link_edit.SHOP_JS))
+            # link_edit.SHOP_LINK_BUTTONS = False -> nothing put on the page (user's choice 2026-11-03)
+            .replace("@@SHOP_LINK_CSS@@", link_edit.SHOP_CSS if link_edit.SHOP_LINK_BUTTONS else "")
+            .replace("@@SHOP_LINK_HTML@@", link_edit.SHOP_HTML if link_edit.SHOP_LINK_BUTTONS else "")
+            .replace("@@SHOP_LINK_JS@@", link_edit.SHOP_JS if link_edit.SHOP_LINK_BUTTONS else ""))
 
 
 # ============================================================ SECTION 7: competitors page route (/competitors)
@@ -1424,7 +1425,8 @@ def competitors():
             if missing_sql:
                 print(f"[MISSING] {src['label']} page {page}: "
                       f"{sum(1 for r in rows if r['missing'])} of {len(rows)} are missing items", flush=True)
-            if src.get("kind") != "competitor" and missing_sql and is_admin() and src["key"] in link_edit.SHOP_LISTS:
+            if (link_edit.SHOP_LINK_BUTTONS and src.get("kind") != "competitor" and missing_sql and is_admin()
+                    and src["key"] in link_edit.SHOP_LISTS):
                 # which of OUR products each competitor product is linked to (Remove link / Add link, link_edit.py)
                 linked = link_edit.linked_products(cur, src["key"], {r["url"] for r in rows if r.get("url")})
                 for r in rows:

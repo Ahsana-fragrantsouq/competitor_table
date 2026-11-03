@@ -143,6 +143,9 @@ EDIT_JS = """  // ---- Edit link (admins only, link_edit.py): open the box, Save
 #   not linked (Missing item) -> "Add link": search our products (name / SKU / brand), pick one, Save
 #                                (= action "save" above: name, price, stock copied, link CONFIRMED so matching keeps it,
 #                                 least + suggested price recalculated, French Fragrance -> BP / ES follow)
+# ON / OFF (user's choice 2026-11-03: OFF = no "Add link", "Remove link" or "Linked to SKU" on ANY shop page).
+# True = shown again for admins. The routes stay (nothing else changes).
+SHOP_LINK_BUTTONS = False
 SEARCH_URL = "/competitor/our-products"
 SHOP_CSS = """ /* Remove link / Add link on the shop pages (admins only, link_edit.py SECTION 2b) */
  .sl-wrap{margin-top:6px;text-align:right;font-size:12px;color:var(--muted)}
