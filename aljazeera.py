@@ -465,11 +465,14 @@ def jz_api_rows(p, keep_all=False):
         sku = (v.get("sku") or p.get("sku") or "").strip() or None
         bc = str(v.get("barcode") or p.get("barcode") or "").strip()
         rows.append({"variant_id": int(vid), "name": full, "brand": jz_brand(p), "product_type": cat,
-                     "url": f"{JZ_BASE}/en/product-details/{slug}/{pid}?variant={vid}",
+                     # the size's own link from the API (live test: product_variants[].product_url), else built
+                     "url": (v.get("product_url") if str(v.get("product_url") or "").startswith(JZ_BASE + "/en/")
+                             else f"{JZ_BASE}/en/product-details/{slug}/{pid}?variant={vid}"),
                      "gtin": bc if bc.isdigit() and 12 <= len(bc) <= 14 else None, "sku": sku,
                      "price_inc_tax": price, "price": round(price / 1.05, 2),
                      "stock": "In stock" if ins is not False else "Out of stock",   # shop silent -> listed = in stock
-                     "volume": br.br_volume(vname, desc, name, v.get("description_en"), v.get("description"))})
+                     "volume": br.br_volume(vname, desc, name, v.get("description_en"), v.get("description"))
+                               or (f"{v['product_size']} ml" if str(v.get("product_size") or "").isdigit() else None)})
     return rows, []
 
 
