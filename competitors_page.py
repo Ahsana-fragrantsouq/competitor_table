@@ -1176,7 +1176,11 @@ HTML = """
     try {
       var r = await fetch("/competitor/update-price", {method: "POST", headers: {"Content-Type": "application/json"},
                                                       body: JSON.stringify({fi_record_id: fi, price: price})});
-      var d = await r.json();
+      // not JSON = login expired (login page came back) or a server error page -> say which, not "Unexpected token '<'"
+      var d = await r.json().catch(function () {
+        return {ok: false, error: (r.redirected && r.url.indexOf("login") >= 0) ? "You were logged out - reload the page and log in again"
+                                  : "Server error (HTTP " + r.status + ") - try again; if it repeats send the Render log"};
+      });
       if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
       document.getElementById("our-" + fi).textContent = "AED " + d.price.toFixed(2);
       msg.className = "upd-msg in";

@@ -2921,17 +2921,21 @@ def ct_update_price_route():
 
     conn = pg_conn()
     cur = conn.cursor()
+    shopify_done = False
     try:
         # 1) Shopify first - nothing is saved here when Shopify did not take it
         res = item_edit.shopify_set_uae_price(conn, fid, price)
         if not res.get("ok"):
             log(f"[PRICE] {fid}: NOT updated - {res.get('error')}")
             return jsonify({"ok": False, "error": res.get("error")}), 502
+        shopify_done = True
         log(f"[PRICE] Shopify updated: {fid} -> {res.get('answer')}")
         # 2) Postgres: our price + least price / least priced website for the page
         cur.execute("UPDATE competitor_table SET uae_price = %s, uae_price_website = TRUE, updated_at = NOW() "
                     "WHERE fi_record_id = %s", (price, fid))
-        cur.execute(LEAST_SQL)                       # recalculates least price with our new price
+        # least + suggested price of THIS product only (was LEAST_SQL = every product: slow, and it waited on /
+        # clashed with a running download or match -> error page "Unexpected token '<'", 2026-11-03, MCV1003)
+        least_for(cur, fid)
         cur.execute("SELECT least_price, least_priced_website FROM competitor_table WHERE fi_record_id = %s", (fid,))
         row = cur.fetchone()
         # Item Master shows the same UAE price; marked as edited -> an Airtable load keeps it
@@ -2941,6 +2945,12 @@ def ct_update_price_route():
                         "|| jsonb_build_object('uae_price', %s::text) WHERE fi_record_id = %s",
                         (price, g.get("user") or "update price", fid))
         conn.commit()
+    except Exception as ex:                          # always a readable answer (never the HTML error page)
+        conn.rollback()
+        log(f"[PRICE] {fid}: ERROR {ex}\n{traceback.format_exc()}")
+        msg = (f"Shopify IS updated to AED {price}, but our database was not ({str(ex)[:150]}) - click Update price again"
+               if shopify_done else f"Error: {str(ex)[:200]}")
+        return jsonify({"ok": False, "error": msg}), 500
     finally:
         cur.close()
         conn.close()
