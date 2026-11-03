@@ -335,7 +335,7 @@ JZ_PRICE_KEYS = ["price_after_discount", "discount_price", "sale_price", "specia
                  "price_after_sale", "offer_price", "price"]                      # first one > 0 = price shown (AED)
 JZ_STOCK_KEYS = ["in_stock", "is_in_stock", "available", "is_available", "availability",
                  "stock", "quantity", "stock_quantity", "qty", "available_quantity"]
-JZ_VARIANT_KEYS = ["variants", "variations", "children", "child_products", "options_products", "sub_products"]
+JZ_VARIANT_KEYS = ["product_variants", "variants", "variations", "children", "child_products", "options_products", "sub_products"]
 JZ_API_PAUSE = 1.0                     # seconds between 2 list pages
 JZ_API_MAX_PAGES = 200
 
@@ -375,13 +375,42 @@ def jz_first(d, keys):
     return None, None
 
 
-def jz_price(d):
-    """AED price: first price key > 0."""
+# live test 2026-11-03: product keys price 525, discount_price (null) with discount_start_date / discount_end_date,
+# in_stock true, stock 18, brand {name_en: "MONTALE PERFUMES" ...}, category {name: "PERFUMES"}, product_variants [..]
+JZ_DISCOUNT_KEYS = {"price_after_discount", "discount_price", "sale_price", "special_price", "price_after_sale", "offer_price"}
+# shop's brands that are Al Jazeera's own lines -> JZ_BRAND; others (MONTALE PERFUMES ...) keep their own brand
+JZ_OWN_BRANDS = ["aljazeera", "al jazeera", "luxury collection", "oryx"]
+
+
+def jz_discount_on(d):
+    """Discount price valid today? (no dates = valid; expired / not started = not used)"""
+    from datetime import datetime
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    start, end = (d or {}).get("discount_start_date"), (d or {}).get("discount_end_date")
+    return (not start or str(start) <= now) and (not end or str(end) >= now)
+
+
+def jz_price(d, dates=None):
+    """AED price: first price key > 0 (a discount price only while its dates are valid; dates from d or dates)."""
+    on = jz_discount_on(d if (d or {}).get("discount_end_date") or (d or {}).get("discount_start_date") else dates)
     for k in JZ_PRICE_KEYS:
+        if k in JZ_DISCOUNT_KEYS and not on:
+            continue
         v = br.br_num((d or {}).get(k))
         if v and v > 0:
             return v
     return None
+
+
+def jz_brand(p):
+    """Product's brand: Al Jazeera's own lines -> JZ_BRAND, others as the shop writes them ('MONTALE PERFUMES' ->
+    'Montale Perfumes'; matching drops the word 'Perfumes', app.py brand_core)."""
+    b = (p or {}).get("brand")
+    name = ((b.get("name_en") or b.get("name")) if isinstance(b, dict) else b) or ""
+    name = str(name).strip()
+    if not name or any(w in name.lower() for w in JZ_OWN_BRANDS):
+        return JZ_BRAND
+    return name.title() if name.isupper() else name
 
 
 def jz_in_stock(d):
@@ -424,7 +453,7 @@ def jz_api_rows(p, keep_all=False):
             variants += [x for x in v if isinstance(x, dict) and x.get("id")]
     rows = []
     for v in (variants or [p]):
-        price = jz_price(v) or jz_price(p)
+        price = jz_price(v, dates=p) or jz_price(p)
         if not price:
             continue                                                            # no price / AED 0 -> skipped
         vname = (v.get("name_en") or v.get("name") or "").strip() if v is not p else ""
@@ -435,7 +464,7 @@ def jz_api_rows(p, keep_all=False):
         slug = re.sub(r"\s", "-", name)                                       # app: name.replace(/\s/g, "-")
         sku = (v.get("sku") or p.get("sku") or "").strip() or None
         bc = str(v.get("barcode") or p.get("barcode") or "").strip()
-        rows.append({"variant_id": int(vid), "name": full, "brand": JZ_BRAND, "product_type": cat,
+        rows.append({"variant_id": int(vid), "name": full, "brand": jz_brand(p), "product_type": cat,
                      "url": f"{JZ_BASE}/en/product-details/{slug}/{pid}?variant={vid}",
                      "gtin": bc if bc.isdigit() and 12 <= len(bc) <= 14 else None, "sku": sku,
                      "price_inc_tax": price, "price": round(price / 1.05, 2),
@@ -612,7 +641,7 @@ def jz_test_route():
             skipped += sk
         result = {"ok": bool(rows), "mode": "api", "page1_products": len(prods), "page1_rows": len(rows),
                   "kept_without_price": sum(1 for p in prods if not jz_api_rows(p)[0] and not jz_api_rows(p)[1]),
-                  "skipped_not_perfume": skipped[:30], "categories": sorted({r["product_type"] or "-" for r in rows})[:20],
+                  "skipped_not_perfume": skipped[:30], "categories": sorted({r["product_type"] or "-" for r in rows})[:20], "brands": sorted({r["brand"] for r in rows}),
                   "first_5": rows[:5], "api_shape": jz_api_shape(js)}
         p2, _ = jz_api_page(2)                              # does 'page' work?
         result["page2_new_products"] = len({x.get("id") for x in (p2 or [])} - {x.get("id") for x in prods})
