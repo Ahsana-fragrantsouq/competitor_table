@@ -300,6 +300,11 @@ JM_PAGE_SIZE = 50
 JM_API_PAUSE = 1.0                     # seconds between 2 list pages
 JM_API_MAX_PAGES = 200
 JM_PRICE = "price_range{minimum_price{final_price{value currency}}}"
+# live test 2026-11-03 (488 products, 10 pages, list via price filter): first products were AGARWOOD (oud wood chips)
+# sold by weight ("Agarwood Marourqi - 50GM", category "King of Oud / Agarwood"). Perfumes can ALSO be in the
+# Agarwood category -> checked on the NAME (JM_NAME_SKIP) and the size label (JM_WEIGHT_WORDS), not the category.
+JM_NAME_SKIP = ["agarwood*", "bakhoor", "bukhoor", "dahn", "dehn", "oud chips", "mamoul", "muattar"]
+JM_WEIGHT_WORDS = ["gm", "gms", "gram", "grams", "kg", "g", "tola", "tolas"]
 JM_ITEM = ("__typename sku name url_key url_suffix stock_status categories{name} " + JM_PRICE +
            " ... on ConfigurableProduct{variants{attributes{label code} product{sku name stock_status " + JM_PRICE + "}}}")
 # Magento needs a filter or a search word to list products; tried in this order, the first that answers is used
@@ -362,7 +367,7 @@ def jm_api_rows(p, keep_all=False):
     """One Magento product -> rows (one per size of a configurable product), perfumes + gift sets only."""
     name = (p.get("name") or "").strip()
     cat = " / ".join(c.get("name") for c in (p.get("categories") or []) if isinstance(c, dict) and c.get("name")) or None
-    if not keep_all and not jm_keep(name, cat):
+    if not keep_all and (br.br_has(JM_NAME_SKIP, name) or not jm_keep(name, cat)):
         return [], [name]
     url = f"{JM_BASE}/{p.get('url_key')}{p.get('url_suffix') if p.get('url_suffix') is not None else '.html'}"
     sizes = [v for v in (p.get("variants") or []) if isinstance(v, dict) and isinstance(v.get("product"), dict)]
@@ -370,6 +375,8 @@ def jm_api_rows(p, keep_all=False):
     for v in (sizes or [None]):
         prod = v["product"] if v else p
         label = " ".join(a.get("label") or "" for a in (v.get("attributes") or [])).strip() if v else ""
+        if not keep_all and br.br_has(JM_WEIGHT_WORDS, label):
+            continue                                                  # size sold by WEIGHT (50GM) = oud wood, not perfume
         price = jm_final(prod) or jm_final(p)
         if not price:
             continue                                                  # no price / AED 0 -> skipped
@@ -379,8 +386,11 @@ def jm_api_rows(p, keep_all=False):
         link = f"{url}?size={re.sub(r'[^0-9A-Za-z.]+', '', label)}" if v and len(sizes) > 1 and label else url
         sku = (prod.get("sku") or p.get("sku") or "").strip() or None
         d = re.sub(r"\D", "", sku or "")
+        main = str(p.get("sku") or "").strip()                        # Ajmal: main sku = barcode (6293701007223)
+        gtin = (d if sku and d == sku and 12 <= len(d) <= 14 else
+                main if main.isdigit() and 12 <= len(main) <= 14 and len(sizes) <= 1 else None)
         rows.append({"variant_id": jm_vid(sku, link), "url": link, "name": full, "brand": JM_BRAND, "product_type": cat,
-                     "gtin": d if sku and d == sku and 12 <= len(d) <= 14 else None, "sku": sku,
+                     "gtin": gtin, "sku": sku,
                      "price_inc_tax": price, "price": round(price / 1.05, 2),
                      "stock": "In stock" if (prod.get("stock_status") or p.get("stock_status")) != "OUT_OF_STOCK" else "Out of stock",
                      "volume": br.br_volume(label, name, prod.get("name"))})
