@@ -279,7 +279,48 @@ def jz_discover(html):
         out["env_snippets"] = [js[max(0, m.start() - 120):m.start() + 200]
                                for m in re.finditer(r"(?i)(apiurl|baseurl|api_url|base_url|apibase|serverurl)", js)][:6]
     jz_log(f"[JZ-DISCOVER] base {base}, main js {out['main_js']}, {len(out['urls'])} urls, {len(out['api_paths'])} api paths")
+    out["_js"] = js if mains else ""                   # kept for jz_api_probe (removed before showing)
     return out
+
+
+# ===== SECTION 5c: try the El-Dokan API (live test 2026-11-03: Al Jazeera = EL-DOKAN shop platform,
+# apiEndPoint https://api-uae.aljazeeraperfumes.com, product calls ${baseUrl}/products/... with
+# baseUrl = ${apiEndPoint}/api/customer). Docs are not public -> /aljazeera/test calls the likely addresses and shows
+# what comes back + the app code around the product calls (headers, paths) -> send to Claude to write the reader.
+JZ_API = "https://api-uae.aljazeeraperfumes.com"
+JZ_API_HEADERS = {**JZ_HEADERS, "Accept": "application/json", "Accept-Language": "en", "lang": "en",
+                  "Origin": JZ_BASE, "Referer": JZ_BASE + "/en"}
+JZ_API_TRY = ["/api/customer/products?page=1", "/api/customer/products/search?page=1",
+              "/api/customer/products/search?page=1&keyword=oud", "/api/customer/products/163?variant=164",
+              "/api/customer/products/163", "/api/customer/products/details/163?variant=164",
+              "/api/customer/categories", "/api/customer/home", "/api/customer/view/page"]
+JZ_JS_WORDS = ["/products/search", "/products/`", "/products/${", "baseUrl=`${", "setHeaders", "headers.set(",
+               "paginationApi", "apiEndPoint:", "product-details"]
+
+
+def jz_api_get(path, method="GET", body=None):
+    """One API call -> (status, text). Nothing saved."""
+    try:
+        r = requests.request(method, JZ_API + path, headers=JZ_API_HEADERS, json=body, timeout=40)
+        return r.status_code, r.text
+    except requests.RequestException as ex:
+        return 0, f"network error {str(ex)[:120]}"
+
+
+def jz_api_probe(js):
+    """Try JZ_API_TRY (GET, and POST for search) + show the app code around the product calls."""
+    tries = []
+    for path in JZ_API_TRY:
+        st, txt = jz_api_get(path)
+        tries.append({"get": path, "status": st, "size": len(txt or ""), "start": (txt or "")[:700]})
+        jz_log(f"[JZ-API] GET {path} -> HTTP {st}, {len(txt or '')} chars")
+    st, txt = jz_api_get("/api/customer/products/search", "POST", {"page": 1, "keyword": ""})
+    tries.append({"post": "/api/customer/products/search", "status": st, "size": len(txt or ""), "start": (txt or "")[:700]})
+    code = {}
+    for w in JZ_JS_WORDS:
+        hits = [m.start() for m in re.finditer(re.escape(w), js or "")][:3]
+        code[w] = [js[max(0, i - 250):i + 350] for i in hits]
+    return {"api": JZ_API, "tries": tries, "app_code": code}
 
 
 # ===== SECTION 6: full download
@@ -401,8 +442,10 @@ def jz_test_route():
                   "sitemaps": counts, "product_links": len(links), "first_links": links[:3], "pages": []}
         st, html = br.br_get(JZ_BASE + "/en")                # home page: what kind of site + its API (SECTION 5b)
         result["home_en"] = {"status": st, **br.br_raw(JZ_BASE + "/en", html)}
-        result["api_search"] = jz_discover(html) if st == 200 else {"error": f"home page HTTP {st}"}
-        for url in links[:3]:
+        disc = jz_discover(html) if st == 200 else {"error": f"home page HTTP {st}"}
+        result["api_probe"] = jz_api_probe(disc.pop("_js", ""))   # El-Dokan API answers (SECTION 5c)
+        result["api_search"] = {k: v for k, v in disc.items() if k in ("main_js", "urls")}   # paths already known
+        for url in links[:1]:                               # Angular: every page is the same empty shell
             st, html = br.br_get(url)
             rows = br.br_parse(url, html) if st == 200 else []
             page = {"url": url, "status": st,
