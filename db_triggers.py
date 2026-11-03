@@ -62,6 +62,7 @@ SHOP_LISTS = [
     ("br",     "brandsperfume_catalog",    "product_url", ["price_inc_tax", "price"],       "stock"),
     ("aq",     "abdulsamad_catalog",       "product_url", ["price_inc_tax", "price"],       "stock"),
     ("ao",     "arabianoud_catalog",       "product_url", ["price_inc_tax", "price"],       "stock"),
+    ("jz",     "aljazeera_catalog",        "product_url", ["price_inc_tax", "price"],       "stock"),
 ]
 # (label shown as least priced website, prefix) - same order as app.py LEAST_ORDER / LEAST_SQL
 COMPETITORS = [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"),
@@ -69,7 +70,8 @@ COMPETITORS = [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfu
                ("Ounass", "on"), ("Amberiya", "am"), ("Niche Gallerie", "ng"),
                ("Perfume Dubai", "pd"), ("MHG Boutique", "mh"), ("Emirates Pride", "ep"),
                ("Anfasic", "an"), ("Khaltat", "kh"), ("Oud Elite", "oe"), ("Brands Perfume", "br"),
-               ("Abdul Samad Al Qurashi", "aq"), ("Arabian Oud", "ao")]
+               ("Abdul Samad Al Qurashi", "aq"), ("Arabian Oud", "ao"),
+               ("Al Jazeera Perfumes", "jz")]
 RATE_KEY = "discount_rate"        # Settings -> Auto discount rate (app_settings)
 DECIMALS = 0                      # rounding of the suggested price (same as suggested_price.py DECIMALS)
 

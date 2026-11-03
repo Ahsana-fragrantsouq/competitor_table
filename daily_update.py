@@ -94,7 +94,7 @@ RUN2_TIME = "07:00"            # "HH:MM", 24-hour India time. Example: "06:30", 
 # the next round starts RUN2_ROUND_DAYS after the start of the last one -> every shop once every 2 weeks.
 # Ounass, Al Injaz, Niche Gallerie are NOT here: they block Render (captcha / "too many requests") and run on the
 # PC (PC_LISTS below). The next shop = the first one not done yet in this round.
-RUN2_ORDER = ["samawa", "vp", "am", "pd", "mh", "an", "kh", "br", "aq", "ao"]   # pd = Perfume Dubai, mh = MHG Boutique, an = Anfasic, kh = Khaltat, br = Brands Perfume, aq = Abdul Samad Al Qurashi, ao = Arabian Oud (Emirates Pride + Oud Elite = PC_LISTS)
+RUN2_ORDER = ["samawa", "vp", "am", "pd", "mh", "an", "kh", "br", "aq", "ao", "jz"]   # pd = Perfume Dubai, mh = MHG Boutique, an = Anfasic, kh = Khaltat, br = Brands Perfume, aq = Abdul Samad Al Qurashi, ao = Arabian Oud, jz = Al Jazeera Perfumes (Emirates Pride + Oud Elite = PC_LISTS)
 RUN2_ROUND_DAYS = 14           # a new round every 14 days (7 = every week)
 RUN2_DAYS = range(0, 7)        # 0 = Monday ... 6 = Sunday: Render runs every day
 # RUN2_SAVE_NEW = True  -> NEW products of the shop are SAVED and matched to our products.
@@ -116,6 +116,7 @@ RUN2_SHOPS = [
     ("br", "Brands Perfume", "brandsperfume_catalog", "/brandsperfume/run", "/brandsperfume/status", "/competitor/match-br"),
     ("aq", "Abdul Samad Al Qurashi", "abdulsamad_catalog", "/abdulsamad/run", "/abdulsamad/status", "/competitor/match-aq"),
     ("ao", "Arabian Oud", "arabianoud_catalog", "/arabianoud/run", "/arabianoud/status", "/competitor/match-ao"),
+    ("jz", "Al Jazeera Perfumes", "aljazeera_catalog", "/aljazeera/run", "/aljazeera/status", "/competitor/match-jz"),
 ]
 RUN2_LABELS = {k: label for k, label, *_ in RUN2_SHOPS}
 
@@ -233,7 +234,8 @@ def known_brands(cur):
                    ("mhgboutique_catalog", "brand"), ("emiratespride_catalog", "brand"),
                    ("anfasic_catalog", "brand"), ("khaltat_catalog", "brand"),
                    ("oudelite_catalog", "brand"), ("brandsperfume_catalog", "brand"),
-                   ("abdulsamad_catalog", "brand"), ("arabianoud_catalog", "brand")):
+                   ("abdulsamad_catalog", "brand"), ("arabianoud_catalog", "brand"),
+                   ("aljazeera_catalog", "brand")):
         if table_exists(cur, t):
             cur.execute(f"SELECT DISTINCT TRIM({col}) FROM {t} WHERE {col} IS NOT NULL AND TRIM({col}) <> ''")
             found = {b for (b,) in cur.fetchall()}
