@@ -547,6 +547,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
 @@EDIT_JS@@
 @@STOCK_JS@@
 @@SP_JS@@
+@@SORT_JS@@
 </script>
 </div></body></html>"""
 # card parts from description_gen.py (button, its look and its script)
@@ -564,7 +565,8 @@ IM_HTML = (IM_HTML.replace("@@DESC_HTML@@", description_gen.DESC_HTML).replace("
            .replace("@@SP_BUTTON@@", shopify_prices.SP_BUTTON).replace("@@SP_CSS@@", shopify_prices.SP_CSS)
            .replace("@@SP_JS@@", shopify_prices.SP_JS)
            # Sort by (sort_option.py)
-           .replace("@@SORT_HTML@@", sort_option.SORT_HTML).replace("@@SORT_CSS@@", sort_option.SORT_CSS))
+           .replace("@@SORT_HTML@@", sort_option.SORT_HTML).replace("@@SORT_CSS@@", sort_option.SORT_CSS)
+           .replace("@@SORT_JS@@", sort_option.SORT_JS))
 
 
 # ============================================================ SECTION 7: routes
@@ -585,8 +587,8 @@ def ensure_table(conn):
 def item_master_page():
     """The Item Master page: search + 50 per page. Stock qty is not selected at all."""
     q = request.args.get("q", "").strip()
-    sort, sort_dir = sort_option.read_sort(request.args)   # Sort by (sort_option.py)
-    order = sort_option.order_sql(sort, sort_dir, {"sku": "im.sku", "brand": "im.brand", "perfume": "im.perfume_name",
+    sorts = sort_option.read_sort(request.args)            # Sort box levels (sort_option.py)
+    order = sort_option.order_sql(sorts, {"sku": "im.sku", "brand": "im.brand", "perfume": "im.perfume_name",
                                                    "name": "im.product_name"},
                                   "LOWER(im.brand), LOWER(im.product_name)")   # default = brand, then name
     try:
@@ -641,7 +643,7 @@ def item_master_page():
         IM_HTML, nav_html=competitors_page.render_nav("item", "im-list", counts), nav_css=competitors_page.NAV_CSS,
         rows=rows, total=total, q=q, page=page, pages=pages, shown=SHOWN, labels=LABELS, last=last,
         running=_load_lock.locked(), admin=is_admin(), msg=request.args.get("msg"), edit_opts=edit_opts,
-        sort=sort, sort_dir=sort_dir, sort_fields=sort_option.SORT_FIELDS, sort_qs=sort_option.sort_qs(sort, sort_dir))
+        sorts=sorts, sort_fields=sort_option.SORT_FIELDS, sort_qs=sort_option.sort_qs(sorts))
 
 
 @item_master_bp.post(item_edit.SAVE_URL)
