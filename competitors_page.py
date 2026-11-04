@@ -37,6 +37,7 @@ import link_edit                                          # 'Edit link' for admi
 import barcode_edit                                       # 'Edit' our barcode for admins (barcode_edit.py)
 import stock_edit                                         # 'Edit' our stock for admins -> Shopify (stock_edit.py)
 import new_link                                           # 'Add new link' for admins on the cards (new_link.py)
+import sort_option                                        # 'Sort by' SKU / Brand / Perfume / Product name (sort_option.py)
 import skip_auto                                          # 'Skip automatic price' checkbox on the cards (skip_auto.py)
 import brand_refresh                                      # Refresh all / one brand on Item Master -> Brands (brand_refresh.py)
 from discount_rate import get_discount_rate               # kept here so competitors_page.get_discount_rate() still works
@@ -653,6 +654,7 @@ HTML = """
  @@SKIP_CSS@@
  /* Edit link (admins): link_edit.py EDIT_CSS */
  @@EDIT_CSS@@
+@@SORT_CSS@@
 /* Add new link (admins): new_link.py NL_CSS */
 @@NL_CSS@@
  /* Edit our barcode (admins): barcode_edit.py BC_CSS */
@@ -771,8 +773,10 @@ HTML = """
       &#9776; {% if conds %}{{ filt_labels }}{% else %}Filter{% endif %}
     </button>
     {% endif %}
+    {# Sort by (Competitor table only): sort_option.py SORT_HTML #}
+    {% if src.kind == 'competitor' %}@@SORT_HTML@@{% endif %}
     <button type="submit">Go</button>
-    {% if q or stock or conds or brand %}<a class="clear" href="?tab={{ src.key }}">Clear</a>{% endif %}
+    {% if q or stock or conds or brand or sort %}<a class="clear" href="?tab={{ src.key }}">Clear</a>{% endif %}
 
     {% if src.kind == 'competitor' %}
     {# Airtable-style filter panel: each row = Where <field> <operator> <value>; all rows must match (AND) #}
@@ -982,9 +986,9 @@ HTML = """
 
 {# ======== 6d pager: Previous / Next pages ======== #}
   <div class="pager">
-    <a class="pbtn {% if page <= 1 %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&brand={{ brand|urlencode }}&{{ filt_qs }}&page={{ page-1 }}">Previous</a>
+    <a class="pbtn {% if page <= 1 %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&brand={{ brand|urlencode }}&{{ filt_qs }}{{ sort_qs }}&page={{ page-1 }}">Previous</a>
     <span class="gtin">Page {{ page }} of {{ pages }}</span>
-    <a class="pbtn {% if page >= pages %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&brand={{ brand|urlencode }}&{{ filt_qs }}&page={{ page+1 }}">Next</a>
+    <a class="pbtn {% if page >= pages %}off{% endif %}" href="?tab={{ src.key }}&q={{ q|urlencode }}&stock={{ stock|urlencode }}&brand={{ brand|urlencode }}&{{ filt_qs }}{{ sort_qs }}&page={{ page+1 }}">Next</a>
   </div>
 {% endif %}
 
@@ -1214,6 +1218,8 @@ HTML = (HTML.replace("@@LIMITS_CSS@@", price_limits.LIMITS_CSS)
             .replace("@@EDIT_CSS@@", link_edit.EDIT_CSS)
             .replace("@@EDIT_HTML@@", link_edit.EDIT_HTML)
             .replace("@@EDIT_JS@@", link_edit.EDIT_JS)
+            # Sort by (sort_option.py)
+            .replace("@@SORT_HTML@@", sort_option.SORT_HTML).replace("@@SORT_CSS@@", sort_option.SORT_CSS)
             # Add new link for admins (new_link.py SECTION 2)
             .replace("@@NL_CSS@@", new_link.NL_CSS)
             .replace("@@NL_HTML@@", new_link.NL_HTML)
@@ -1339,6 +1345,7 @@ def competitors():
     brand = request.args.get("brand", "").strip()           # Brand filter (shop tabs)
     shop_brands = []
     conds = read_filters(request.args)                     # Competitor table: Airtable-style conditions
+    sort, sort_dir = sort_option.read_sort(request.args)   # Competitor table: Sort by (sort_option.py)
     try:
         page = max(int(request.args.get("page", 1)), 1)
     except ValueError:
@@ -1439,8 +1446,15 @@ def competitors():
             select += f", {missing_sql or 'FALSE'} AS missing"     # True -> card shows "Missing item"
             if src.get("kind") != "competitor":
                 select += f", {src['table']}.id AS row_id"         # row_id > new_after_id -> card shows "New"
+            order = "id"
+            if src.get("kind") == "competitor" and sort:       # Sort by: SKU / Brand / Perfume name / Product name
+                perfume = ("(SELECT im.perfume_name FROM item_master im WHERE im.fi_record_id = competitor_table.fi_record_id)"
+                           if table_exists(cur, "item_master") else "competitor_table.product_name")
+                order = sort_option.order_sql(sort, sort_dir, {
+                    "sku": "competitor_table.sku", "brand": "competitor_table.brand",
+                    "perfume": perfume, "name": "competitor_table.product_name"}, "id")
             cur.execute(
-                f"SELECT {select} FROM {src['table']} {where_sql} ORDER BY id LIMIT %s OFFSET %s",
+                f"SELECT {select} FROM {src['table']} {where_sql} ORDER BY {order} LIMIT %s OFFSET %s",
                 params + [PER_PAGE, (page - 1) * PER_PAGE],
             )
             rows = cur.fetchall()
@@ -1481,6 +1495,8 @@ def competitors():
                                   brand=brand, shop_brands=shop_brands, new_info=new_info,
                                   field_list=list(FILTER_FIELDS.items()), ops=FILTER_OPS,
                                   filt_labels=describe_filters(conds),
+                                  sort=sort, sort_dir=sort_dir, sort_fields=sort_option.SORT_FIELDS,   # Sort by
+                                  sort_qs=sort_option.sort_qs(sort, sort_dir),
                                   filt_qs=urlencode([(k, x) for f, o, v in conds
                                                      for k, x in (("ff", f), ("fo", o), ("fv", v))]))
 

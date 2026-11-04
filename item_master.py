@@ -57,6 +57,7 @@ import shopify_create                       # 'Create in website' button (shopif
 import item_edit                            # 'Edit' button on each card (item_edit.py)
 import stock_edit                           # 'Edit' our stock -> Shopify (stock_edit.py)
 import shopify_prices                       # 'Load prices from Shopify' button (shopify_prices.py)
+import sort_option                         # 'Sort by' SKU / Brand / Perfume / Product name (sort_option.py)
 from auth import is_admin
 
 item_master_bp = Blueprint("item_master", __name__)
@@ -449,6 +450,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
  .pager{display:flex;justify-content:space-between;align-items:center;margin-top:16px;color:var(--muted)}
  .pbtn{background:#f2d675;color:#1c1b19;text-decoration:none;border-radius:12px;padding:12px 18px;font-weight:600}
  .pbtn.off{visibility:hidden}
+@@SORT_CSS@@
 </style></head><body><div class="page">
 <div class="topbar"><h1>Item Master</h1>
   {% if g.user %}<span class="who">Logged in as <b>{{ g.user }}</b> · <a href="/logout">Log out</a></span>{% endif %}</div>
@@ -456,6 +458,8 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
 
 <form class="bar" method="get" action="/item-master">
   <input name="q" value="{{ q }}" placeholder="Filter by SKU, brand, perfume name, product name, barcode">
+  {# Sort by: sort_option.py SORT_HTML #}
+  @@SORT_HTML@@
   <button type="submit">Go</button>
 </form>
 
@@ -531,9 +535,9 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
 
 {% if pages > 1 %}
 <div class="pager">
-  <a class="pbtn {{ '' if page > 1 else 'off' }}" href="?q={{ q|urlencode }}&page={{ page - 1 }}">&larr; Previous</a>
+  <a class="pbtn {{ '' if page > 1 else 'off' }}" href="?q={{ q|urlencode }}{{ sort_qs }}&page={{ page - 1 }}">&larr; Previous</a>
   <span>Page {{ page }} of {{ pages }}</span>
-  <a class="pbtn {{ '' if page < pages else 'off' }}" href="?q={{ q|urlencode }}&page={{ page + 1 }}">Next &rarr;</a>
+  <a class="pbtn {{ '' if page < pages else 'off' }}" href="?q={{ q|urlencode }}{{ sort_qs }}&page={{ page + 1 }}">Next &rarr;</a>
 </div>
 {% endif %}
 @@EDIT_OPTS@@
@@ -558,7 +562,9 @@ IM_HTML = (IM_HTML.replace("@@DESC_HTML@@", description_gen.DESC_HTML).replace("
            .replace("@@EDIT_OPTS@@", item_edit.EDIT_OPTS)
            # Load prices from Shopify (shopify_prices.py SECTION 5)
            .replace("@@SP_BUTTON@@", shopify_prices.SP_BUTTON).replace("@@SP_CSS@@", shopify_prices.SP_CSS)
-           .replace("@@SP_JS@@", shopify_prices.SP_JS))
+           .replace("@@SP_JS@@", shopify_prices.SP_JS)
+           # Sort by (sort_option.py)
+           .replace("@@SORT_HTML@@", sort_option.SORT_HTML).replace("@@SORT_CSS@@", sort_option.SORT_CSS))
 
 
 # ============================================================ SECTION 7: routes
@@ -579,6 +585,10 @@ def ensure_table(conn):
 def item_master_page():
     """The Item Master page: search + 50 per page. Stock qty is not selected at all."""
     q = request.args.get("q", "").strip()
+    sort, sort_dir = sort_option.read_sort(request.args)   # Sort by (sort_option.py)
+    order = sort_option.order_sql(sort, sort_dir, {"sku": "im.sku", "brand": "im.brand", "perfume": "im.perfume_name",
+                                                   "name": "im.product_name"},
+                                  "LOWER(im.brand), LOWER(im.product_name)")   # default = brand, then name
     try:
         page = max(1, int(request.args.get("page", "1")))
     except ValueError:
@@ -617,7 +627,7 @@ def item_master_page():
                     f"(COALESCE(im.shopify_description, '') <> '') AS has_desc, "     # button asks before replacing
                     f"(TRIM(CONCAT(im.top_notes, im.middle_notes, im.base_notes)) <> '') AS has_notes, "  # no notes -> description button off
                     f"{link_cols} FROM item_master im {link_join} {where} "
-                    f"ORDER BY LOWER(im.brand), LOWER(im.product_name) LIMIT %s OFFSET %s",
+                    f"ORDER BY {order} LIMIT %s OFFSET %s",
                     params + [PER_PAGE, (page - 1) * PER_PAGE])
         rows = cur.fetchall()
         last = read_summary(cur)
@@ -630,7 +640,8 @@ def item_master_page():
     return render_template_string(
         IM_HTML, nav_html=competitors_page.render_nav("item", "im-list", counts), nav_css=competitors_page.NAV_CSS,
         rows=rows, total=total, q=q, page=page, pages=pages, shown=SHOWN, labels=LABELS, last=last,
-        running=_load_lock.locked(), admin=is_admin(), msg=request.args.get("msg"), edit_opts=edit_opts)
+        running=_load_lock.locked(), admin=is_admin(), msg=request.args.get("msg"), edit_opts=edit_opts,
+        sort=sort, sort_dir=sort_dir, sort_fields=sort_option.SORT_FIELDS, sort_qs=sort_option.sort_qs(sort, sort_dir))
 
 
 @item_master_bp.post(item_edit.SAVE_URL)
