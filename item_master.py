@@ -56,6 +56,7 @@ import description_gen                      # 'Create product description' butto
 import shopify_create                       # 'Create in website' button (shopify_create.py)
 import item_edit                            # 'Edit' button on each card (item_edit.py)
 import stock_edit                           # 'Edit' our stock -> Shopify (stock_edit.py)
+import shopify_prices                       # 'Load prices from Shopify' button (shopify_prices.py)
 from auth import is_admin
 
 item_master_bp = Blueprint("item_master", __name__)
@@ -423,6 +424,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
  .pval.gold{color:#f2d675}
  /* prices row: UAE | Asia | Kuwait | America | Qatar */
  .prices{display:flex;flex-wrap:wrap;gap:10px 28px;margin:10px 0 2px;padding:8px 14px;border:1px solid var(--line);border-radius:12px}
+@@SP_CSS@@
  .prices .cmp{margin-top:6px;font-size:12px} .prices .cmpval{font-size:14px;font-weight:500;color:var(--muted)}
  /* one section per line: notes, description (like one competitor shop) */
  .shop{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
@@ -464,6 +466,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
     {% if running %}<span class="ok">Loading from Airtable now ... reload this page in a minute.</span>{% endif %}
     {% if last.error %}<span class="err">Last load failed: {{ last.error }}</span>{% endif %}
     {% if msg %}<span class="ok">{{ msg }}</span>{% endif %}</span>
+  @@SP_BUTTON@@
   {# "Load from Airtable now" button REMOVED - load only with /item-master/load?secret=XXX #}
 </div>
 {% if last.missing %}<div class="info warn">Not found in Airtable (left empty): {{ last.missing|join(', ') }}
@@ -539,6 +542,7 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
 @@WEB_JS@@
 @@EDIT_JS@@
 @@STOCK_JS@@
+@@SP_JS@@
 </script>
 </div></body></html>"""
 # card parts from description_gen.py (button, its look and its script)
@@ -551,7 +555,10 @@ IM_HTML = (IM_HTML.replace("@@DESC_HTML@@", description_gen.DESC_HTML).replace("
            # Edit our stock -> Shopify (stock_edit.py SECTION 2)
            .replace("@@STOCK_CSS@@", stock_edit.STOCK_CSS).replace("@@STOCK_JS@@", stock_edit.STOCK_JS)
            .replace("@@STOCK_HTML@@", stock_edit.stock_html("r.fi_record_id", "stockqty"))
-           .replace("@@EDIT_OPTS@@", item_edit.EDIT_OPTS))
+           .replace("@@EDIT_OPTS@@", item_edit.EDIT_OPTS)
+           # Load prices from Shopify (shopify_prices.py SECTION 5)
+           .replace("@@SP_BUTTON@@", shopify_prices.SP_BUTTON).replace("@@SP_CSS@@", shopify_prices.SP_CSS)
+           .replace("@@SP_JS@@", shopify_prices.SP_JS))
 
 
 # ============================================================ SECTION 7: routes

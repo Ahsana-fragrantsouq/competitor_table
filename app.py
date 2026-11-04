@@ -134,6 +134,7 @@ from skip_auto import skip_bp                      # POST /competitor/no-auto (s
 import link_edit                                   # admins: edit / remove a competitor link on the cards (link_edit.py)
 from link_edit import link_bp                      # POST /competitor/link
 from new_link import new_link_bp                   # POST /competitor/new-link ('Add new link', new_link.py)
+import shopify_prices                              # Item Master: 'Load prices from Shopify' (shopify_prices.py)
 import barcode_edit                                # admins: edit OUR barcode on the cards (barcode_edit.py)
 from barcode_edit import barcode_bp                # POST /competitor/barcode
 import stock_edit                                  # admins: edit OUR stock -> Shopify (stock_edit.py)
@@ -219,6 +220,7 @@ app.register_blueprint(limits_bp)                  # LOP / MOP Save on the produ
 app.register_blueprint(skip_bp)                    # 'Skip automatic price' checkbox on the cards (skip_auto.py)
 app.register_blueprint(link_bp)                    # 'Edit link' for admins on the cards (link_edit.py)
 app.register_blueprint(new_link_bp)                # 'Add new link' for admins on the cards (new_link.py)
+app.register_blueprint(shopify_prices.shopify_prices_bp)   # Item Master: Load prices from Shopify (shopify_prices.py)
 app.register_blueprint(barcode_bp)                 # 'Edit' our barcode for admins (barcode_edit.py)
 app.register_blueprint(stock_bp)                   # 'Edit' our stock for admins -> Shopify (stock_edit.py)
 app.register_blueprint(item_master_bp)             # Item Master page (item_master.py)
@@ -3011,6 +3013,7 @@ link_edit.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Edit link' for
                link_sisters=link_sisters_for, recalc_one=least_for)
 barcode_edit.init(connect=pg_conn, airtable_barcode=airtable_set_barcode)   # 'Edit' our barcode (barcode_edit.py)
 stock_edit.init(connect=pg_conn)                                             # 'Edit' our stock -> Shopify (stock_edit.py)
+shopify_prices.init(connect=pg_conn)                                         # Item Master: prices FROM Shopify (shopify_prices.py)
 item_master.init(connect=pg_conn, read_airtable=at_list,       # Item Master: Airtable -> item_master (item_master.py)
                  fi_table=FI_TABLE, brands_table=BRANDS_TABLE, brands_name_field=BRANDS_NAME_FIELD,
                  run_secret=RUN_SECRET)
