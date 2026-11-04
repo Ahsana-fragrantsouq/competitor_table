@@ -77,10 +77,12 @@ SAVE_URL = "/item-master/edit"
 #   Barcode      -> variant barcode
 #   Product name -> product TITLE. The product name is REBUILT when brand / perfume name / size / category / type /
 #                   product type changed (NAME_COLS, same rule as Create a new item: item_create.product_name)
-#   Prices       -> ONLY when SEND_PRICES = True (now OFF, user's choice): Shopify Markets price lists (MARKET_NAMES);
+#   Prices       -> when SEND_PRICES = True (ON since 2026-11-04, user's choice: prices were loaded ONCE from Shopify,
+#                   shopify_prices.py, from then on Item Master edits update Shopify): Shopify Markets price lists (MARKET_NAMES)
+#                   + their compare-at price (comparison columns);
 #                   UAE price also = variant price. OFF -> prices are saved in our database only.
 # Everything else (notes, brand, type, category, size ...) is saved in OUR database only.
-SEND_PRICES = False                       # True = Edit also sends changed prices to Shopify (code below is ready)
+SEND_PRICES = True                        # True = Edit also sends changed prices + comparison prices to Shopify
 NAME_COLS = ["brand", "perfume_name", "size", "category", "type", "product_type"]   # change -> new product name
 KEEP_COLS = EDITABLE + ["product_name"]   # item_master.WEBSITE_COLS_SQL: Airtable load keeps these once edited here
 EDIT_SQL = """ALTER TABLE item_master ADD COLUMN IF NOT EXISTS edited_fields JSONB;

@@ -43,6 +43,11 @@ def log(*a):
 
 # ============================================================ SECTION 1: settings
 PAGE_SIZE = 100                     # Shopify rows per GraphQL call (cost stays well under the limit)
+# ONE-TIME load (user's choice 2026-11-04): prices come from Shopify ONCE; after that Item Master is the master and
+# Edit sends changes TO Shopify (item_edit.SEND_PRICES). So: no button on the page, and a 2nd load is refused
+# (it would overwrite prices edited since) unless ?force=1. The finished load is remembered in app_settings.
+SHOW_BUTTON = False                 # True = "Load prices from Shopify" button on Item Master again
+DONE_KEY = "shopify_prices_loaded"  # app_settings row written after a successful load
 THROTTLE_WAIT = 5                   # seconds to wait when Shopify says THROTTLED (then try again, max 6 times)
 _hooks = {}                         # init(connect) from app.py
 _lock = threading.Lock()
@@ -225,6 +230,16 @@ def _job(user):
         finally:
             conn.close()
         st["status"], st["step"] = "done", "done"
+        conn = _hooks["connect"]()                  # remember: loaded once -> next load needs ?force=1
+        try:
+            conn.cursor().execute("""INSERT INTO app_settings (key, value, updated_by, updated_at)
+                                     VALUES (%s, %s, %s, NOW())
+                                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value,
+                                         updated_by = EXCLUDED.updated_by, updated_at = NOW()""",
+                                  (DONE_KEY, f"{st['matched_products']} products", user))
+            conn.commit()
+        finally:
+            conn.close()
     except Exception as ex:
         st["status"], st["error"] = "error", str(ex)[:300]
         log(f"[SHOPIFY-PRICES] ERROR {ex}\n{traceback.format_exc()}")
@@ -235,10 +250,30 @@ def _job(user):
         log(f"[SHOPIFY-PRICES] DONE {st}")
 
 
-def _start(user):
+def _loaded_before():
+    """(when, by) of the last finished load, or None."""
+    conn = _hooks["connect"]()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT to_regclass('app_settings') IS NOT NULL")
+        if not cur.fetchone()[0]:
+            return None
+        cur.execute("SELECT updated_at, updated_by FROM app_settings WHERE key = %s", (DONE_KEY,))
+        return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def _start(user, force=False):
     err = _ready()
     if err:
         return jsonify({"ok": False, "error": err}), 400
+    before = _loaded_before()
+    if before and not force:                        # one-time load already done
+        log(f"[SHOPIFY-PRICES] refused: already loaded {before[0]} by {before[1]} (add force=1 to load again)")
+        return jsonify({"ok": False, "error": f"Prices were already loaded from Shopify on {before[0]:%Y-%m-%d %H:%M} "
+                        f"by {before[1]}. Loading again overwrites prices edited in Item Master since - "
+                        "add &force=1 to the link if you really want that."}), 409
     if not _lock.acquire(blocking=False):
         return jsonify({"ok": False, "error": "already loading - wait for it to finish"}), 409
     state["running"] = True
@@ -257,7 +292,7 @@ def sp_button():
     """'Load prices from Shopify' button (admins)."""
     if not is_admin():
         return jsonify({"ok": False, "error": "admins only"}), 403
-    return _start(g.get("user") or "admin")
+    return _start(g.get("user") or "admin", force=request.args.get("force") == "1")
 
 
 @shopify_prices_bp.get("/shopify-prices/run")
@@ -265,7 +300,7 @@ def sp_run_route():
     """Same, with ?secret=RUN_SECRET (no login needed)."""
     if not _secret_ok():
         return jsonify({"error": "unauthorized"}), 401
-    return _start("run link")
+    return _start("run link", force=request.args.get("force") == "1")
 
 
 @shopify_prices_bp.get("/shopify-prices/status")
@@ -300,11 +335,12 @@ def init(connect):
 
 
 # ============================================================ SECTION 5: page parts (item_master.py)
-SP_BUTTON = """{% if admin %}
+SP_BUTTON_HTML = """{% if admin %}
   {# Load prices from Shopify (shopify_prices.py): 5 market prices + compare-at -> Item Master #}
   <button type="button" class="sp-btn" onclick="spLoad(this)">Load prices from Shopify</button>
   <span class="sp-msg" id="sp-msg"></span>
   {% endif %}"""
+SP_BUTTON = SP_BUTTON_HTML if SHOW_BUTTON else ""   # one-time load: no button (use /shopify-prices/run?secret=)
 
 SP_CSS = """ .sp-btn{background:#f2d675;color:#1c1b19;border:0;border-radius:10px;padding:8px 14px;font-weight:600;cursor:pointer;margin-left:10px}
  .sp-btn[disabled]{opacity:.5;cursor:default} .sp-msg{font-size:13px;margin-left:8px}
