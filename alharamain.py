@@ -59,7 +59,8 @@ AH_BATCH = 100                             # rows saved per database write
 AH_MAX_PAGES = 100                         # Shopify: max 100 pages x 250
 # PERFUMES + GIFT SETS (ah_keep, in this order). WHOLE words, any capitals; "x*" = word start.
 AH_ALWAYS_SKIP = ["gift card", "sample", "samples", "discovery", "giveaway*"]
-AH_GIFT_WORDS = ["gift set", "gift sets", "giftset", "gift box", "coffret", "set", "collection"]   # -> always kept
+AH_GIFT_WORDS = ["gift set", "gift sets", "giftset", "gift box", "coffret", "set"]   # -> always kept
+# NOT "collection": Al Haramain's category names all have it ("Perfume Oil / Collection") -> oils were kept (test 2026-11-05)
 AH_SKIP_WORDS = ["oil", "oils", "dehn", "dahn", "bakhoor", "bukhoor", "bakhour", "incense", "dokhoon", "dakhoon",
                  "mabkhara", "mubakhar", "burner", "wood", "chips", "muattar", "candle", "diffuser", "reed",
                  "room spray", "home spray", "car", "body", "lotion", "cream", "shower", "soap", "hair", "deodorant",
@@ -296,7 +297,18 @@ def ah_discover(html):
 import zlib
 
 AH_GRAPHQL = AH_BASE + "/graphql"
-AH_GQL_HEADERS = {**AH_HEADERS, "Content-Type": "application/json", "Accept": "application/json"}
+AH_CURRENCY = "AED"                # live test 2026-11-05: /uae/graphql answered in USD -> ask for AED (Content-Currency)
+AH_GQL_HEADERS = {**AH_HEADERS, "Content-Type": "application/json", "Accept": "application/json",
+                  "Content-Currency": AH_CURRENCY}
+# perfume OILS / attars are not perfumes (user: perfumes + gift sets only). Checked on the NAME (unless it is a gift set)
+# and on the categories (only oil categories, no plain perfume / gift category -> out). Test 2026-11-05:
+# 'Haramain Solitaire, 12ml, Concentrated Perfume Oil' (category Perfume Oil / Collection) had been kept.
+AH_OIL_WORDS = ["oil", "oils", "concentrated perfume oil*", "attar*", "dehn", "dahn", "pure perfume", "roll on", "roll-on"]
+AH_OIL_CATEGORY = ["perfume oil*", "concentrated", "attar*", "oils"]
+AH_PERFUME_CATEGORY = ["perfumes", "eau de parfum", "spray perfume*", "gift set*", "gift box*", "gifts"]
+# only the word search works on this shop (price / category filter refused) -> these words are searched one after
+# the other and the results combined (a product found twice is counted once)
+AH_SEARCH_WORDS = ["perfume", "parfum", "eau", "spray", "gift", "set", "oud", "musk", "edp", "edt"]
 # The UAE shop is the Magento STORE "uae" (link /uae/) -> its GraphQL may answer at /uae/graphql or at /graphql with
 # header "Store: uae". Tried in this order; the first that lists products is kept (ah_gql_used). Prices must be AED.
 AH_GQL_TRIES = [(AH_BASE + "/" + AH_STORE + "/graphql", {}), (AH_BASE + "/graphql", {"Store": AH_STORE}),
@@ -402,6 +414,13 @@ def ah_api_rows(p, keep_all=False):
     cat = " / ".join(c.get("name") for c in (p.get("categories") or []) if isinstance(c, dict) and c.get("name")) or None
     if not keep_all and (br.br_has(AH_NAME_SKIP, name) or not ah_keep(name, cat)):
         return [], [name]
+    cats = [c.get("name") or "" for c in (p.get("categories") or []) if isinstance(c, dict)]
+    gift = br.br_has(AH_GIFT_WORDS, name)
+    oil_name = br.br_has(AH_OIL_WORDS, name) and not gift
+    oil_cat_only = (any(br.br_has(AH_OIL_CATEGORY, c) for c in cats)
+                    and not any(br.br_has(AH_PERFUME_CATEGORY, c) and not br.br_has(AH_OIL_CATEGORY, c) for c in cats))
+    if not keep_all and (oil_name or (oil_cat_only and not gift)):
+        return [], [name]                                             # perfume oil / attar -> left out
     url = f"{AH_BASE}/{AH_STORE}/{p.get('url_key')}{p.get('url_suffix') if p.get('url_suffix') is not None else '.html'}"
     sizes = [v for v in (p.get("variants") or []) if isinstance(v, dict) and isinstance(v.get("product"), dict)]
     rows = []
@@ -442,8 +461,67 @@ def ah_api_shape(js):
             "first_item": {k: (v if not isinstance(v, (list, dict)) else f"<{type(v).__name__} {len(v)}>") for k, v in it.items()}}
 
 
+def ah_currency(items):
+    """Currency of the first price on a page (must be AH_CURRENCY)."""
+    for it in items or []:
+        c = ((((it.get("price_range") or {}).get("minimum_price") or {}).get("final_price")) or {}).get("currency")
+        if c:
+            return c
+    return None
+
+
+def ah_pages(arg, seen, on_rows):
+    """Page through ONE list way (arg) -> new products only (seen = SKUs already done). Returns (pages, new, ok)."""
+    page, total = 1, 0
+    while page <= AH_API_MAX_PAGES:
+        st, js, err = ah_gql(arg, page)
+        if st in (429, 502, 503, 504, 0):
+            time.sleep(20)
+            st, js, err = ah_gql(arg, page)
+        items = ((((js or {}).get("data") or {}).get("products") or {}).get("items"))
+        if not isinstance(items, list):
+            ah_log(f"[AH-GQL] {arg} page {page}: HTTP {st} {(err or '')[:150]}")
+            return page - 1, total, False
+        new = [p for p in items if isinstance(p, dict) and p.get("sku") not in seen]
+        if not items or (not new and page > 1):         # end (Magento repeats the last page when asked past it)
+            break
+        seen.update(p.get("sku") for p in new)
+        total += len(new)
+        rows, skipped = [], []
+        for p in new:
+            r, sk = ah_api_rows(p)
+            rows += r
+            skipped += sk
+        on_rows(rows, skipped)
+        ah_log(f"[AH-GQL] {arg} page {page}: {len(items)} products ({len(new)} new), {len(rows)} rows kept, {len(skipped)} not perfume")
+        page += 1
+        time.sleep(AH_API_PAUSE)
+    return page - 1, total, True
+
+
 def ah_api_all(on_rows):
-    """Whole list page by page -> on_rows(rows, skipped) per page. Returns (pages, products, incomplete)."""
+    """Whole shop -> on_rows(rows, skipped) per page. Returns (pages, products, incomplete).
+    Prices must be in AED (else stop: nothing saved). List = the working list way; when that is a word search,
+    every word of AH_SEARCH_WORDS is searched too and the results combined."""
+    first, _ = ah_api_page(1)                            # finds the GraphQL address + list way
+    if first is None:
+        return 0, 0, True
+    cur = ah_currency(first)
+    if cur and cur != AH_CURRENCY:
+        raise RuntimeError(f"prices come in {cur}, not {AH_CURRENCY} - nothing saved; send /alharamain/test to Claude")
+    args = [ah_list_used["arg"]]
+    if (ah_list_used["arg"] or "").startswith("search:"):
+        args += [f'search:"{w}"' for w in AH_SEARCH_WORDS if f'search:"{w}"' != ah_list_used["arg"]]
+    seen, pages, total, ok_all = set(), 0, 0, True
+    for arg in args:
+        n_pages, n_new, ok = ah_pages(arg, seen, on_rows)
+        pages, total, ok_all = pages + n_pages, total + n_new, ok_all and ok
+        ah_log(f"[AH-GQL] {arg}: {n_new} new products ({n_pages} pages); {total} so far")
+    return pages, total, not ok_all
+
+
+def _ah_api_all_old(on_rows):
+    """(old one-list version, kept for reference - not used)"""
     seen, page, total = set(), 1, 0
     while page <= AH_API_MAX_PAGES:
         items, _ = ah_api_page(page)
@@ -608,7 +686,26 @@ def ah_test_route():
             r, sk = ah_api_rows(p)
             rows += r
             skipped += sk
+        # page 1 of the first search can be only oils -> also page 1 of the other search words (examples only)
+        searched = [ah_list_used["arg"]]
+        if (ah_list_used["arg"] or "").startswith("search:"):
+            seen = {x.get("sku") for x in prods}
+            for w in AH_SEARCH_WORDS:
+                if len(rows) >= 5:
+                    break
+                arg = f'search:"{w}"'
+                if arg in searched:
+                    continue
+                searched.append(arg)
+                st2, js2, _ = ah_gql(arg, 1)
+                for x in ((((js2 or {}).get("data") or {}).get("products") or {}).get("items")) or []:
+                    if x.get("sku") not in seen:
+                        seen.add(x.get("sku"))
+                        r2, sk2 = ah_api_rows(x)
+                        rows += r2
+                        skipped += sk2
         result = {"ok": bool(rows), "mode": "graphql", "page1_products": len(prods), "page1_rows": len(rows),
+                  "searched": searched, "currency_ok": ah_currency(prods) in (None, AH_CURRENCY),
                   "kept_without_price": sum(1 for p in prods if not ah_api_rows(p)[0] and not ah_api_rows(p)[1]),
                   "skipped_not_perfume": skipped[:30], "categories": sorted({r["product_type"] or "-" for r in rows})[:20], "brands": sorted({r["brand"] for r in rows}),
                   "first_5": rows[:5], "api_shape": ah_api_shape(js)}   # Magento list
