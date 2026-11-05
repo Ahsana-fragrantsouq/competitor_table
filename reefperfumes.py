@@ -167,6 +167,137 @@ def rf_shopify_rows(products):
     return rows, skipped
 
 
+
+# ===== SECTION 5c: way 0 - SALLA STOREFRONT API (2026-11-05, tried FIRST)
+# LIVE TEST 2026-11-05: product pages on ae.reefperfumes.com from the sitemap -> 302 to the home page (the sitemap
+# is the SAUDI store's), but the Salla storefront API answers: GET https://api.salla.dev/store/v1/products with
+# header Store-Identifier 254895921 -> products (id, name, sku, url, price, type 'group_products' = bundles) - BUT
+# its links were the SAUDI shop (sa.reefperfumes.com, scope_id 939196354). The UAE shop is another Salla "scope".
+# rf_api_pick() tries several ways to ask for the UAE scope (RF_API_TRIES) and keeps the first one whose product
+# links are on the UAE host (ae.reefperfumes.com) -> AED prices. None works -> nothing is saved (no SAR prices!).
+RF_API = "https://api.salla.dev/store/v1/products"
+RF_STORE_ID = "254895921"                  # Reef's Salla store id (found in the UAE page, live test 2026-11-05)
+RF_API_PER_PAGE = 50
+RF_API_MAX_PAGES = 40
+RF_API_PAUSE = 1.0                         # seconds between 2 API pages
+rf_api_used = {}                           # the way that worked (label / headers / params) - shown in test + status
+
+
+def rf_money(v):
+    """Salla money: {"amount": 199, "currency": "AED"} or a plain number -> (amount, currency)."""
+    if isinstance(v, dict):
+        return br.br_num(v.get("amount")), v.get("currency")
+    return br.br_num(v), None
+
+
+def rf_scopes(html):
+    """Scope ids written in a UAE page (Salla 'scope' = one country shop)."""
+    ids = re.findall(r'scope[^0-9<>]{0,40}?(\d{6,})', html or "", re.I)
+    return list(dict.fromkeys(ids))[:4]
+
+
+def rf_api_tries(sid, scopes):
+    """Ways to ask the Salla API for the UAE shop: (label, headers, params)."""
+    base = {"User-Agent": br.BR_HEADERS["User-Agent"], "Accept": "application/json", "Accept-Language": "en",
+            "Store-Identifier": sid, "currency": "AED", "country": "AE"}
+    site = {"Origin": RF_BASE, "Referer": RF_BASE + "/en/"}
+    tries = [("origin ae", {**base, **site}, {})]
+    for sc in scopes:
+        for h in ("scope", "scope-id", "s-scope", "s-scope-id", "x-scope-id"):
+            tries.append((f"header {h}={sc}", {**base, **site, h: sc}, {}))
+        tries.append((f"param scope_id={sc}", {**base, **site}, {"scope_id": sc}))
+    tries.append(("plain", base, {}))
+    return tries
+
+
+def rf_api_get(headers, params, page=1):
+    """One API page -> (status, products list, raw text)."""
+    try:
+        r = requests.get(RF_API, headers=headers, params={**params, "per_page": RF_API_PER_PAGE, "page": page}, timeout=40)
+    except requests.RequestException as ex:
+        return 0, [], str(ex)[:200]
+    try:
+        data = r.json().get("data") or []
+    except ValueError:
+        data = []
+    return r.status_code, data if isinstance(data, list) else [], r.text[:300]
+
+
+def rf_api_sample(p):
+    """Short view of one API product (for the test)."""
+    pr, cur = rf_money(p.get("price"))
+    sp, _ = rf_money(p.get("sale_price"))
+    return {"name": p.get("name"), "url": p.get("url"), "price": pr, "sale_price": sp, "currency": cur,
+            "status": p.get("status"), "is_available": p.get("is_available"), "type": p.get("type"),
+            "scope_id": p.get("scope_id"), "keys": sorted(p.keys())[:40]}
+
+
+def rf_api_pick(html=None):
+    """Try RF_API_TRIES, keep the first whose links are on the UAE host. Returns (way or None, [tries shown])."""
+    if html is None:
+        _, html = br.br_get(RF_BASE + "/en")
+    sid = (re.search(r'(?:store[_-]?id|storeId|store_identifier)["\'\s:=]+["\']?(\d{5,})', html or "") or [None, RF_STORE_ID])[1]
+    host = urlsplit(RF_BASE).netloc
+    shown = []
+    for label, headers, params in rf_api_tries(sid, rf_scopes(html)):
+        st, data, raw = rf_api_get(headers, params)
+        hosts = sorted({urlsplit(p.get("url") or "").netloc for p in data})
+        shown.append({"way": label, "status": st, "products": len(data), "hosts": hosts,
+                      "first": rf_api_sample(data[0]) if data else raw})
+        if data and host in hosts:
+            rf_api_used.clear()
+            rf_api_used.update({"label": label, "headers": headers, "params": params, "store_id": sid})
+            rf_log(f"[RF-API] UAE products found with '{label}' (store {sid})")
+            return rf_api_used, shown
+        time.sleep(0.3)
+    rf_log(f"[RF-API] no way gave UAE ({host}) products: {[(t['way'], t['status'], t['hosts']) for t in shown]}")
+    return None, shown
+
+
+def rf_api_rows(products):
+    """API products -> (rows kept, names skipped). One row per product (Salla product = one size)."""
+    rows, skipped = [], []
+    for p in products:
+        name = (p.get("name") or "").strip()
+        cat = ((p.get("category") or {}).get("name") or "").strip() if isinstance(p.get("category"), dict) else ""
+        if not rf_keep(name, cat):
+            skipped.append(name)
+            continue
+        price, cur = rf_money(p.get("price"))
+        sale, _ = rf_money(p.get("sale_price"))
+        if sale and sale > 0 and (not price or sale < price):
+            price = sale                                    # on sale -> the price the shopper pays
+        if not price or price <= 0:
+            continue
+        status = str(p.get("status") or "").lower()
+        avail = p.get("is_available")
+        in_stock = bool(avail) if avail is not None else status not in ("out", "out-and-notify", "hidden")
+        sku = (p.get("sku") or "").strip() or None
+        d = re.sub(r"\D", "", sku or "")
+        brand = p.get("brand") if isinstance(p.get("brand"), dict) else {}
+        rows.append({"variant_id": int(re.sub(r"\D", "", str(p.get("id"))) or 0) or None, "url": p.get("url"),
+                     "gtin": d if sku and d == sku and 12 <= len(d) <= 14 else None, "sku": sku,
+                     "brand": (brand.get("name") or "").strip() or RF_BRAND, "name": name,
+                     "product_type": cat or p.get("type"), "price_inc_tax": price, "price": round(price / 1.05, 2),
+                     "stock": "In stock" if in_stock else "Out of stock",
+                     "volume": br.br_volume(name, p.get("subtitle")), "currency": cur})
+    return rows, skipped
+
+
+def rf_api_all(way):
+    """Every product of the UAE shop, page by page (stops when a page brings no new id)."""
+    seen, out = set(), []
+    for page in range(1, RF_API_MAX_PAGES + 1):
+        st, data, raw = rf_api_get(way["headers"], way["params"], page)
+        new = [p for p in data if p.get("id") not in seen]
+        rf_log(f"[RF-API] page {page}: HTTP {st}, {len(data)} products, {len(new)} new")
+        if not new:
+            break
+        seen.update(p.get("id") for p in new)
+        out.extend(new)
+        time.sleep(RF_API_PAUSE)
+    return out
+
 # ===== SECTION 5: way 2 - sitemap + product pages (JSON-LD, brandsperfume.py reader)
 RF_NOT_PRODUCT = r"/page-\d+|/blog|/brands?/|/c\d+/?$|/(cart|login|account|search)\b"   # English links that are NOT products
 RF_PRODUCT_LINK = r"/p/?\d{3,}(?:[/?#]|$)"  # Salla product page: .../<name>/p123456 (also /p/123456; anywhere in link)
@@ -269,8 +400,23 @@ def rf_run():
             st["in_stock"] += sum(r["stock"] == "In stock" for r in rows)
             st["out_of_stock"] += sum(r["stock"] != "In stock" for r in rows)
 
-        first = rf_shopify_page(1)
-        if first:                                           # way 1: Shopify
+        way, _ = rf_api_pick()                              # way 0: Salla API (UAE scope)
+        first = None if way else rf_shopify_page(1)
+        if way:
+            st["mode"] = "salla_api"
+            st["api_way"] = way["label"]
+            products = rf_api_all(way)
+            rows, skipped = rf_api_rows(products)
+            bad = [r for r in rows if r["currency"] and r["currency"].upper() != "AED"]
+            if bad:                                         # never save SAR (or other) prices as AED
+                raise RuntimeError(f"prices not in AED ({bad[0]['currency']}) - nothing saved, send /reefperfumes/test to Claude")
+            st["api_products"] = len(products)
+            st["skipped_not_perfume"] += len(skipped)
+            if rows:
+                rf_save(cur, conn, rows)
+            count(rows)
+            rf_log(f"[RF] Salla API: {len(products)} products, {len(rows)} saved, {len(skipped)} not perfume")
+        elif first:                                         # way 1: Shopify
             st["mode"] = "shopify"
             page, products = 1, first
             while products:
@@ -405,6 +551,16 @@ def rf_test_route():
     """Which way works (Shopify / sitemap) + the first products read - nothing is saved."""
     if not rf_secret_ok():
         return jsonify({"error": "unauthorized"}), 401
+    way, tries = rf_api_pick()                              # way 0: Salla API (UAE scope)
+    if way:
+        _, products, _ = rf_api_get(way["headers"], way["params"], 1)   # first page only in the test
+        rows, skipped = rf_api_rows(products)
+        result = {"ok": bool(rows), "mode": "salla_api", "api_way": way["label"], "api_tries": tries,
+                  "page1_products": len(products), "page1_rows": len(rows), "skipped_not_perfume": skipped[:30],
+                  "currencies": sorted({r["currency"] or "-" for r in rows}),
+                  "categories": sorted({r["product_type"] or "-" for r in rows})[:20], "first_5": rows[:5]}
+        rf_log(f"[RF-TEST] {json.dumps(result, default=str)[:2000]}")
+        return jsonify(result)
     first = rf_shopify_page(1)
     if first:
         rows, skipped = rf_shopify_rows(first)
@@ -427,6 +583,7 @@ def rf_test_route():
                 page["raw"] = br.br_raw(url, html)
             result["pages"].append(page)
         result["ok"] = any(p["rows"] for p in result["pages"])
+        result["api_tries"] = tries                         # Salla API: no way gave UAE products
         if not result["ok"]:                                # nothing read -> look where the UAE data is
             result["probe"] = rf_probe(links)
     rf_log(f"[RF-TEST] {json.dumps(result, default=str)[:2000]}")
