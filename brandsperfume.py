@@ -395,6 +395,55 @@ def br_raw(url, html):
             "scripts": re.findall(r'<script[^>]+src="([^"]+)"', html)[:6]}
 
 
+# ---------------------------------------------------------------- check ONE product now (2026-11-05)
+# User: prices on brandsperfume.com differ from ours (Fiamma 100ml site AED 189.42 / ours 144.90) and some products
+# out of stock on the site show In stock here. Our rows are from the last full download (Run 2, every 14 days).
+#   /brandsperfume/check?url=<product link>          (logged in) -> what the page says NOW vs our table:
+#       ld_products = the page's hidden product data (JSON-LD: price / availability per offer, as the shop wrote it)
+#       aed_on_page = AED amounts written in the page itself (what the shopper sees), parsed = what our reader takes,
+#       in_our_table = our saved row(s) for that link
+#   ... &save=1  -> the price + stock read NOW are saved for that link (the Competitor table follows at once)
+def br_aed_on_page(html):
+    """AED amounts in the page text (first 12) - e.g. ['189.42', '215.25', '25.83']."""
+    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=re.S | re.I)
+    return [m.group(1) for m in re.finditer(r"AED\s*([0-9][0-9,]*\.?[0-9]*)", re.sub(r"<[^>]+>", " ", text))][:12]
+
+
+@brandsperfume_bp.route("/brandsperfume/check")
+def br_check_route():
+    url = (request.args.get("url") or "").strip().split("?")[0]
+    if not url.startswith(BR_BASE):
+        return jsonify({"error": f"give ?url= a {BR_BASE}/ae/en/product/... link"}), 400
+    st, html = br_get(url)
+    if st != 200:
+        return jsonify({"url": url, "status": st, "error": "page not read"}), 502
+    parsed = br_parse(url, html)
+    lds = [{k: d.get(k) for k in ("@type", "name", "sku", "gtin13", "offers") if k in d}
+           for d in br_ld_objects(html) if "Product" in str(d.get("@type"))]
+    saved, ours = 0, []
+    conn = br_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name, price_inc_tax, stock, updated_at FROM brandsperfume_catalog "
+                    "WHERE rtrim(product_url, '/') = rtrim(%s, '/')", (url,))
+        ours = [{"name": n, "price": float(p) if p is not None else None, "stock": s_, "updated": str(u)}
+                for n, p, s_, u in cur.fetchall()]
+        if request.args.get("save") == "1" and parsed:
+            for r in parsed:                                       # same link + same name -> price / stock now
+                cur.execute("UPDATE brandsperfume_catalog SET price_inc_tax = %s, price = %s, stock = %s, "
+                            "updated_at = NOW() WHERE rtrim(product_url, '/') = rtrim(%s, '/') AND name = %s",
+                            (r["price_inc_tax"], r["price"], r["stock"], url, r["name"]))
+                saved += cur.rowcount
+            conn.commit()
+    finally:
+        conn.close()
+    br_log(f"[BR-CHECK] {url}: page AED {br_aed_on_page(html)[:3]} | read {[(r['price_inc_tax'], r['stock']) for r in parsed]} "
+           f"| ours {[(o['price'], o['stock']) for o in ours]} | saved {saved}")
+    return jsonify({"url": url, "aed_on_page": br_aed_on_page(html),
+                    "parsed": [{k: r[k] for k in ("name", "price_inc_tax", "stock", "currency", "gtin")} for r in parsed],
+                    "in_our_table": ours, "saved_now": saved, "ld_products": lds[:4]})
+
+
 @brandsperfume_bp.route("/brandsperfume/test")
 def br_test_route():
     """Sitemap counts + 3 product pages read - shows whether Render can read Brands Perfume and what is read."""
