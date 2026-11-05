@@ -64,7 +64,7 @@ SOURCES = [
                ("Anfasic", "an"), ("Khaltat", "kh"), ("Oud Elite", "oe"), ("Brands Perfume", "br"),
                ("Abdul Samad Al Qurashi", "aq"), ("Arabian Oud", "ao"),
                ("Al Jazeera Perfumes", "jz"), ("Ajmal", "jm"),
-               ("Al Haramain", "ah")],
+               ("Al Haramain", "ah"), ("Reef Perfumes", "rf")],
      "cols": {"code": "french_inventory_code", "sku": "sku", "brand": "brand", "barcode": "barcode", "name": "product_name",
               "uae_price": "uae_price",
               "samawa_url": "samawa_link", "samawa_price": "samawa_price", "samawa_stock": "samawa_stock",
@@ -106,6 +106,8 @@ SOURCES = [
               "jm_title": "jm_title", "jm_confirmed": "jm_confirmed",
               "ah_url": "ah_link", "ah_price": "ah_price", "ah_stock": "ah_stock", "ah_suggestion": "ah_suggestion",
               "ah_title": "ah_title", "ah_confirmed": "ah_confirmed",
+              "rf_url": "rf_link", "rf_price": "rf_price", "rf_stock": "rf_stock", "rf_suggestion": "rf_suggestion",
+              "rf_title": "rf_title", "rf_confirmed": "rf_confirmed",
               # competitor's own product name, used as the link text
               "samawa_title": "samawa_title", "ff_title": "ff_title", "bp_title": "bp_title",
               "es_title": "es_title", "vp_title": "vp_title",
@@ -219,6 +221,11 @@ SOURCES = [
               "updated": "updated_at"}},
     # Al Haramain = shop.alharamainperfumes.com/uae perfumes + gift sets, alharamain.py - menu BRANDS STORE (prefix ah)
     {"key": "ah", "label": "Al Haramain", "table": "alharamain_catalog", "menu": "brands",
+     "cols": {"name": "name", "brand": "brand", "gtin": "COALESCE(gtin, sku)", "url": "product_url",
+              "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
+              "updated": "updated_at"}},
+    # Reef Perfumes = ae.reefperfumes.com perfumes + gift sets, reefperfumes.py - menu BRANDS STORE (prefix rf)
+    {"key": "rf", "label": "Reef Perfumes", "table": "reefperfumes_catalog", "menu": "brands",
      "cols": {"name": "name", "brand": "brand", "gtin": "COALESCE(gtin, sku)", "url": "product_url",
               "price": "COALESCE(price_inc_tax, price)", "stock": "stock", "volume": "volume",
               "updated": "updated_at"}},
@@ -888,7 +895,7 @@ HTML = """
                   'Oud Elite': r.oe_url, 'Brands Perfume': r.br_url,
                   'Abdul Samad Al Qurashi': r.aq_url, 'Arabian Oud': r.ao_url,
                   'Al Jazeera Perfumes': r.jz_url, 'Ajmal': r.jm_url,
-                  'Al Haramain': r.ah_url} %}
+                  'Al Haramain': r.ah_url, 'Reef Perfumes': r.rf_url} %}
              <span class="{{ 'in' if 'Fragrant Souq' in (r.least_site or '') else 'out' }}">
                {%- for site in (r.least_site or '').split(', ') -%}
                  {%- if site_links.get(site) -%}
@@ -1275,6 +1282,7 @@ LINK_BARCODES = {
     "jz": ("aljazeera_catalog", "product_url", "sku"),
     "jm": ("ajmal_catalog", "product_url", "sku"),
     "ah": ("alharamain_catalog", "product_url", "sku"),
+    "rf": ("reefperfumes_catalog", "product_url", "sku"),
 }
 
 
@@ -2068,7 +2076,7 @@ def run2_rows(rs):
                  ("mh", "MHG Boutique"), ("an", "Anfasic"), ("kh", "Khaltat"), ("br", "Brands Perfume"),
                  ("aq", "Abdul Samad Al Qurashi"), ("ao", "Arabian Oud"),
                  ("jz", "Al Jazeera Perfumes"), ("jm", "Ajmal"),
-                 ("ah", "Al Haramain")]
+                 ("ah", "Al Haramain"), ("rf", "Reef Perfumes")]
     rs = rs or {}
     start = rs.get("round_start")
     results = rs.get("weekly_results") or {}

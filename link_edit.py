@@ -74,6 +74,8 @@ SHOP_LISTS = {
            "COALESCE(price_inc_tax, price)", "stock"),
     "ah": ("Al Haramain", "alharamain_catalog", "product_url", "CONCAT_WS(' ', brand, name)",
            "COALESCE(price_inc_tax, price)", "stock"),
+    "rf": ("Reef Perfumes", "reefperfumes_catalog", "product_url", "CONCAT_WS(' ', brand, name)",
+           "COALESCE(price_inc_tax, price)", "stock"),
 }
 
 
