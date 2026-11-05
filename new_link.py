@@ -47,7 +47,9 @@ NL_HOSTS = [("samawa.ae", "samawa"), ("frenchfragrance.com", "ff"), ("vperfumes.
             ("alinjazperfumes.com", "aj"), ("ounass.ae", "on"), ("amberiya.ae", "am"), ("nichegallerie.com", "ng"),
             ("perfumedubai.com", "pd"), ("mhgboutique.com", "mh"), ("emiratespride.com", "ep"), ("anfasic.ae", "an"),
             ("khaltat.com", "kh"), ("oudelite.com", "oe"), ("brandsperfume.com", "br"),
-            ("abdulsamadalqurashi.com", "aq"), ("arabianoud.com", "ao"), ("aljazeeraperfumes.com", "jz")]
+            ("abdulsamadalqurashi.com", "aq"), ("arabianoud.com", "ao"), ("aljazeeraperfumes.com", "jz"),
+            ("ajmal.com", "jm"),
+            ("alharamainperfumes.com", "ah")]
 NL_SHOPS = [k for k in link_edit.SHOP_LISTS if k not in ("bp", "es")]     # BP / ES follow French Fragrance
 NL_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                             "Chrome/124 Safari/537.36", "Accept": "application/json"}

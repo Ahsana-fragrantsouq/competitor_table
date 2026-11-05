@@ -47,6 +47,7 @@ Files in this project
   arabianoud.py       -> ae.arabianoud.com perfumes + gift sets into arabianoud_catalog (prefix ao, Brands Store)
   aljazeera.py        -> uae.aljazeeraperfumes.com perfumes + gift sets into aljazeera_catalog (prefix jz, Brands Store)
   ajmal.py            -> en-ae.ajmal.com perfumes + gift sets into ajmal_catalog (prefix jm, Brands Store)
+  alharamain.py       -> shop.alharamainperfumes.com/uae perfumes + gift sets into alharamain_catalog (prefix ah, Brands Store)
   price_check.py      -> DAILY: re-checks price + stock at the EXISTING competitor links of 50 products
                          (Render Cron Job "python price_check.py"; never changes our price or Airtable)
 
@@ -73,6 +74,7 @@ Normal order to run things (open these URLs in the browser)
  20. /arabianoud/run?secret=XXX then /competitor/match-ao?secret=XXX  Arabian Oud (test first: /arabianoud/test)
  21. /aljazeera/run?secret=XXX then /competitor/match-jz?secret=XXX  Al Jazeera Perfumes (test first: /aljazeera/test)
  22. /ajmal/run?secret=XXX then /competitor/match-jm?secret=XXX  Ajmal (test first: /ajmal/test)
+ 23. /alharamain/run?secret=XXX then /competitor/match-ah?secret=XXX  Al Haramain (test first: /alharamain/test)
      (least price is also recalculated automatically at the end of steps 2, 3 and 4)
   Progress: step 1 -> /samawa-catalog/status | steps 2, 3, 4 -> /samawa/status | Result -> /competitors
 
@@ -170,6 +172,7 @@ from abdulsamad import abdulsamad_bp               # /abdulsamad/test, /abdulsam
 from arabianoud import arabianoud_bp               # /arabianoud/test, /arabianoud/run, /arabianoud/status
 from aljazeera import aljazeera_bp                 # /aljazeera/test, /aljazeera/run, /aljazeera/status
 from ajmal import ajmal_bp                         # /ajmal/test, /ajmal/run, /ajmal/status
+from alharamain import alharamain_bp               # /alharamain/test, /alharamain/run, /alharamain/status
 import brand_refresh                               # Item Master -> Brands: Refresh all / one brand (brand_refresh.py)
 # price_check.py is optional: if the file is not uploaded to GitHub, the app still starts (without /price-check)
 try:
@@ -247,6 +250,7 @@ app.register_blueprint(abdulsamad_bp)              # Abdul Samad Al Qurashi (abd
 app.register_blueprint(arabianoud_bp)              # Arabian Oud (arabianoud.py, menu Brands Store)
 app.register_blueprint(aljazeera_bp)               # Al Jazeera Perfumes (aljazeera.py, menu Brands Store)
 app.register_blueprint(ajmal_bp)                   # Ajmal (ajmal.py, menu Brands Store)
+app.register_blueprint(alharamain_bp)              # Al Haramain (alharamain.py, menu Brands Store)
 app.register_blueprint(brand_refresh.refresh_bp)   # POST /brands/refresh, GET /brands/refresh/status
 if price_check_bp is not None:
     app.register_blueprint(price_check_bp)
@@ -973,6 +977,7 @@ def run_match(brands, rematch=False, fi_groups=None):
 #   ao_link / ao_price / ao_stock / ao_suggestion / ao_method / ao_score   Arabian Oud (menu Brands Store)
 #   jz_link / jz_price / jz_stock / jz_suggestion / jz_method / jz_score   Al Jazeera Perfumes (menu Brands Store)
 #   jm_link / jm_price / jm_stock / jm_suggestion / jm_method / jm_score   Ajmal (menu Brands Store)
+#   ah_link / ah_price / ah_stock / ah_suggestion / ah_method / ah_score   Al Haramain (menu Brands Store)
 #   <shop>_title           the competitor's own product name (shown as the link text on the page)
 #   our_link / our_title   OUR product page on fragrantsouq.com (matched by SKU) - /competitor/load-our-links
 #   <shop>_confirmed       TRUE = suggestion accepted with "OK" -> later match runs keep this link
@@ -1179,6 +1184,15 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS jm_score NUMERIC(5,3);
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS jm_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS jm_confirmed BOOLEAN DEFAULT FALSE;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS jm_rejected TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ah_link TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ah_price NUMERIC(10,2);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ah_stock BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ah_suggestion TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ah_method TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ah_score NUMERIC(5,3);
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ah_title TEXT;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ah_confirmed BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS ah_rejected TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_link TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_title TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS our_stock BOOLEAN;
@@ -1584,6 +1598,11 @@ def jm_entries_from_db(cur):
     return am_entries_from_db(cur, "ajmal_catalog", "Ajmal")
 
 
+def ah_entries_from_db(cur):
+    """alharamain_catalog rows (same columns as Amberiya) -> entries for matching."""
+    return am_entries_from_db(cur, "alharamain_catalog", "Al Haramain")
+
+
 def ng_entries_from_db(cur):
     """nichegallerie_catalog rows -> same entry format (WooCommerce like Al Injaz: brand is inside the name)."""
     cur.execute("SELECT to_regclass('nichegallerie_catalog')")
@@ -1669,6 +1688,9 @@ SHOPS = {
            "trust_barcode": False},      # barcode must also agree by name
     "jm": {"label": "Ajmal", "prefix": "jm", "loader": jm_entries_from_db,
            "empty_hint": "ajmal_catalog is empty - run /ajmal/run first",
+           "trust_barcode": False},      # barcode must also agree by name
+    "ah": {"label": "Al Haramain", "prefix": "ah", "loader": ah_entries_from_db,
+           "empty_hint": "alharamain_catalog is empty - run /alharamain/run first",
            "trust_barcode": False},      # barcode must also agree by name
 }
 
@@ -1963,6 +1985,12 @@ def ct_match_jm():
     return ct_match_shop("jm")
 
 
+def ct_match_ah():
+    """Match all products to Al Haramain."""
+    log("[CT-AH] Started: match all products to Al Haramain")
+    return ct_match_shop("ah")
+
+
 # ============================================================ SECTION 11: PRICES: least price + suggested price
 # LEAST_SQL = cheapest of our price + in-stock competitors | SUGGEST_SQL = cheapest in-stock competitor - discount rate (discount_rate.py) | ct_update_least() runs both.
 # ---------------------------------------------------------------- Branded Perfume / Essenzi + least price
@@ -2045,6 +2073,9 @@ WITH offers AS (
     UNION ALL
     SELECT fi_record_id, 'Ajmal', jm_price, 21
       FROM competitor_table WHERE jm_stock AND jm_link IS NOT NULL AND jm_price > 0
+    UNION ALL
+    SELECT fi_record_id, 'Al Haramain', ah_price, 22
+      FROM competitor_table WHERE ah_stock AND ah_link IS NOT NULL AND ah_price > 0
 ),
 best AS (
     SELECT fi_record_id, MIN(price) AS min_price FROM offers GROUP BY fi_record_id
@@ -2116,6 +2147,8 @@ WITH competitor_offers AS (
     SELECT fi_record_id, jz_price FROM competitor_table WHERE jz_stock AND jz_link IS NOT NULL AND jz_price > 0
     UNION ALL
     SELECT fi_record_id, jm_price FROM competitor_table WHERE jm_stock AND jm_link IS NOT NULL AND jm_price > 0
+    UNION ALL
+    SELECT fi_record_id, ah_price FROM competitor_table WHERE ah_stock AND ah_link IS NOT NULL AND ah_price > 0
 )
 UPDATE competitor_table c
 -- LOP / MOP (price_limits.py clamp_sql): below LOP -> LOP, above MOP -> MOP, empty = no limit
@@ -2384,6 +2417,8 @@ SUGGESTION_SHOPS = {
                                   "FROM aljazeera_catalog WHERE product_url = %s LIMIT 1"),
     "jm": ("Ajmal", "SELECT CONCAT_WS(' ', brand, name), COALESCE(price_inc_tax, price), stock "
                     "FROM ajmal_catalog WHERE product_url = %s LIMIT 1"),
+    "ah": ("Al Haramain", "SELECT CONCAT_WS(' ', brand, name), COALESCE(price_inc_tax, price), stock "
+                          "FROM alharamain_catalog WHERE product_url = %s LIMIT 1"),
 }
 LEAST_ORDER = [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"),
                ("Essenzi", "es"), ("V Perfumes", "vp"), ("Al Injaz", "aj"),
@@ -2392,7 +2427,8 @@ LEAST_ORDER = [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfu
                ("Emirates Pride", "ep"), ("Anfasic", "an"), ("Khaltat", "kh"),
                ("Oud Elite", "oe"), ("Brands Perfume", "br"),
                ("Abdul Samad Al Qurashi", "aq"), ("Arabian Oud", "ao"),
-               ("Al Jazeera Perfumes", "jz"), ("Ajmal", "jm")]
+               ("Al Jazeera Perfumes", "jz"), ("Ajmal", "jm"),
+               ("Al Haramain", "ah")]
 
 
 def link_sisters_for(cur, fid):
@@ -2847,6 +2883,13 @@ def ct_match_oe_route():
     # /competitor/match-oe?secret=XXX -> Oud Elite link / price / stock / suggestion for every product
     log("[ROUTE] /competitor/match-oe called")
     return _ct_start(ct_match_oe, "CT-OE")
+
+
+@app.get("/competitor/match-ah")
+def ct_match_ah_route():
+    # /competitor/match-ah?secret=XXX -> Al Haramain link / price / stock / suggestion for every product
+    log("[ROUTE] /competitor/match-ah called")
+    return _ct_start(ct_match_ah, "CT-AH")
 
 
 @app.get("/competitor/match-jm")
