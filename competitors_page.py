@@ -2076,7 +2076,7 @@ def run2_rows(rs):
                  ("mh", "MHG Boutique"), ("an", "Anfasic"), ("kh", "Khaltat"), ("br", "Brands Perfume"),
                  ("aq", "Abdul Samad Al Qurashi"), ("ao", "Arabian Oud"),
                  ("jz", "Al Jazeera Perfumes"), ("jm", "Ajmal"),
-                 ("ah", "Al Haramain"), ("rf", "Reef Perfumes")]
+                 ("ah", "Al Haramain")]                          # Reef Perfumes = PC list (rf_scraper.py)
     rs = rs or {}
     start = rs.get("round_start")
     results = rs.get("weekly_results") or {}
