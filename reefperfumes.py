@@ -201,6 +201,15 @@ def rf_product_links():
         counts[sm] = {"status": st, "links": len(found), "product_links": len(prods),
                       "sample": found[:5]}                                   # shown on /reefperfumes/test
         links.extend(prods)
+    # LIVE TEST 2026-11-05: sitemap-1 = info pages only (/en/p/about, /p/locations ... -> taken by the "English
+    # links" fallback), sitemap-2 = 316 real products (/p2123895051), each in Arabic AND English.
+    # -> when real product links (p-number) exist, ONLY those are used, and the ENGLISH copy of each is kept
+    #    (nicer link + name; the Arabic one would become /en/<arabic name>/p...)
+    if any(re.search(RF_PRODUCT_LINK, u) for u in links):
+        before = len(links)
+        links = [u for u in links if re.search(RF_PRODUCT_LINK, u)]
+        rf_log(f"[RF] {before - len(links)} non-product links dropped (info pages), {len(links)} product links kept")
+    links.sort(key=lambda u: RF_LANG_PATH not in u)                          # English links first (stable)
     host = urlsplit(RF_BASE).netloc                                          # ae.reefperfumes.com
     links = [urlunsplit(urlsplit(u)._replace(netloc=host, scheme="https")).replace("/ar/", RF_LANG_PATH)
              for u in links]                                                 # UAE site, English page
