@@ -743,7 +743,10 @@ BARCODE_MIN_NAME = 0.3
 # Name match when BOTH barcodes are known and DIFFERENT: only accepted when the names are (almost) the same.
 # Below this -> no match, the product becomes a SUGGESTION (OK / Not OK) instead.
 # "Scent Of Peace For Him" vs "Scent Of Peace Natura" (other barcode) = 0.9 -> suggestion, not a link.
-BARCODE_CONFLICT_MIN = 0.95
+# 2026-11-05 user: Roberto Cavalli Serpentine 100ml Parfum (ours 3607347734444) was LINKED to Brands Perfume /
+# V Perfumes Serpentine (8052464898299) = different products with the same name (score 1.0).
+# -> 1.01 = a name can never beat a different barcode: both barcodes known + different -> SUGGESTION only (OK / Not OK).
+BARCODE_CONFLICT_MIN = 1.01
 
 
 def match_one(fields, brand, brand_entries, by_barcode, trust_barcode=False):
