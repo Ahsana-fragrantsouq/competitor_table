@@ -461,6 +461,12 @@ def br_quick_run():
                 if st["pages_done"] % 200 == 0:
                     br_log(f"[BR-QUICK] {st['pages_done']}/{len(links)} pages, {st['rows_updated']} rows changed")
         st["status"] = "done"
+        # 2026-11-05: date saved only NOW (was at the start): a deploy / restart during the check killed it and
+        # it was not run again that day -> prices stayed old. Not finished -> the scheduler starts it again.
+        cur.execute("INSERT INTO app_settings (key, value, updated_by) VALUES (%s, %s, 'brandsperfume.py') "
+                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+                    (BR_QUICK_KEY, br_india_now().date().isoformat()))
+        conn.commit()
     finally:
         st["seconds"] = round(time.time() - started, 1)
         cur.close()
@@ -495,18 +501,14 @@ def br_quick_scheduler(check_every=60):
         try:
             now = br_india_now()
             today = now.date().isoformat()
-            if now.strftime("%H:%M") >= BR_QUICK_TIME:
+            if now.strftime("%H:%M") >= BR_QUICK_TIME and not brq_state["running"]:
                 conn = br_conn()
                 cur = conn.cursor()
                 cur.execute("SELECT value FROM app_settings WHERE key = %s", (BR_QUICK_KEY,))
                 row = cur.fetchone()
                 if not row or row[0] != today:
-                    if br_quick_start():
-                        br_log(f"[BR-QUICK] {now:%H:%M} India - daily quick check started")
-                        cur.execute("INSERT INTO app_settings (key, value, updated_by) VALUES (%s, %s, 'brandsperfume.py') "
-                                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
-                                    (BR_QUICK_KEY, today))
-                        conn.commit()
+                    if br_quick_start():                     # date is saved by br_quick_run when it FINISHES
+                        br_log(f"[BR-QUICK] {now:%H:%M} India - daily quick check started (not finished today yet)")
                     else:
                         br_log("[BR-QUICK] Brands Perfume download busy - quick check tried again in a minute")
                 conn.close()
