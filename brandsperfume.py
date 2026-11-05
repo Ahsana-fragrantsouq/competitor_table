@@ -25,6 +25,7 @@ Env vars (already set on Render): FF_DATABASE_URL, RUN_SECRET
 
 import os
 import json
+import datetime
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import re
@@ -376,6 +377,157 @@ def br_worker():
     finally:
         br_state["running"] = False
         br_lock.release()
+
+
+# ============================================================ SECTION 6: DAILY QUICK CHECK of LINKED products (2026-11-05)
+# User: Brands Perfume prices / stock on the site differ from ours (Fiamma 100ml site 189.42, ours 144.90 from the
+# 04 Nov download). The full download runs only once per Run 2 round (~14 days, 13 shops one a day).
+# Quick check = EVERY DAY at BR_QUICK_TIME India time: only the Brands Perfume pages LINKED to our products
+# (competitor_table.br_link, ~1,400) are read again -> price + stock updated in brandsperfume_catalog
+# (TRIGGER A copies them to the Competitor table, TRIGGER B recalculates least / suggested price).
+# Page gone (404) -> 'Not on site'. Runs before Run 2 (07:00), whose update-least then sends automatic brands.
+#   GET /brandsperfume-quick/run?secret=XXX   run it now (background)     GET /brandsperfume-quick/status
+#   Render env BR_QUICK_CHECK=off switches the daily run off.
+BR_QUICK_TIME = "06:15"                     # "HH:MM" India time, every day
+BR_QUICK_KEY = "br_quick_check"             # app_settings: date of the last quick check (no 2nd run after a restart)
+brq_state = {"running": False, "last": None}
+
+BR_LINKED_SQL = """
+SELECT DISTINCT rtrim(c.product_url, '/') FROM brandsperfume_catalog c
+ WHERE c.product_url IS NOT NULL
+   AND rtrim(c.product_url, '/') IN (SELECT rtrim(br_link, '/') FROM competitor_table
+                                      WHERE br_link IS NOT NULL AND br_link <> '')
+"""
+
+
+def br_india_now():
+    """India time (UTC + 5:30) without importing daily_update."""
+    return datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
+
+
+def br_quick_run():
+    """Read every linked Brands Perfume page again -> price + stock saved. Called with br_lock held."""
+    started = time.time()
+    st = {"status": "running", "started": br_india_now().strftime("%Y-%m-%d %H:%M"), "links": 0, "pages_done": 0,
+          "rows_updated": 0, "price_changed": 0, "stock_changed": 0, "not_on_site": 0, "pages_failed": 0,
+          "pages_without_data": 0}
+    brq_state["last"] = st
+    conn = br_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(BR_LINKED_SQL)
+        links = [r[0] for r in cur.fetchall()]
+        st["links"] = len(links)
+        br_log(f"[BR-QUICK] {len(links)} Brands Perfume pages linked to our products -> reading them again")
+
+        def read(url):
+            status, html = br_get(url)
+            return url, status, (br_parse(url, html) if status == 200 else [])
+
+        with ThreadPoolExecutor(max_workers=BR_WORKERS) as pool:
+            for url, status, rows in pool.map(read, links):
+                st["pages_done"] += 1
+                if status == 404:                                   # product removed from the site
+                    cur.execute("UPDATE brandsperfume_catalog SET stock = 'Not on site', updated_at = NOW() "
+                                "WHERE rtrim(product_url, '/') = %s AND stock <> 'Not on site'", (url,))
+                    st["not_on_site"] += cur.rowcount
+                elif status != 200:
+                    st["pages_failed"] += 1                          # kept as it was, tried again tomorrow
+                elif not rows:
+                    st["pages_without_data"] += 1
+                for r in rows:
+                    # same row as the full download (variant_id), else same link + same name
+                    cur.execute("SELECT id, price_inc_tax, stock FROM brandsperfume_catalog WHERE variant_id = %s",
+                                (r["variant_id"],))
+                    old = cur.fetchall()
+                    if not old:
+                        cur.execute("SELECT id, price_inc_tax, stock FROM brandsperfume_catalog "
+                                    "WHERE rtrim(product_url, '/') = %s AND name = %s", (url, r["name"]))
+                        old = cur.fetchall()
+                    for rid, op, ost in old:
+                        if op is not None and r["price_inc_tax"] is not None and float(op) == float(r["price_inc_tax"]) \
+                                and ost == r["stock"]:
+                            continue                                 # nothing changed -> no write, no trigger
+                        cur.execute("UPDATE brandsperfume_catalog SET price_inc_tax = %s, price = %s, stock = %s, "
+                                    "updated_at = NOW() WHERE id = %s",
+                                    (r["price_inc_tax"], r["price"], r["stock"], rid))
+                        st["rows_updated"] += 1
+                        st["price_changed"] += (op is None or r["price_inc_tax"] is None
+                                                or float(op) != float(r["price_inc_tax"]))
+                        st["stock_changed"] += ost != r["stock"]
+                        if st["rows_updated"] <= 20:
+                            br_log(f"[BR-QUICK] {r['name']}: {op} {ost} -> {r['price_inc_tax']} {r['stock']}")
+                conn.commit()
+                if st["pages_done"] % 200 == 0:
+                    br_log(f"[BR-QUICK] {st['pages_done']}/{len(links)} pages, {st['rows_updated']} rows changed")
+        st["status"] = "done"
+    finally:
+        st["seconds"] = round(time.time() - started, 1)
+        cur.close()
+        conn.close()
+        br_log(f"[BR-QUICK-DONE] {st}")
+
+
+def br_quick_worker():
+    try:
+        br_quick_run()
+    except Exception as ex:
+        br_log(f"[BR-QUICK-ERROR] {ex}\n{traceback.format_exc()}")
+        brq_state["last"] = {**(brq_state["last"] or {}), "status": "error", "error": str(ex)}
+    finally:
+        brq_state["running"] = False
+        br_lock.release()
+
+
+def br_quick_start():
+    """Start the quick check in the background. False when Brands Perfume is already busy (full download)."""
+    if not br_lock.acquire(blocking=False):
+        return False
+    brq_state["running"] = True
+    threading.Thread(target=br_quick_worker, daemon=True, name="br-quick").start()
+    return True
+
+
+def br_quick_scheduler(check_every=60):
+    """Started by app.py: every minute -> at/after BR_QUICK_TIME India time, once a day (date in app_settings)."""
+    br_log(f"[BR-QUICK] Scheduler started: linked Brands Perfume products re-read daily at {BR_QUICK_TIME} India time")
+    while True:
+        try:
+            now = br_india_now()
+            today = now.date().isoformat()
+            if now.strftime("%H:%M") >= BR_QUICK_TIME:
+                conn = br_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT value FROM app_settings WHERE key = %s", (BR_QUICK_KEY,))
+                row = cur.fetchone()
+                if not row or row[0] != today:
+                    if br_quick_start():
+                        br_log(f"[BR-QUICK] {now:%H:%M} India - daily quick check started")
+                        cur.execute("INSERT INTO app_settings (key, value, updated_by) VALUES (%s, %s, 'brandsperfume.py') "
+                                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+                                    (BR_QUICK_KEY, today))
+                        conn.commit()
+                    else:
+                        br_log("[BR-QUICK] Brands Perfume download busy - quick check tried again in a minute")
+                conn.close()
+        except Exception as ex:                                   # never stops the website
+            br_log(f"[BR-QUICK] ERROR: {str(ex)[:200]} - trying again in {check_every}s")
+        time.sleep(check_every)
+
+
+@brandsperfume_bp.route("/brandsperfume-quick/run")
+def br_quick_route():
+    if not br_secret_ok():
+        return jsonify({"error": "unauthorized"}), 401
+    if not br_quick_start():
+        return jsonify({"error": "Brands Perfume download / quick check already running"}), 409
+    br_log("[BR-QUICK] Started by hand")
+    return jsonify({"started": True, "check_status": "/brandsperfume-quick/status"}), 202
+
+
+@brandsperfume_bp.route("/brandsperfume-quick/status")
+def br_quick_status_route():
+    return jsonify({"running": brq_state["running"], "daily_at_india_time": BR_QUICK_TIME, "last": brq_state["last"]})
 
 
 # ---------------------------------------------------------------- routes

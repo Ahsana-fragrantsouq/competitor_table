@@ -273,6 +273,14 @@ if os.environ.get("RUN2_SCHEDULER", "on").lower() != "off":
         print(f"[RUN2] Scheduler NOT started: {ex}", flush=True)
 else:
     print("[RUN2] Scheduler switched off (RUN2_SCHEDULER=off)", flush=True)
+# Brands Perfume DAILY QUICK CHECK (brandsperfume.py SECTION 6): only pages linked to our products re-read every day
+# at BR_QUICK_TIME (06:15 India) -> fresh price + stock. Render env BR_QUICK_CHECK=off switches it off.
+if os.environ.get("BR_QUICK_CHECK", "on").lower() != "off":
+    try:
+        import brandsperfume
+        threading.Thread(target=brandsperfume.br_quick_scheduler, daemon=True, name="br-quick").start()
+    except Exception as ex:
+        print(f"[BR-QUICK] Scheduler NOT started: {ex}", flush=True)
 
 
 # ============================================================ SECTION 3: config (Render environment, Airtable ids, field names)
