@@ -345,6 +345,61 @@ def rf_secret_ok():
     return not secret or request.args.get("secret") == secret
 
 
+# ===== SECTION 6b: PROBE (2026-11-05) - where can the UAE product data be read?
+# LIVE TEST 2026-11-05: the sitemap (main store reefperfumes.com, Saudi) gives 158 product links, but opening them
+# on the UAE site (ae.reefperfumes.com/en/<name>/p123) gives the HOME PAGE (title "Reef Perfumes", no product data).
+# rf_probe() shows (nothing saved): where a UAE product link really goes (redirects), the same product on the main
+# store, a UAE category page (cards / product links / prices in the HTML) and the Salla store id + Salla API answer.
+RF_PROBE_CATEGORY = "/en/-/c585180698"     # a UAE category link from the user's screenshot (2026-11-05)
+
+
+def rf_snip(html, word, n=3, width=160):
+    """Up to n bits of html around `word` (to see how prices / cards are written)."""
+    return [html[max(0, m.start() - width // 2):m.start() + width // 2] for m in re.finditer(word, html)][:n]
+
+
+def rf_probe(links):
+    out = {}
+    hdr = {"User-Agent": br.BR_HEADERS["User-Agent"], "Accept-Language": "en"}
+    if links:
+        url = links[0]
+        try:                                                     # 1) where does a UAE product link go?
+            r = requests.get(url, headers=hdr, timeout=30, allow_redirects=True)
+            out["uae_product"] = {"asked": url, "final_url": r.url, "status": r.status_code,
+                                  "redirects": [f"{h.status_code} {h.headers.get('Location')}" for h in r.history],
+                                  "title": (re.search(r"<title[^>]*>(.*?)</title>", r.text, re.S) or [None, None])[1]}
+        except requests.RequestException as ex:
+            out["uae_product"] = {"error": str(ex)[:150]}
+        main = url.replace(urlsplit(RF_BASE).netloc, "reefperfumes.com")   # 2) same product on the main store
+        st, html = br.br_get(main)
+        rows = br.br_parse(main, html) if st == 200 else []
+        out["main_store_product"] = {"url": main, "status": st,
+                                     "rows": [{k: r[k] for k in ("name", "price_inc_tax", "currency", "stock")} for r in rows],
+                                     "title": (re.search(r"<title[^>]*>(.*?)</title>", html, re.S) or [None, None])[1]}
+    cat = RF_BASE + RF_PROBE_CATEGORY                            # 3) UAE category page
+    st, html = br.br_get(cat)
+    plinks = sorted(set(re.findall(r'href="([^"]*/p\d{5,}[^"]*)"', html)))
+    out["uae_category"] = {"url": cat, "status": st, "size": len(html),
+                           "product_links": len(plinks), "first_links": plinks[:5],
+                           "product_card_tags": len(re.findall(r"<salla-product-card|custom-salla-product-card|product-card", html)),
+                           "price_snips": rf_snip(html, r"AED|price", 3),
+                           "ld_types": re.findall(r'"@type"\s*:\s*"(\w+)"', html)[:10]}
+    sid = re.search(r'(?:store[_-]?id|storeId|store_identifier)["\'\s:=]+["\']?(\d{5,})', html)   # 4) Salla API
+    out["salla_store_id"] = sid.group(1) if sid else None
+    if sid:
+        try:
+            r = requests.get("https://api.salla.dev/store/v1/products", params={"per_page": 3},
+                             headers={**hdr, "Accept": "application/json", "Store-Identifier": sid.group(1),
+                                      "currency": "AED", "country": "AE"}, timeout=30)
+            out["salla_api"] = {"status": r.status_code, "answer": r.text[:1500]}
+        except requests.RequestException as ex:
+            out["salla_api"] = {"error": str(ex)[:150]}
+    else:
+        out["store_id_snips"] = rf_snip(html, r"store", 3)
+    rf_log(f"[RF-PROBE] {json.dumps(out, default=str)[:1500]}")
+    return out
+
+
 @reefperfumes_bp.route("/reefperfumes/test")
 def rf_test_route():
     """Which way works (Shopify / sitemap) + the first products read - nothing is saved."""
@@ -372,6 +427,8 @@ def rf_test_route():
                 page["raw"] = br.br_raw(url, html)
             result["pages"].append(page)
         result["ok"] = any(p["rows"] for p in result["pages"])
+        if not result["ok"]:                                # nothing read -> look where the UAE data is
+            result["probe"] = rf_probe(links)
     rf_log(f"[RF-TEST] {json.dumps(result, default=str)[:2000]}")
     return jsonify(result)
 
