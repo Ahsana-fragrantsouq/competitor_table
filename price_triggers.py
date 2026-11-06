@@ -59,9 +59,18 @@ def log(*a):
 
 
 # ============================================================ SECTION 2: read helpers
-def read_rate(cur):
+def read_rate(cur, brand=None):
     """Auto discount rate X in % (e.g. 3), or None when the admin never saved one.
-    Read straight from app_settings (discount_rate.py needs Flask, the PC does not have the website)."""
+    brand given + that brand has its OWN % (table brand_discount, Settings -> Auto discount rate -> Brand discount,
+    2026-11-06) -> that % instead of the common rate.
+    Read straight from the tables (discount_rate.py needs Flask, the PC does not have the website)."""
+    if brand and str(brand).strip():
+        cur.execute("SELECT to_regclass('brand_discount')")
+        if cur.fetchone()[0] is not None:
+            cur.execute("SELECT rate FROM brand_discount WHERE brand_key = LOWER(TRIM(%s))", (brand,))
+            own = cur.fetchone()
+            if own and own[0] is not None:
+                return float(own[0])
     cur.execute("SELECT to_regclass('app_settings')")
     if cur.fetchone()[0] is None:
         return None
@@ -104,6 +113,8 @@ def recalc_product(cur, fid, reason=""):
     if not row:
         log(f"{tag} {fid}: product not in competitor_table -> nothing to do")
         return None
+    cur.execute("SELECT brand FROM competitor_table WHERE fi_record_id = %s", (fid,))
+    brand = (cur.fetchone() or [None])[0]                  # brand with its own % (brand_discount) -> that %
     uae, old_sugg, lop, mop = row[0], row[1], row[2], row[3]
 
     # 1. offers: our price always + competitors only when IN STOCK with a link and a price
@@ -120,7 +131,7 @@ def recalc_product(cur, fid, reason=""):
     best_comp = min((pr for _, pr in comp), default=None)
 
     # 3. suggested price (suggested_price.py): cheapest competitor - X%, then LOP / MOP
-    rate = read_rate(cur)
+    rate = read_rate(cur, brand)
     if rate is None:
         cur.execute("UPDATE competitor_table SET least_price = %s, least_priced_website = %s WHERE fi_record_id = %s",
                     (least, sites, fid))

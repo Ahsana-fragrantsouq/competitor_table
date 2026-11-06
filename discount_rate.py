@@ -13,6 +13,11 @@ Where things are (change them here):
   SECTION 4  page box (HTML)   -> DISCOUNT_HTML + render_box(cur)  - shown inside the Settings page
   SECTION 5  save (route)      -> POST /settings/discount  - checks the number, saves it, recalculates prices
   SECTION 6  recalc hook       -> ON_DISCOUNT_CHANGE - app.py plugs in "recalculate all suggested prices"
+  SECTION 7  BRAND discount    -> table brand_discount: chosen brands get their OWN % (e.g. Afnan 5%), all other
+                                  brands keep the common rate above (2026-11-06, user: "if afnan brand need 5% and
+                                  other all 2%"). brand_rates(cur), BRAND_HTML, POST /settings/discount/brands
+                                  (+ /remove). Used by app.py SUGGEST_SQL, price_triggers.recalc_product and
+                                  db_triggers TRIGGER B (they read the table themselves: key = LOWER(TRIM(brand))).
 
 Used by:
   competitors_page.py  -> Settings page shows render_box(cur) when /settings/discount is opened
@@ -70,6 +75,7 @@ def get_discount_rate(cur):
     Works with any cursor (app.py uses plain tuples, the pages use dict rows)."""
     log(f"[DISCOUNT] get_discount_rate(): reading '{SETTING_KEY}' from app_settings")
     cur.execute(SETTINGS_CREATE)
+    cur.execute(BRAND_CREATE)                                    # brand rates (SECTION 7) read by SUGGEST_SQL too
     cur.execute("SELECT value FROM app_settings WHERE key = %s", (SETTING_KEY,))
     row = cur.fetchone()
     value = (row["value"] if isinstance(row, dict) else row[0]) if row else None
@@ -137,10 +143,11 @@ def render_box(cur):
     except ValueError:
         rate = None
     log(f"[DISCOUNT] Page opened: saved rate = {rate if rate is not None else 'NOT SET - suggested prices are not calculated'}")
-    return render_template_string(DISCOUNT_HTML, rate=rate, info=info, page_url=PAGE_URL,
+    html = render_template_string(DISCOUNT_HTML, rate=rate, info=info, page_url=PAGE_URL,
                                   min_rate=MIN_RATE, max_rate=MAX_RATE,
                                   saved=request.args.get("saved") == "1", error=request.args.get("error"),
                                   recalc=request.args.get("recalc"))
+    return html + render_brand_box(cur, rate)                     # SECTION 7: brands with their own %
 
 
 # ============================================================ SECTION 5: save (POST /settings/discount)
@@ -185,3 +192,169 @@ def discount_save():
 #     discount_rate.ON_DISCOUNT_CHANGE = recalc_after_discount_change
 # It must return True when the recalculation started, False when another run is busy.
 ON_DISCOUNT_CHANGE = None
+
+
+# ============================================================ SECTION 7: BRAND discount (own % for chosen brands)
+# Table brand_discount: one row per brand that has its OWN rate. Brands not in it use the common rate (SECTION 3).
+# Key = LOWER(TRIM(brand)) so "Afnan", "AFNAN " are the same brand. The SQL in app.py / price_triggers.py /
+# db_triggers.py reads this table directly (COALESCE(brand rate, common rate)).
+BRAND_CREATE = """
+CREATE TABLE IF NOT EXISTS brand_discount (
+    brand_key   TEXT PRIMARY KEY,             -- LOWER(TRIM(brand)), e.g. 'afnan'
+    brand       TEXT,                         -- name as shown, e.g. 'Afnan'
+    rate        NUMERIC(5,2) NOT NULL,        -- percent below the cheapest in-stock competitor, e.g. 5
+    updated_by  TEXT,
+    updated_at  TIMESTAMP DEFAULT NOW()
+);
+"""
+BRAND_URL = PAGE_URL + "/brands"
+
+
+def brand_rates(cur):
+    """[{brand_key, brand, rate, updated_by, updated_at}] sorted by rate, brand."""
+    cur.execute(BRAND_CREATE)
+    cur.execute("SELECT brand_key, brand, rate, updated_by, updated_at FROM brand_discount ORDER BY rate, brand")
+    rows = cur.fetchall()
+    cols = ("brand_key", "brand", "rate", "updated_by", "updated_at")
+    return [dict(r) if isinstance(r, dict) else dict(zip(cols, r)) for r in rows]
+
+
+BRAND_HTML = """
+{# ---- Brand discount: chosen brands get their own % (brand_discount table). Others keep the common rate. ---- #}
+<form class="dform" method="post" action="{{ brand_url }}" id="bdform"
+      onsubmit="if (event.submitter && event.submitter.name === 'brand_key') return true; var n=this.querySelectorAll('input[name=brand]:checked').length; console.log('[DISCOUNT-BRAND] Save: ' + this.rate.value + '% for ' + n + ' brands'); if(!n){alert('Tick at least one brand'); return false;}">
+  <label for="brate">Brand discount (own % for chosen brands)</label>
+  <div class="drow">
+    <input id="brate" name="rate" type="number" min="{{ min_rate }}" max="{{ max_rate }}" step="0.1" required placeholder="e.g. 5">
+    <span class="pct">%</span>
+    <button type="submit">Save for ticked brands</button>
+  </div>
+  <p class="hint">All other brands use the common rate{% if rate is not none %} ({{ '%g' % rate }}%){% endif %}.
+     Example: Afnan 5% &rarr; cheapest competitor AED 100 &rarr; suggested AED 95.</p>
+  {% if bsaved %}<p class="ok">{{ bsaved }}</p>{% endif %}
+  {% if berror %}<p class="err">{{ berror }}</p>{% endif %}
+  {# -- brands that already have their own % -- #}
+  {% if rows %}
+  <table class="bdtable">
+    <tr><th>Brand</th><th>Own %</th><th>Changed by</th><th></th></tr>
+    {% for r in rows %}
+    <tr><td><b>{{ r.brand }}</b></td><td>{{ '%g' % r.rate }}%</td>
+        <td class="muted">{{ r.updated_by or '-' }}{% if r.updated_at %}, {{ r.updated_at.strftime('%d %b %Y') }}{% endif %}</td>
+        <td><button type="submit" class="bdremove" formaction="{{ brand_url }}/remove" formnovalidate
+                    name="brand_key" value="{{ r.brand_key }}"
+                    onclick="return confirm('Remove the own % of {{ r.brand }}? It will use the common rate again.')">Remove</button></td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="hint">No brand has its own % yet.</p>{% endif %}
+  {# -- pick brands (search + tick) -- #}
+  <input type="search" class="bdsearch" placeholder="Search brands..." oninput="bdFilter(this.value)">
+  <div class="bdlist">
+    {% for b in brands %}
+    <label class="bdbrand" data-b="{{ b.brand|lower }}"><input type="checkbox" name="brand" value="{{ b.brand }}">
+      {{ b.brand }} <span class="muted">({{ b.n }}){% if b.key in own %} &middot; now {{ '%g' % own[b.key] }}%{% endif %}</span></label>
+    {% endfor %}
+  </div>
+  <p class="note">Saving or removing recalculates all suggested prices (automatic brands follow).</p>
+</form>
+<style>
+ .bdtable{width:100%;border-collapse:collapse;margin:10px 0 14px}
+ .bdtable th,.bdtable td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line)}
+ .bdtable .muted,.bdbrand .muted{color:var(--muted);font-size:13px}
+ .bdremove{background:none !important;border:1px solid var(--line) !important;color:var(--muted) !important;
+           padding:4px 10px !important;border-radius:8px;font-size:13px !important;cursor:pointer}
+ .bdsearch{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:10px;
+           padding:10px 12px;font-size:15px;margin:6px 0 10px;box-sizing:border-box}
+ .bdlist{max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:6px 10px}
+ .bdbrand{display:block;font-weight:400 !important;margin:0 !important;padding:6px 0;cursor:pointer}
+ .bdbrand[hidden]{display:none}
+</style>
+<script>
+  function bdFilter(q) {                     // brand search box: show only brands containing the typed text
+    q = (q || "").toLowerCase().trim();
+    document.querySelectorAll(".bdbrand").forEach(function (l) { l.hidden = q && l.dataset.b.indexOf(q) < 0; });
+  }
+  console.log("[DISCOUNT-BRAND] {{ rows|length }} brands with their own %");
+</script>
+"""
+
+
+def render_brand_box(cur, common_rate):
+    """HTML of the Brand discount box (under the common rate box)."""
+    rows = brand_rates(cur)
+    # one line per brand whatever the capitals ("armaf" + "Armaf" = one brand, same key as the price SQL)
+    cur.execute("SELECT MAX(TRIM(brand)) AS brand, COUNT(*) AS n FROM competitor_table "
+                "WHERE brand IS NOT NULL AND TRIM(brand) <> '' GROUP BY LOWER(TRIM(brand)) ORDER BY LOWER(TRIM(brand))")
+    brands = []
+    for r in cur.fetchall():
+        b, n = (r["brand"], r["n"]) if isinstance(r, dict) else r
+        brands.append({"brand": b, "n": n, "key": b.lower().strip()})
+    own = {r["brand_key"]: float(r["rate"]) for r in rows}
+    log(f"[DISCOUNT-BRAND] Page: {len(rows)} brands with own %, {len(brands)} brands to pick from")
+    return render_template_string(BRAND_HTML, rows=rows, brands=brands, own=own, rate=common_rate,
+                                  brand_url=BRAND_URL, min_rate=MIN_RATE, max_rate=MAX_RATE,
+                                  bsaved=request.args.get("bsaved"), berror=request.args.get("berror"))
+
+
+def _brand_done(msg=None, error=None):
+    """Recalculate all suggested prices, then back to the page with a message."""
+    from urllib.parse import quote
+    if error:
+        return redirect(f"{PAGE_URL}?berror={quote(error)}")
+    started = ON_DISCOUNT_CHANGE() if ON_DISCOUNT_CHANGE else False
+    log(f"[DISCOUNT-BRAND] Recalculation {'started now' if started else 'not started now (another run busy)'}")
+    msg += (" All suggested prices are being recalculated (about 1 minute)." if started
+            else " Another run is busy - it will use the new % when it reaches the price step.")
+    return redirect(f"{PAGE_URL}?bsaved={quote(msg)}")
+
+
+@discount_bp.route(BRAND_URL, methods=["POST"])
+def brand_discount_save():
+    """Save one % for every ticked brand (insert or change)."""
+    raw = (request.form.get("rate") or "").strip().replace("%", "")
+    picked = [b.strip() for b in request.form.getlist("brand") if b.strip()]
+    user = g.get("user") or "unknown"
+    log(f"[DISCOUNT-BRAND] {user} wants {raw!r}% for {picked}")
+    try:
+        rate = round(float(raw), 2)
+    except ValueError:
+        return _brand_done(error="Please write a number, e.g. 5")
+    if not MIN_RATE <= rate <= MAX_RATE:
+        return _brand_done(error=f"The rate must be between {MIN_RATE} and {MAX_RATE}")
+    if not picked:
+        return _brand_done(error="Tick at least one brand")
+    conn = db_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(BRAND_CREATE)
+        for b in picked:
+            cur.execute("""INSERT INTO brand_discount (brand_key, brand, rate, updated_by) VALUES (%s, %s, %s, %s)
+                           ON CONFLICT (brand_key) DO UPDATE SET brand = EXCLUDED.brand, rate = EXCLUDED.rate,
+                               updated_by = EXCLUDED.updated_by, updated_at = NOW()""",
+                        (b.lower(), b, rate, user))
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    log(f"[DISCOUNT-BRAND] Saved {rate}% for {len(picked)} brands by {user}: {picked}")
+    return _brand_done(f"Saved: {', '.join(picked)} = {rate:g}%.")
+
+
+@discount_bp.route(BRAND_URL + "/remove", methods=["POST"])
+def brand_discount_remove():
+    """Remove a brand's own % -> it uses the common rate again."""
+    key = (request.form.get("brand_key") or "").strip()
+    user = g.get("user") or "unknown"
+    conn = db_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(BRAND_CREATE)
+        cur.execute("DELETE FROM brand_discount WHERE brand_key = %s RETURNING brand", (key,))
+        row = cur.fetchone()
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    if not row:
+        return _brand_done(error="That brand had no own % any more")
+    log(f"[DISCOUNT-BRAND] {user} removed the own % of {row[0]} -> common rate again")
+    return _brand_done(f"Removed: {row[0]} uses the common rate again.")

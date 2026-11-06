@@ -140,10 +140,18 @@ BEGIN
     IF to_regclass('app_settings') IS NOT NULL THEN
         SELECT value INTO v_text FROM app_settings WHERE key = '{RATE_KEY}';
     END IF;
-    IF v_text IS NULL OR v_text !~ '^\\s*[0-9]+(\\.[0-9]+)?\\s*$' THEN
+    v_rate := NULL;
+    IF v_text IS NOT NULL AND v_text ~ '^\\s*[0-9]+(\\.[0-9]+)?\\s*$' THEN
+        v_rate := v_text::NUMERIC;
+    END IF;
+    -- brand with its OWN % (Settings -> Auto discount rate -> Brand discount, table brand_discount) -> that %
+    IF to_regclass('brand_discount') IS NOT NULL THEN
+        SELECT COALESCE((SELECT bd.rate FROM brand_discount bd WHERE bd.brand_key = LOWER(TRIM(NEW.brand))), v_rate)
+          INTO v_rate;
+    END IF;
+    IF v_rate IS NULL THEN
         RETURN NEW;
     END IF;
-    v_rate := v_text::NUMERIC;
 
     -- 3. suggested price = cheapest competitor - X%, then LOP / MOP (no competitor in stock -> no suggested price)
     IF v_best IS NULL THEN

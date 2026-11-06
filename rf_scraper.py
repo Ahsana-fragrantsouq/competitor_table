@@ -108,6 +108,35 @@ def rf_volume(*texts):
 
 
 # ============================================================ SECTION 2: sections (UAE home page menu)
+def safe_eval(page, js, tries=6):
+    """page.evaluate that survives a page reload. LIVE 2026-11-05 on the PC: the Reef home page navigated again while
+    its menu was read -> "Execution context was destroyed, most likely because of a navigation". -> wait until the
+    page has settled, then try again (up to `tries` times)."""
+    for i in range(tries):
+        try:
+            return page.evaluate(js)
+        except Exception as ex:
+            if "context was destroyed" not in str(ex) and "navigat" not in str(ex).lower() or i == tries - 1:
+                raise
+            log(f"[RF] page reloaded while reading ({page.url}) -> waiting and trying again ({i + 1}/{tries - 1})")
+            try:
+                page.wait_for_load_state("load", timeout=30000)
+            except Exception:
+                pass
+            page.wait_for_timeout(3000)
+
+
+def goto(page, url):
+    """Open a page and let it settle (Salla shops redirect / reload once for the country / language)."""
+    page.goto(url, wait_until="domcontentloaded", timeout=90000)
+    try:
+        page.wait_for_load_state("networkidle", timeout=20000)
+    except Exception:
+        pass                                             # a shop that never goes quiet -> just continue
+    page.wait_for_timeout(3000)
+    log(f"[RF] opened {url} -> now at {page.url}")
+
+
 JS_MENU = """() => Array.from(document.querySelectorAll('a[href]'))
   .filter(a => /\\/c\\d{5,}/.test(a.getAttribute('href') || ''))
   .map(a => ({text: (a.innerText || a.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' '), url: a.href}))"""
@@ -115,11 +144,10 @@ JS_MENU = """() => Array.from(document.querySelectorAll('a[href]'))
 
 def rf_sections(page):
     """Category links of the UAE menu that look like perfumes / offers / gift sets -> [(label, url)]."""
-    page.goto(SITE + "/en", wait_until="domcontentloaded", timeout=90000)
-    page.wait_for_timeout(5000)
+    goto(page, SITE + "/en")
     seen, out = set(), list(RF_EXTRA_SECTIONS)
     seen.update(re.search(r"c\d+", u).group(0) for _, u in out)
-    for a in page.evaluate(JS_MENU):
+    for a in safe_eval(page, JS_MENU):
         cid = (re.search(r"/c(\d{5,})", a["url"]) or [None, None])[1]
         text = a["text"]
         if not cid or "c" + cid in seen or not text:
@@ -166,15 +194,15 @@ def rf_cards(page):
     """Scroll / click 'load more' until the number of cards stops growing, then read every card."""
     last, same = -1, 0
     for _ in range(80):
-        n = page.evaluate("() => document.querySelectorAll('custom-salla-product-card, salla-product-card').length")
+        n = safe_eval(page, "() => document.querySelectorAll('custom-salla-product-card, salla-product-card').length")
         same = same + 1 if n == last else 0
         if same >= 3:
             break
         last = n
-        page.evaluate(JS_MORE)
+        safe_eval(page, JS_MORE)
         page.wait_for_timeout(2500)
     rows = []
-    for c in page.evaluate(JS_CARDS):
+    for c in safe_eval(page, JS_CARDS):
         if not c["url"]:
             continue
         url = c["url"].split("?")[0].split("#")[0]
@@ -237,8 +265,7 @@ def main():
         page = browser.contexts[0].new_page()
         for label, url in rf_sections(page):
             log(f"\n[RF] ===== {label}: {url}")
-            page.goto(url, wait_until="domcontentloaded", timeout=90000)
-            page.wait_for_timeout(5000)
+            goto(page, url)
             rows, ok = rf_cards(page)                            # UAE product cards (AED, ae.reefperfumes.com links)
             kept = [r for r in rows if rf_keep(r["name"])]
             skipped += [r["name"] for r in rows if not rf_keep(r["name"])]

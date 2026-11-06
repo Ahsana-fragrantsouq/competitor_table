@@ -2144,7 +2144,7 @@ WHERE c.fi_record_id = w.fi_record_id;
 # No rate saved yet -> suggested prices are left as they are (nothing is guessed).
 SUGGEST_DECIMALS = 0        # rounding: 78.85 -> 79 (nearest whole AED; 2 = keep 78.85)
 
-# %(below)s = rate / 100, e.g. 2.5% -> 0.025 (passed in when the SQL runs)
+# %(rate)s = the common rate in %, e.g. 2 (passed in when the SQL runs); a brand in brand_discount uses its own %
 SUGGEST_SQL = f"""
 UPDATE competitor_table SET suggested_price = NULL;
 
@@ -2196,7 +2196,8 @@ WITH competitor_offers AS (
 )
 UPDATE competitor_table c
 -- LOP / MOP (price_limits.py clamp_sql): below LOP -> LOP, above MOP -> MOP, empty = no limit
-SET suggested_price = {price_limits.clamp_sql(f"ROUND(m.min_price * (1 - %(below)s), {SUGGEST_DECIMALS})")}
+-- rate = the brand's OWN rate (Settings -> Auto discount rate -> Brand discount, table brand_discount) else the common rate (no percent sign here: psycopg2 reads it)
+SET suggested_price = {price_limits.clamp_sql(f"ROUND(m.min_price * (1 - COALESCE((SELECT bd.rate FROM brand_discount bd WHERE bd.brand_key = LOWER(TRIM(c.brand))), %(rate)s) / 100.0), {SUGGEST_DECIMALS})")}
 FROM (SELECT fi_record_id, MIN(price) AS min_price FROM competitor_offers GROUP BY fi_record_id) m
 WHERE c.fi_record_id = m.fi_record_id;
 """
@@ -2253,8 +2254,11 @@ def ct_update_least():
             log("[CT-LEAST] WARNING: no Auto discount rate saved (Settings -> Auto discount rate) "
                 "-> suggested prices NOT recalculated")
         else:
-            log(f"[CT-LEAST] Suggested price = cheapest in-stock competitor - {rate}%")
-            cur.execute(SUGGEST_SQL, {"below": rate / 100})
+            cur.execute("SELECT COUNT(*) FROM brand_discount")      # made by get_discount_rate()
+            own = cur.fetchone()[0]
+            log(f"[CT-LEAST] Suggested price = cheapest in-stock competitor - {rate}% "
+                f"({own} brands with their own %, Settings -> Auto discount rate -> Brand discount)")
+            cur.execute(SUGGEST_SQL, {"rate": rate})
             log(f"[CT-LEAST] Suggested price written for {cur.rowcount} products "
                 f"(products with no in-stock competitor get no suggested price)")
         cur.execute("SELECT COUNT(*) FROM competitor_table WHERE suggested_price IS NOT NULL")
