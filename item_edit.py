@@ -149,6 +149,8 @@ EDIT_CSS = """ /* Edit (admins only, item_edit.py) */
  .editbtns .save{background:#f2d675;color:#1c1b19;border:0;border-radius:10px;padding:8px 18px;font-weight:600;cursor:pointer}
  .editbtns .cancel{background:transparent;color:var(--muted);border:1px solid var(--line);border-radius:10px;padding:8px 14px;cursor:pointer}
  .editbtns .save:disabled{opacity:.6;cursor:wait}
+ .editbtns .delete{background:transparent;color:#e8836f;border:1px solid #e8836f;border-radius:10px;padding:8px 14px;
+                   cursor:pointer;margin-right:auto}
  .editmsg{font-size:13px;margin-right:auto} .editmsg.err{color:#e0806c}
  .toshop{flex-basis:100%;display:flex;justify-content:flex-end;align-items:center;gap:7px;font-size:14px;color:var(--text);cursor:pointer}
  .toshop input{width:17px;height:17px;accent-color:#f2d675;margin:0}
@@ -198,6 +200,9 @@ EDIT_FORM = """{% if admin %}
       {# ticked = after Save also update the product in Shopify (Shopify API, SECTION 5); no name -> not a field #}
       <label class="toshop"><input type="checkbox" class="toshop-box" checked> Update in shopify</label>
       <span class="editmsg" id="editmsg-{{ r.fi_record_id }}">SKU is not editable. Product title = Brand + Perfume name + Size + Type + Category + Product type.</span>
+      {# Delete = ONLY this Item Master card (user's choice 2026-11-06): Competitor table / Airtable / Shopify untouched #}
+      <button type="button" class="delete" onclick="itemDelete('{{ r.fi_record_id }}', this)"
+              data-name="{{ (r.product_name or r.sku or r.fi_record_id)|e }}">Delete</button>
       <button type="button" class="cancel" onclick="editClose('{{ r.fi_record_id }}')">Cancel</button>
       <button type="submit" class="save">Save</button>
     </div>
@@ -305,7 +310,25 @@ EDIT_JS = """  // ---- Edit (admins only, item_edit.py) ----
       btn.disabled = false; btn.textContent = "Save";
     }
   }
-""".replace("@@SAVE_URL@@", SAVE_URL)
+  // ---- Delete (admins): removes ONLY the Item Master card (item_master.py POST /item-master/delete) ----
+  async function itemDelete(fi, btn) {
+    var name = btn.dataset.name, msg = document.getElementById("editmsg-" + fi);
+    if (!confirm("Delete from Item Master?\n\n" + name + "\n\nOnly the Item Master card is deleted - the Competitor table, " +
+                 "Airtable and the website (Shopify) are NOT changed. A later Load from Airtable will not bring it back.")) return;
+    btn.disabled = true; btn.textContent = "Deleting ...";
+    try {
+      var r = await fetch("@@DELETE_URL@@", {method: "POST", headers: {"Content-Type": "application/json"},
+                          body: JSON.stringify({fi_record_id: fi})});
+      var d = await r.json().catch(function () { return {ok: false, error: "HTTP " + r.status}; });
+      if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
+      console.log("[ITEM-DELETE] " + fi + " deleted");
+      var card = btn.closest(".card"); if (card) card.remove(); else location.reload();
+    } catch (e) {
+      msg.className = "editmsg err"; msg.textContent = "Not deleted: " + e.message;
+      btn.disabled = false; btn.textContent = "Delete";
+    }
+  }
+""".replace("@@SAVE_URL@@", SAVE_URL).replace("@@DELETE_URL@@", "/item-master/delete")
 
 
 # ============================================================ SECTION 4: save

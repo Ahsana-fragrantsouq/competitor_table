@@ -349,6 +349,13 @@ def load_all(by="auto", only_brands=None):
         try:
             cur = conn.cursor()
             cur.execute(IM_CREATE)
+            cur.execute(DELETED_CREATE)                  # deleted on the Item Master page -> NOT loaded again
+            cur.execute("SELECT fi_record_id FROM item_master_deleted")
+            gone = {r[0] for r in cur.fetchall()}
+            if gone:
+                before = len(rows)
+                rows = [r for r in rows if r[0] not in gone]
+                log(f"[ITEM-MASTER] {before - len(rows)} products skipped: deleted on the Item Master page")
             conn.commit()
             sql = (f"INSERT INTO item_master (fi_record_id, airtable_fields, {', '.join(cols)}, loaded_at) VALUES %s "
                    f"ON CONFLICT (fi_record_id) DO UPDATE SET airtable_fields = EXCLUDED.airtable_fields, "
@@ -696,6 +703,50 @@ def item_master_edit():
     if err:
         return jsonify({"ok": False, "error": err}), 400
     return jsonify({"ok": True, "changed": changed, "new_options": added, "shopify": shopify, "airtable": airtable})
+
+
+# ============================================================ SECTION 7b: DELETE (2026-11-06, user's choice)
+# "add an option to delete from item master" -> ONLY item_master (not the Competitor table, Airtable or Shopify).
+# The id is remembered in table item_master_deleted -> a later Load from Airtable does NOT bring the card back
+# (load_all skips those ids). To bring one back: DELETE FROM item_master_deleted WHERE fi_record_id = '...' + load.
+DELETED_CREATE = """
+CREATE TABLE IF NOT EXISTS item_master_deleted (
+    fi_record_id  TEXT PRIMARY KEY,
+    sku           TEXT,
+    product_name  TEXT,
+    deleted_by    TEXT,
+    deleted_at    TIMESTAMP DEFAULT NOW()
+);
+"""
+
+
+@item_master_bp.post("/item-master/delete")
+def item_master_delete():
+    """Admin 'Delete' (in the Edit box): remove ONE product from item_master only."""
+    if not is_admin():
+        log(f"[ITEM-DELETE] Refused: {g.get('user')} is not an admin")
+        return jsonify({"ok": False, "error": "admins only"}), 403
+    fid = ((request.get_json(silent=True) or {}).get("fi_record_id") or "").strip()
+    if not fid.startswith(("rec", "new")):
+        return jsonify({"ok": False, "error": "no product given"}), 400
+    conn = _hooks["connect"]()
+    try:
+        cur = conn.cursor()
+        cur.execute(DELETED_CREATE)
+        cur.execute("DELETE FROM item_master WHERE fi_record_id = %s RETURNING sku, product_name", (fid,))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return jsonify({"ok": False, "error": "product not in Item Master any more"}), 404
+        cur.execute("INSERT INTO item_master_deleted (fi_record_id, sku, product_name, deleted_by) VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (fi_record_id) DO UPDATE SET deleted_by = EXCLUDED.deleted_by, deleted_at = NOW()",
+                    (fid, row[0], row[1], g.get("user")))
+        conn.commit()
+    finally:
+        conn.close()
+    log(f"[ITEM-DELETE] {g.get('user')} deleted {fid} ({row[0]} / {row[1]}) from Item Master only "
+        f"(Competitor table / Airtable / Shopify untouched)")
+    return jsonify({"ok": True})
 
 
 @item_master_bp.get("/item-master/load")
