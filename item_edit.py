@@ -315,7 +315,7 @@ EDIT_JS = """  // ---- Edit (admins only, item_edit.py) ----
   // ---- Delete (admins): removes ONLY the Item Master card (item_master.py POST /item-master/delete) ----
   async function itemDelete(fi, btn) {
     var name = btn.dataset.name;
-    if (!confirm("Delete from Item Master?\n\n" + name + "\n\nOnly the Item Master card is deleted - the Competitor table, " +
+    if (!confirm("Delete from Item Master?\\n\\n" + name + "\\n\\nOnly the Item Master card is deleted - the Competitor table, " +
                  "Airtable and the website (Shopify) are NOT changed. A later Load from Airtable will not bring it back.")) return;
     btn.disabled = true; btn.textContent = "Deleting ...";
     try {
