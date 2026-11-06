@@ -3151,6 +3151,20 @@ shopify_prices.init(connect=pg_conn)                                         # I
 item_master.init(connect=pg_conn, read_airtable=at_list,       # Item Master: Airtable -> item_master (item_master.py)
                  fi_table=FI_TABLE, brands_table=BRANDS_TABLE, brands_name_field=BRANDS_NAME_FIELD,
                  run_secret=RUN_SECRET)
+
+
+def at_find_brand(name):
+    """Airtable brands record id of a brand name (any capitals) - Item Master Save writes Brand (a LINKED field)."""
+    safe = str(name).replace("\\", "").replace("'", "\\'").strip().lower()
+    recs = at_list(BRANDS_TABLE, {"filterByFormula": f"LOWER(TRIM({{{BRANDS_NAME_FIELD}}}))='{safe}'",
+                                  "fields[]": BRANDS_NAME_FIELD, "pageSize": 5})
+    log(f"[ITEM-AIRTABLE] brand {name!r} -> {recs[0]['id'] if recs else 'NOT in the brands table'}")
+    return recs[0]["id"] if recs else None
+
+
+item_master._hooks.update(                                     # Item Master Save -> also Airtable (item_edit SECTION 7)
+    write_airtable=lambda fid, fields: airtable_update_fields(fid, fields, "ITEM-AIRTABLE"),
+    find_brand=at_find_brand)
 description_gen.init(connect=pg_conn,                           # 'Create product description' (description_gen.py)
                      write_airtable=lambda fid, fields: airtable_update_fields(fid, fields, "DESC"))  # only if ALSO_WRITE_AIRTABLE
 shopify_create.init(connect=pg_conn)                           # 'Create in website' (shopify_create.py)

@@ -206,6 +206,14 @@ def to_number(v):
     return round(n, 2)
 
 
+# Columns that do NOT have to come from Airtable (2026-11-06, user asked why the page warned "Not found in Airtable:
+# kuwait_comparison_price, america_comparison_price, qatar_comparison_price"): the comparison prices are loaded once
+# from SHOPIFY (shopify_prices.py) and then edited in Item Master -> a missing Airtable field is normal for them:
+# no warning on the page (still written in the log), and an Airtable field with that name is still used if it exists.
+NOT_FROM_AIRTABLE = {"uae_comparison_price", "asia_comparison_price", "kuwait_comparison_price",
+                     "america_comparison_price", "qatar_comparison_price"}
+
+
 def pick_fields(seen_names):
     """Column -> real Airtable field name, using the names seen in the downloaded records.
     Returns (found {column: airtable name}, missing [column, ...])."""
@@ -300,6 +308,10 @@ def load_all(by="auto", only_brands=None):
                     linked[col] = {}
             log(f"[ITEM-MASTER] {col}: {len(linked[col])} linked records read to turn ids into values")
         log("[ITEM-MASTER] Fields used: " + ", ".join(f"{c}<-'{n}'" for c, n in found.items()))
+        optional = [c for c in missing if c in NOT_FROM_AIRTABLE]
+        if optional:
+            log(f"[ITEM-MASTER] Not in Airtable (normal - come from Shopify / Item Master): {', '.join(optional)}")
+        missing = [c for c in missing if c not in NOT_FROM_AIRTABLE]
         if missing:
             log(f"[ITEM-MASTER] NOT FOUND in Airtable: {', '.join(missing)} -> add the real field name in "
                 f"item_master.py FIELDS. Airtable field names seen: {', '.join(sorted(seen))}")
@@ -473,7 +485,8 @@ IM_HTML = """<!doctype html><html><head><title>Item Master - Competitors</title>
   @@SP_BUTTON@@
   {# "Load from Airtable now" button REMOVED - load only with /item-master/load?secret=XXX #}
 </div>
-{% if last.missing %}<div class="info warn">Not found in Airtable (left empty): {{ last.missing|join(', ') }}
+{% set warn_missing = (last.missing or [])|reject('in', not_from_airtable)|list %}
+{% if warn_missing %}<div class="info warn">Not found in Airtable (left empty): {{ warn_missing|join(', ') }}
   - tell Claude the real Airtable field names.</div>{% endif %}
 
 {# one card per product. Stock qty is NOT on the page (database only); comparison prices are under the prices #}
@@ -641,14 +654,15 @@ def item_master_page():
     log(f"[ITEM-MASTER] Page shown to {g.get('user')}: search {q!r}, page {page}/{pages}, {total} products")
     return render_template_string(
         IM_HTML, nav_html=competitors_page.render_nav("item", "im-list", counts), nav_css=competitors_page.NAV_CSS,
-        rows=rows, total=total, q=q, page=page, pages=pages, shown=SHOWN, labels=LABELS, last=last,
+        rows=rows, total=total, q=q, page=page, pages=pages, shown=SHOWN, labels=LABELS, last=last, not_from_airtable=sorted(NOT_FROM_AIRTABLE),
         running=_load_lock.locked(), admin=is_admin(), msg=request.args.get("msg"), edit_opts=edit_opts,
         sorts=sorts, sort_fields=sort_option.SORT_FIELDS, sort_qs=sort_option.sort_qs(sorts))
 
 
 @item_master_bp.post(item_edit.SAVE_URL)
 def item_master_edit():
-    """Admin 'Edit' -> Save: changed fields -> item_master (+ brand / barcode -> competitor_table). No Airtable."""
+    """Admin 'Edit' -> Save: changed fields -> item_master (+ brand / barcode -> competitor_table), Shopify (box
+    ticked) and Airtable (item_edit.py SECTION 7, 2026-11-06)."""
     if not is_admin():
         log(f"[ITEM-EDIT] Refused: {g.get('user')} is not an admin")
         return jsonify({"ok": False, "error": "admins only"}), 403
@@ -660,9 +674,16 @@ def item_master_edit():
     try:
         ensure_table(conn)
         changed, added, err = item_edit.save_edit(conn, fid, body.get("fields") or {}, g.get("user"))
-        shopify = None
+        shopify = airtable = None
         if not err and body.get("to_shopify"):          # "Update in shopify" ticked (item_edit.py SECTION 5)
             shopify = item_edit.shopify_update(conn, fid, changed)   # changed prices only are sent
+        if not err and changed:                         # also Airtable (user's choice 2026-11-06)
+            try:
+                airtable = item_edit.airtable_update(conn, fid, changed, _hooks.get("write_airtable"),
+                                                     _hooks.get("find_brand"))
+            except Exception as ex:                     # never undoes our database / Shopify
+                log(f"[ITEM-AIRTABLE] {fid}: ERROR {ex}")
+                airtable = {"ok": False, "error": f"Airtable not updated ({str(ex)[:120]})"}
     except Exception as ex:
         conn.rollback()
         log(f"[ITEM-EDIT] {fid}: ERROR {ex}")
@@ -671,7 +692,7 @@ def item_master_edit():
         conn.close()
     if err:
         return jsonify({"ok": False, "error": err}), 400
-    return jsonify({"ok": True, "changed": changed, "new_options": added, "shopify": shopify})
+    return jsonify({"ok": True, "changed": changed, "new_options": added, "shopify": shopify, "airtable": airtable})
 
 
 @item_master_bp.get("/item-master/load")

@@ -2,7 +2,7 @@
 "Edit" on Item Master cards  (ADMIN ONLY)
 =========================================
 Every field shown on the card can be changed EXCEPT the product title (product_name) and the SKU.
-Saved in OUR database only (no Airtable):
+Saved in OUR database AND (since 2026-11-06, SECTION 7) the changed fields also in Airtable:
   - item_master: the changed columns + edited_fields (JSONB {column: when}) so a later Airtable load
     (/item-master/load?secret=) never overwrites what an admin changed here (see item_master.WEBSITE_COLS_SQL)
   - competitor_table: brand + barcode are copied there too (same product = same fi_record_id)
@@ -282,7 +282,16 @@ EDIT_JS = """  // ---- Edit (admins only, item_edit.py) ----
       if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
       console.log("[ITEM-EDIT] " + fi + ": saved " + (d.changed || []).join(", ") +
                   ((d.new_options || []).length ? " | new options: " + d.new_options.join(", ") : "") +
-                  (d.shopify ? " | shopify: " + JSON.stringify(d.shopify) : ""));
+                  (d.shopify ? " | shopify: " + JSON.stringify(d.shopify) : "") +
+                  (d.airtable ? " | airtable: " + JSON.stringify(d.airtable) : ""));
+      if (d.airtable && !d.airtable.ok) {                 // saved here (+ Shopify), but Airtable refused a field
+        msg.className = "editmsg err";
+        msg.textContent = "Saved in our database" + (d.shopify && d.shopify.ok ? " and Shopify" : "") +
+                          ", but " + d.airtable.error;
+        btn.disabled = false; btn.textContent = "Save";
+        console.log("[ITEM-EDIT] " + fi + ": airtable " + JSON.stringify(d.airtable));
+        if (!(d.shopify && !d.shopify.ok)) return;
+      }
       if (d.shopify && !d.shopify.ok) {                   // saved here, but Shopify did not take it -> say so, no reload
         msg.className = "editmsg err";
         msg.textContent = "Saved in our database, but NOT in Shopify: " + d.shopify.error;
@@ -557,3 +566,62 @@ def shopify_set_uae_price(conn, fid, price):
         return {"ok": False, "error": f"Shopify error: {str(ex)[:150]}"}
     return {"ok": True, "answer": f"Shopify product {pid} price {price:.2f}"}
 
+
+
+
+# ============================================================ SECTION 7: ALSO UPDATE AIRTABLE (2026-11-06, user's choice)
+# User: "when update in item master will that update in airtable" -> "yes also update in airtable".
+# After every Item Master Save the CHANGED fields (+ the rebuilt Product Name) are written to Airtable French
+# Inventories too (only products from Airtable: id rec...; "new..." items made on our website are not in Airtable).
+# Airtable field names = the ones the last Airtable load found (item_master summary 'found'), else the first name
+# in item_master.FIELDS. Brand is a LINKED field in Airtable -> the brand's record id is looked up in the brands table.
+# Airtable refuses a field (e.g. Product Name is a formula there) -> the others are still written one by one;
+# the card says which field Airtable did not take. Our database + Shopify are never undone.
+AIRTABLE_ON = True          # False = Item Master Save writes NO Airtable again
+AIRTABLE_SKIP = set()       # columns never written to Airtable (e.g. {"product_name"} if Airtable computes it)
+
+
+def airtable_update(conn, fid, changed, write, find_brand=None):
+    """Write the changed columns of ONE product to Airtable. write(fid, {field: value}) -> (ok, error).
+    find_brand(name) -> Airtable brands record id or None. Returns {"ok", "sent", "failed"} or None (nothing to do)."""
+    import item_master
+    cols = [c for c in changed if c not in AIRTABLE_SKIP]
+    if not AIRTABLE_ON or not cols or not str(fid).startswith("rec") or not write:
+        log(f"[ITEM-AIRTABLE] {fid}: nothing to write (on={AIRTABLE_ON}, columns={cols})")
+        return None
+    cur = conn.cursor()
+    found = (item_master.read_summary(cur) or {}).get("found") or {}
+    names = {c: (found.get(c) or (n[0] if n else None)) for c, _, n, _ in item_master.FIELDS}
+    cur.execute(f"SELECT {', '.join(cols)} FROM item_master WHERE fi_record_id = %s", (fid,))
+    row = dict(zip(cols, cur.fetchone() or [None] * len(cols)))
+    fields, failed = {}, {}
+    for c in cols:
+        name = names.get(c)
+        if not name:
+            failed[c] = "no Airtable field name known"
+            continue
+        v = row.get(c)
+        if c in MONEY_COLS:
+            v = float(v) if v is not None else None
+        elif c == "brand":                                   # linked field -> [brand record id]
+            rid = find_brand(v) if (find_brand and v) else None
+            if v and not rid:
+                failed[c] = f"brand '{v}' not found in the Airtable brands table"
+                continue
+            v = [rid] if rid else []
+        else:
+            v = None if v in (None, "") else str(v)
+        fields[name] = v
+    sent = []
+    if fields:
+        ok, err = write(fid, fields)
+        if ok:
+            sent = list(fields)
+        else:                                                # one field refused -> try them one by one
+            log(f"[ITEM-AIRTABLE] {fid}: Airtable refused the whole update ({err}) -> field by field")
+            for name, v in fields.items():
+                ok1, err1 = write(fid, {name: v})
+                (sent.append(name) if ok1 else failed.__setitem__(name, err1))
+    log(f"[ITEM-AIRTABLE] {fid}: written to Airtable {sent or '-'} | NOT written {failed or '-'}")
+    return {"ok": not failed, "sent": sent, "failed": failed,
+            "error": ("Airtable did not take: " + ", ".join(f"{k} ({v})" for k, v in failed.items())) if failed else None}
