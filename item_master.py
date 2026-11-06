@@ -82,16 +82,19 @@ FIELDS = [
     ("kuwait_price",         "NUMERIC(12,2)", ["Kuwait Price"],                                        True),
     ("qatar_price",          "NUMERIC(12,2)", ["Qatar Price"],                                         True),
     # comparison prices: SHOWN under each price + editable (user's request 2026-11-03)
+    # real Airtable names (user's screenshot 2026-11-06): 'UAE Comparison Price', 'kuwait_comparison_price',
+    # 'america_comparison_price', 'qatar_comparison_price' -> FIRST in the lists: an EMPTY Airtable column is not
+    # in the download, so Item Master Save (item_edit SECTION 7) writes to the FIRST name of the list
     ("uae_comparison_price", "NUMERIC(12,2)", ["UAE Comparison Price", "UAE Compare Price",
                                                "UAE Compare At Price", "UAE Compare at price"],        True),
     ("asia_comparison_price", "NUMERIC(12,2)", ["Asia Comparison Price", "Asia Compare Price",
                                                 "Asia Compare At Price"],                              True),
-    ("kuwait_comparison_price", "NUMERIC(12,2)", ["Kuwait Comparison Price", "Kuwait Compare Price",
+    ("kuwait_comparison_price", "NUMERIC(12,2)", ["kuwait_comparison_price", "Kuwait Comparison Price", "Kuwait Compare Price",
                                                   "Kuwait Compare At Price"],                          True),
-    ("america_comparison_price", "NUMERIC(12,2)", ["America Comparison Price", "America Compare Price",
+    ("america_comparison_price", "NUMERIC(12,2)", ["america_comparison_price", "America Comparison Price", "America Compare Price",
                                                    "USA Comparison Price", "US Comparison Price",
                                                    "America Compare At Price"],                        True),
-    ("qatar_comparison_price", "NUMERIC(12,2)", ["Qatar Comparison Price", "Qatar Compare Price",
+    ("qatar_comparison_price", "NUMERIC(12,2)", ["qatar_comparison_price", "Qatar Comparison Price", "Qatar Compare Price",
                                                  "Qatar Compare At Price"],                            True),
     ("stock_qty",            "NUMERIC(12,2)", ["Qty given in shopify", "Shopify Qty"],                False),
     ("type",                 "TEXT",          ["Type"],                                                True),

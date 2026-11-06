@@ -578,7 +578,8 @@ def shopify_set_uae_price(conn, fid, price):
 # Airtable refuses a field (e.g. Product Name is a formula there) -> the others are still written one by one;
 # the card says which field Airtable did not take. Our database + Shopify are never undone.
 AIRTABLE_ON = True          # False = Item Master Save writes NO Airtable again
-AIRTABLE_SKIP = set()       # columns never written to Airtable (e.g. {"product_name"} if Airtable computes it)
+AIRTABLE_SKIP = {"product_name"}   # never written: Airtable's Product Name is a FORMULA (live 2026-11-06: error 422)
+                                   # -> Airtable rebuilds it itself from Brand / Perfume Name / Size ... we send
 
 
 def airtable_update(conn, fid, changed, write, find_brand=None):
