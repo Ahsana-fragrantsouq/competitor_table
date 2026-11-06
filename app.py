@@ -2401,6 +2401,33 @@ def recalc_after_discount_change():
 
 
 discount_rate.ON_DISCOUNT_CHANGE = recalc_after_discount_change   # discount_rate.py SECTION 6
+
+
+def recalc_brands(brands):
+    """Settings -> Brand discount saved / removed: recalculate least + suggested price of THESE brands' products only
+    (was: the full recalculation of every product - slow, 2026-11-06). Automatic brands among them -> their new
+    price goes out like after a normal price run (auto_apply in the background). Returns the number of products."""
+    keys = [str(b).strip().lower() for b in brands if str(b).strip()]
+    conn = pg_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT fi_record_id FROM competitor_table WHERE LOWER(TRIM(brand)) = ANY(%s)", (keys,))
+        fids = [r[0] for r in cur.fetchall()]
+        for fid in fids:
+            price_triggers.recalc_product(cur, fid, reason="brand discount")
+        conn.commit()
+        auto = [b for b in auto_brands(cur) if b in keys]          # automatic brands among the changed ones
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    log(f"[DISCOUNT-BRAND] {len(fids)} products of {keys} recalculated | automatic among them: {auto or '-'}")
+    if auto:
+        threading.Thread(target=lambda: auto_apply(auto, reason="brand discount changed"), daemon=True).start()
+    return len(fids)
+
+
+discount_rate.ON_BRAND_CHANGE = recalc_brands                    # discount_rate.py SECTION 7
 log("[DISCOUNT] Settings page linked: saving a new rate will recalculate suggested prices")
 
 

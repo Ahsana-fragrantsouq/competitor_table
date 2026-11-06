@@ -295,15 +295,27 @@ def render_brand_box(cur, common_rate):
                                   bsaved=request.args.get("bsaved"), berror=request.args.get("berror"))
 
 
-def _brand_done(msg=None, error=None):
-    """Recalculate all suggested prices, then back to the page with a message."""
+# 2026-11-06 user: "after clicking Save for ticked brands it's taking long time" - every save started the FULL
+# recalculation of all ~20,000 products (ON_DISCOUNT_CHANGE). Now only the products of the saved / removed brands
+# are recalculated, right away (ON_BRAND_CHANGE, set by app.py: price_triggers.recalc_product per product).
+ON_BRAND_CHANGE = None      # app.py: function(list of brand names) -> number of products recalculated
+
+
+def _brand_done(msg=None, error=None, brands=None):
+    """Recalculate the products of `brands` only, then back to the page with a message."""
+    import time as _t
     from urllib.parse import quote
     if error:
         return redirect(f"{PAGE_URL}?berror={quote(error)}")
-    started = ON_DISCOUNT_CHANGE() if ON_DISCOUNT_CHANGE else False
-    log(f"[DISCOUNT-BRAND] Recalculation {'started now' if started else 'not started now (another run busy)'}")
-    msg += (" All suggested prices are being recalculated (about 1 minute)." if started
-            else " Another run is busy - it will use the new % when it reaches the price step.")
+    if ON_BRAND_CHANGE and brands:
+        t0 = _t.time()
+        try:
+            n = ON_BRAND_CHANGE(brands)
+            msg += f" Suggested prices of {n} products recalculated."
+            log(f"[DISCOUNT-BRAND] {n} products of {brands} recalculated in {_t.time() - t0:.1f}s")
+        except Exception as ex:                           # saved anyway; next run uses the new %
+            log(f"[DISCOUNT-BRAND] Recalculation failed: {ex}")
+            msg += " Prices will use the new % at the next price run."
     return redirect(f"{PAGE_URL}?bsaved={quote(msg)}")
 
 
@@ -336,7 +348,7 @@ def brand_discount_save():
         cur.close()
         conn.close()
     log(f"[DISCOUNT-BRAND] Saved {rate}% for {len(picked)} brands by {user}: {picked}")
-    return _brand_done(f"Saved: {', '.join(picked)} = {rate:g}%.")
+    return _brand_done(f"Saved: {', '.join(picked)} = {rate:g}%.", brands=picked)
 
 
 @discount_bp.route(BRAND_URL + "/remove", methods=["POST"])
@@ -357,4 +369,4 @@ def brand_discount_remove():
     if not row:
         return _brand_done(error="That brand had no own % any more")
     log(f"[DISCOUNT-BRAND] {user} removed the own % of {row[0]} -> common rate again")
-    return _brand_done(f"Removed: {row[0]} uses the common rate again.")
+    return _brand_done(f"Removed: {row[0]} uses the common rate again.", brands=[row[0]])
