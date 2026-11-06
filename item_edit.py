@@ -364,9 +364,24 @@ def save_edit(conn, fid, fields, user):
             if "product_name" in ct:                      # card's code line "SKU/Product name" too
                 web += (", french_inventory_code = CASE WHEN COALESCE(sku, '') <> '' THEN sku || '/' || %s "
                         "ELSE %s END")
-            cur.execute(f"UPDATE competitor_table SET {', '.join(c + ' = %s' for c in ct)}{web} WHERE fi_record_id = %s",
-                        [new[c] for c in ct] + ([new["product_name"]] * 2 if "product_name" in ct else []) + [fid])
-            log(f"[ITEM-EDIT] {fid}: competitor_table {', '.join(ct)} updated ({cur.rowcount} row)")
+            # 2026-11-06 user: "edit in item master only updates shopify, not the competitor table title":
+            #  1. website_edits remembers the edited fields -> the next Airtable load / Brands Refresh (app.py
+            #     CT_UPSERT_FI) no longer puts Airtable's OLD name / brand / barcode back
+            #  2. our_title = the link text of our fragrantsouq.com page on the card (= Shopify title, only refreshed
+            #     by load-our-links) -> set to the new name right away
+            cur.execute("ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS website_edits JSONB")
+            kept = [c for c in ct if c in ("product_name", "brand", "barcode")]
+            if kept:
+                web += ", website_edits = COALESCE(website_edits, '{}'::jsonb) || %s::jsonb"
+            if "product_name" in ct:
+                web += ", our_title = CASE WHEN our_link IS NOT NULL THEN %s ELSE our_title END"
+            cur.execute(f"UPDATE competitor_table SET {', '.join(c + ' = %s' for c in ct)}{web}, updated_at = NOW() "
+                        f"WHERE fi_record_id = %s",
+                        [new[c] for c in ct] + ([new["product_name"]] * 2 if "product_name" in ct else [])
+                        + ([json.dumps({c: user or "admin" for c in kept})] if kept else [])
+                        + ([new["product_name"]] if "product_name" in ct else []) + [fid])
+            log(f"[ITEM-EDIT] {fid}: competitor_table {', '.join(ct)} updated ({cur.rowcount} row)"
+                + (f" | kept on Airtable load: {kept}" if kept else ""))
     conn.commit()
     log(f"[ITEM-EDIT] {user} changed {fid}: " + "; ".join(f"{c}: {old.get(c)!r} -> {new[c]!r}" for c in changed))
     return changed, added, None

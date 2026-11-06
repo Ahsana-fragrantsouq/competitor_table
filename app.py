@@ -1024,6 +1024,7 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS uae_price NUMERIC(10,2);
 -- TRUE = our UAE price was set by OUR website straight in Shopify ('Update price' / Item Master Edit), not in
 -- Airtable -> loading from Airtable (CT_UPSERT_FI) keeps it. Back to FALSE when a price is written to Airtable.
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS uae_price_website BOOLEAN DEFAULT FALSE;
+ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS website_edits JSONB;   -- Item Master Edit: fields kept on Airtable load (item_edit.py)
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS brand TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS barcode TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS perfume_name TEXT;
@@ -1237,13 +1238,19 @@ INSERT INTO competitor_table
      brand, barcode, perfume_name)
 VALUES %s
 ON CONFLICT (fi_record_id) DO UPDATE SET
-    french_inventory_code = EXCLUDED.french_inventory_code,
+    -- website_edits (item_edit.py, 2026-11-06): fields changed in Item Master -> Edit are KEPT (Airtable's old value
+    -- came back on the next Airtable load / Brands Refresh: user "edit in item master ... not updating competitor table")
+    french_inventory_code = CASE WHEN competitor_table.website_edits ? 'product_name'
+                                 THEN competitor_table.french_inventory_code ELSE EXCLUDED.french_inventory_code END,
     sku          = EXCLUDED.sku,
-    product_name = EXCLUDED.product_name,
+    product_name = CASE WHEN competitor_table.website_edits ? 'product_name'
+                        THEN competitor_table.product_name ELSE EXCLUDED.product_name END,
     uae_price    = CASE WHEN competitor_table.uae_price_website THEN competitor_table.uae_price
                         ELSE EXCLUDED.uae_price END,          -- price set in Shopify by our website: keep it
-    brand        = EXCLUDED.brand,
-    barcode      = EXCLUDED.barcode,
+    brand        = CASE WHEN competitor_table.website_edits ? 'brand'
+                        THEN competitor_table.brand ELSE EXCLUDED.brand END,
+    barcode      = CASE WHEN competitor_table.website_edits ? 'barcode'
+                        THEN competitor_table.barcode ELSE EXCLUDED.barcode END,
     perfume_name = EXCLUDED.perfume_name,
     updated_at   = NOW();
 """
