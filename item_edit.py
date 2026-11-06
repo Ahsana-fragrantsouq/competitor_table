@@ -168,7 +168,7 @@ EDIT_CSS = """ /* Edit (admins only, item_edit.py) */
 # r = product row; button goes in the card's button row
 EDIT_BTN = """{% if admin %}
       <button type="button" class="edit-btn" onclick="editOpen('{{ r.fi_record_id }}')">Edit</button>
-      {# Delete next to Edit (user 2026-11-06) = ONLY this Item Master card: Competitor table / Airtable / Shopify untouched #}
+      {# Delete next to Edit (user 2026-11-06) = Item Master + Competitor table card; Airtable / Shopify untouched #}
       <button type="button" class="delete-btn" onclick="itemDelete('{{ r.fi_record_id }}', this)"
               data-name="{{ (r.product_name or r.sku or r.fi_record_id)|e }}">Delete</button>
       {% endif %}"""
@@ -315,7 +315,7 @@ EDIT_JS = """  // ---- Edit (admins only, item_edit.py) ----
   // ---- Delete (admins): removes ONLY the Item Master card (item_master.py POST /item-master/delete) ----
   async function itemDelete(fi, btn) {
     var name = btn.dataset.name;
-    if (!confirm("Delete from Item Master?\\n\\n" + name + "\\n\\nOnly the Item Master card is deleted - the Competitor table, " +
+    if (!confirm("Delete from Item Master?\\n\\n" + name + "\\n\\nIt is deleted from Item Master AND the Competitor table. " +
                  "Airtable and the website (Shopify) are NOT changed. A later Load from Airtable will not bring it back.")) return;
     btn.disabled = true; btn.textContent = "Deleting ...";
     try {

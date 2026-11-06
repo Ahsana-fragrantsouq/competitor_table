@@ -706,7 +706,8 @@ def item_master_edit():
 
 
 # ============================================================ SECTION 7b: DELETE (2026-11-06, user's choice)
-# "add an option to delete from item master" -> ONLY item_master (not the Competitor table, Airtable or Shopify).
+# "add an option to delete from item master" -> item_master + (user, later the same day: "delete from competitor table
+# also") the Competitor table card. NOT Airtable, NOT Shopify.
 # The id is remembered in table item_master_deleted -> a later Load from Airtable does NOT bring the card back
 # (load_all skips those ids). To bring one back: DELETE FROM item_master_deleted WHERE fi_record_id = '...' + load.
 DELETED_CREATE = """
@@ -738,14 +739,19 @@ def item_master_delete():
         if not row:
             conn.rollback()
             return jsonify({"ok": False, "error": "product not in Item Master any more"}), 404
+        cur.execute("SELECT to_regclass('competitor_table') IS NOT NULL")
+        ct_deleted = 0
+        if cur.fetchone()[0]:                       # the Competitor table card too (load_fi skips it from now on)
+            cur.execute("DELETE FROM competitor_table WHERE fi_record_id = %s", (fid,))
+            ct_deleted = cur.rowcount
         cur.execute("INSERT INTO item_master_deleted (fi_record_id, sku, product_name, deleted_by) VALUES (%s, %s, %s, %s) "
                     "ON CONFLICT (fi_record_id) DO UPDATE SET deleted_by = EXCLUDED.deleted_by, deleted_at = NOW()",
                     (fid, row[0], row[1], g.get("user")))
         conn.commit()
     finally:
         conn.close()
-    log(f"[ITEM-DELETE] {g.get('user')} deleted {fid} ({row[0]} / {row[1]}) from Item Master only "
-        f"(Competitor table / Airtable / Shopify untouched)")
+    log(f"[ITEM-DELETE] {g.get('user')} deleted {fid} ({row[0]} / {row[1]}) from Item Master + Competitor table "
+        f"({ct_deleted} row) - Airtable / Shopify untouched")
     return jsonify({"ok": True})
 
 

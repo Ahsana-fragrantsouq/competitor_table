@@ -1364,6 +1364,16 @@ def ct_load_fi(only_brands=None, least=True):
         log("[CT-LOAD] Creating / updating competitor_table columns")
         cur.execute(CT_CREATE)
         conn.commit()
+        # deleted on the Item Master page (item_master.py Delete, 2026-11-06: also off the Competitor table) ->
+        # NOT loaded again from Airtable
+        cur.execute("SELECT to_regclass('item_master_deleted') IS NOT NULL")
+        if cur.fetchone()[0]:
+            cur.execute("SELECT fi_record_id FROM item_master_deleted")
+            gone = {r[0] for r in cur.fetchall()}
+            if gone:
+                before = len(rows)
+                rows = [r for r in rows if r[0] not in gone]
+                log(f"[CT-LOAD] {before - len(rows)} products skipped: deleted on the Item Master page")
         for i in range(0, len(rows), 500):
             execute_values(cur, CT_UPSERT_FI, rows[i:i + 500])
             conn.commit()
