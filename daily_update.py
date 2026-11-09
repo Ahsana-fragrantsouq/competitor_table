@@ -9,14 +9,15 @@ RUN 1 - on YOUR PC, Monday-Friday 11:30 AM India time (Windows Task Scheduler st
     The brand is read from the start of the product name ("Christian Dior Sauvage EDT" -> "Christian Dior").
     Also once a day: NEW French Fragrance products from its sitemap are saved (+ their Branded Perfume / Essenzi rows)
     and matched to our products (FF_NEW_PRODUCTS).
-    Also every PC_LIST_DAYS (14) days: whole product list of OUNASS, AL INJAZ and NICHE GALLERIE in your Chrome
+    Also whole product lists in your Chrome (PC_LISTS; competitors every 5 days, brand stores every 15 days):
+    OUNASS, AL INJAZ, NICHE GALLERIE, Emirates Pride, Oud Elite, Reef Perfumes
     (on_scraper.py / aj_scraper.py / ng_scraper.py - these shops block Render) -> new products saved, saved ones
     get price + stock, then matching.
     Progress: app_settings key 'daily_update' (a stopped run continues with the same brands).
 
 RUN 2 - inside the website on Render (no PC, no cron job), EVERY day at RUN2_TIME (7:00 AM India time):
-    ONE shop a day in RUN2_ORDER: Samawa -> V Perfumes -> Amberiya,
-    then a pause; a new round starts RUN2_ROUND_DAYS (14) days after the last one began.
+    every shop of RUN2_ORDER that is DUE (competitors every COMPETITOR_EVERY_DAYS 5 days, Brands Store shops every
+    BRAND_STORE_EVERY_DAYS 15 days), one after the other, at most RUN2_MAX_PER_DAY (3) a day, most overdue first.
     Whole product list of that shop: new products are saved, products already saved only get the new price + stock,
     then matching to our products. app.py starts run2_scheduler() when the website starts.
     Progress: app_settings key 'full_lists'.
@@ -95,7 +96,16 @@ RUN2_TIME = "07:00"            # "HH:MM", 24-hour India time. Example: "06:30", 
 # Ounass, Al Injaz, Niche Gallerie are NOT here: they block Render (captcha / "too many requests") and run on the
 # PC (PC_LISTS below). The next shop = the first one not done yet in this round.
 RUN2_ORDER = ["samawa", "vp", "am", "pd", "mh", "an", "kh", "br", "aq", "ao", "jz", "jm", "ah"]   # rf = Reef Perfumes -> PC_LISTS (Salla: UAE data only in Chrome, 2026-11-05); pd = Perfume Dubai, mh = MHG Boutique, an = Anfasic, kh = Khaltat, br = Brands Perfume, aq = Abdul Samad Al Qurashi, ao = Arabian Oud, jz = Al Jazeera Perfumes, jm = Ajmal, ah = Al Haramain (Emirates Pride + Oud Elite + Reef Perfumes = PC_LISTS)
-RUN2_ROUND_DAYS = 14           # a new round every 14 days (7 = every week)
+RUN2_ROUND_DAYS = 14           # OLD round rule - no longer used for planning (kept for old imports)
+# EVERY SHOP HAS ITS OWN TIMER (2026-11-09, user: "every brand store runs after 15 days and competitors run after
+# 5 days"): a shop is DUE when its last run (done_on) is SHOP_EVERY_DAYS days ago or more (never run = due).
+# Same rule for Run 2 (Render) and the PC lists (PC_LISTS). Brands Store shop = BRAND_STORE_SHOPS, the rest = competitor.
+COMPETITOR_EVERY_DAYS = 5      # competitors (Samawa, V Perfumes, Amberiya, Perfume Dubai, MHG, Brands Perfume, Ounass ...)
+BRAND_STORE_EVERY_DAYS = 15    # Brands Store shops (menu Brands Store)
+BRAND_STORE_SHOPS = {"ep", "an", "kh", "oe", "aq", "ao", "jz", "jm", "ah", "rf"}
+# at most this many Run 2 shops per day (the most overdue first; equal = RUN2_ORDER). 0 = no limit.
+# ~1.7 shops a day are needed on average (6 competitors / 5 days + 7 brand stores / 15 days); 3 leaves room to catch up.
+RUN2_MAX_PER_DAY = 3
 RUN2_DAYS = range(0, 7)        # 0 = Monday ... 6 = Sunday: Render runs every day
 # RUN2_SAVE_NEW = True  -> NEW products of the shop are SAVED and matched to our products.
 #                 False -> new rows made by the download are removed again right after it.
@@ -127,7 +137,7 @@ RUN2_LABELS = {k: label for k, label, *_ in RUN2_SHOPS}
 # Shops that block Render: their whole list is read in YOUR Chrome by their PC scraper, after the daily brands,
 # once every PC_LIST_DAYS days (Monday-Friday only, the PC is off at weekends). Same rules as RUN 2:
 # new products saved, saved products only price + stock (RUN2_ONLY_PRICE_STOCK), then matching on Render.
-PC_LIST_DAYS = 14
+PC_LIST_DAYS = 14              # OLD - PC lists now follow shop_every_days() (competitors 5, brand stores 15)
 PC_LISTS = [
     # (key, label, table, PC scraper next to this file, match link on Render)
     ("on", "Ounass", "ounass_catalog", "on_scraper.py", "/competitor/match-on"),
@@ -917,6 +927,38 @@ def india_now():
     return datetime.utcnow() + timedelta(hours=5, minutes=30)
 
 
+def shop_every_days(key):
+    """Days between two whole-list runs of shop <key>: Brands Store shops 15, competitors 5."""
+    return BRAND_STORE_EVERY_DAYS if key in BRAND_STORE_SHOPS else COMPETITOR_EVERY_DAYS
+
+
+def run2_next_date(state, key):
+    """Date (ISO) shop <key> is next due in Run 2: last done_on + its days; never run = None (due now)."""
+    last = ((state.get("weekly_results") or {}).get(RUN2_LABELS[key]) or {}).get("done_on")
+    return (date.fromisoformat(last) + timedelta(days=shop_every_days(key))).isoformat() if last else None
+
+
+def run2_due(state, today):
+    """Run 2 shops due today, most overdue first (never run first; equal -> RUN2_ORDER)."""
+    due = []
+    for i, k in enumerate(RUN2_ORDER):
+        nxt = run2_next_date(state, k)
+        if nxt is None or nxt <= today:
+            late = (date.fromisoformat(today) - date.fromisoformat(nxt)).days if nxt else 10 ** 6
+            due.append((-late, i, k))
+    return [k for _, _, k in sorted(due)]
+
+
+def run2_next_info(state, today):
+    """Text for the Automate page: the next shop(s) and their date."""
+    dates = sorted((run2_next_date(state, k) or today, RUN2_ORDER.index(k), k) for k in RUN2_ORDER)
+    if not dates:
+        return "-"
+    first = max(dates[0][0], today)
+    names = [RUN2_LABELS[k] for d, _, k in dates if max(d, today) == first]
+    return f"{', '.join(names)} on {first}"
+
+
 def run2_pending(state):
     """Shops of RUN2_ORDER not done yet in the current round (done_on >= round_start), in order."""
     start = state.get("round_start")
@@ -978,39 +1020,48 @@ def render_full_lists(args, quiet=False, restart_stopped=False):
         if not quiet:
             log(f"[RUN2] Today's shop already done ({state.get('weekly_finished')})")
         return False
-    shop, why = run2_plan(state, today)
-    if shop is None:
-        log(f"[RUN2] {now:%d %b %H:%M} India - no shop today: {why}")
+    # every shop has its own timer: competitors every COMPETITOR_EVERY_DAYS, brand stores every BRAND_STORE_EVERY_DAYS
+    due = run2_due(state, today)
+    if RUN2_MAX_PER_DAY and len(due) > RUN2_MAX_PER_DAY:
+        log(f"[RUN2] {len(due)} shops due, max {RUN2_MAX_PER_DAY} a day -> later: "
+            f"{', '.join(RUN2_LABELS[k] for k in due[RUN2_MAX_PER_DAY:])}")
+        due = due[:RUN2_MAX_PER_DAY]
+    if not due:
+        why = run2_next_info(state, today)
+        log(f"[RUN2] {now:%d %b %H:%M} India - no shop due today - next: {why}")
         state.update({"weekly_date": today, "today_shop": None, "next_info": why})
         write_state(state)                               # 'checked today' -> not asked again until tomorrow
         return False
-    label = RUN2_LABELS[shop]
     log("=" * 70)
-    log(f"[RUN2] Started {now:%d %b %Y %H:%M} India time - today: {label} ({why})")
-    state.update({"weekly_status": "running", "weekly_started": now.isoformat(timespec="minutes"), "today_shop": label})
-    write_state(state)
-    run2_shop(state, shop)                               # download -> new products saved -> details kept -> match
-    res = state.setdefault("weekly_results", {}).setdefault(label, {})
-    res["done_on"] = today                               # shown on the Automate page: last update of this shop
-    left = run2_pending(state)                           # shops still to do in this round
-    if left:
-        state["next_info"] = f"tomorrow: {RUN2_LABELS[left[0]]}"
-    else:
-        nr = date.fromisoformat(state["round_start"]) + timedelta(days=RUN2_ROUND_DAYS)
-        state["next_info"] = f"round complete - next round ({RUN2_LABELS[RUN2_ORDER[0]]} first) on {nr.isoformat()}"
-    state.update({"weekly_status": "done", "weekly_date": today,
+    log(f"[RUN2] Started {now:%d %b %Y %H:%M} India time - due today: "
+        + ", ".join(f"{RUN2_LABELS[k]} (every {shop_every_days(k)} days)" for k in due))
+    state.update({"weekly_status": "running", "weekly_started": now.isoformat(timespec="minutes"),
+                  "today_shops": [RUN2_LABELS[k] for k in due]})
+    for shop in due:                                     # one after the other
+        label = RUN2_LABELS[shop]
+        state["today_shop"] = label                      # 'running now' on the Automate page
+        write_state(state)
+        log(f"[RUN2] ---- {label} ----")
+        run2_shop(state, shop)                           # download -> new products saved -> details kept -> match
+        res = state.setdefault("weekly_results", {}).setdefault(label, {})
+        res["done_on"] = today                           # its timer starts again today (Automate page: last update)
+        write_state(state)                               # a restart now does not repeat this shop
+    state["next_info"] = run2_next_info(state, (date.fromisoformat(today) + timedelta(days=1)).isoformat())
+    state.update({"weekly_status": "done", "weekly_date": today, "today_shop": None,
                   "weekly_finished": india_now().isoformat(timespec="minutes")})
     r = render_get("/competitor/update-least")           # least price + suggested price + automatic brands
     state["recalc"] = f"HTTP {r.status_code}" if r is not None else "not started"
     write_state(state)
-    log(f"[RUN2] {label} finished {india_now():%H:%M} India | update-least {state['recalc']} | next: {state['next_info']}")
+    log(f"[RUN2] {', '.join(RUN2_LABELS[k] for k in due)} finished {india_now():%H:%M} India | "
+        f"update-least {state['recalc']} | next: {state['next_info']}")
     return True
 
 
 def run2_scheduler(check_every=60):
     """Started by app.py when the website starts (one background thread): every minute -> render_full_lists()."""
-    log(f"[RUN2] Scheduler started inside the website: one shop a day at {RUN2_TIME} India time "
-        f"({' -> '.join(RUN2_ORDER)}, a new round every {RUN2_ROUND_DAYS} days)")
+    log(f"[RUN2] Scheduler started inside the website: every day at {RUN2_TIME} India time the DUE shops "
+        f"(competitors every {COMPETITOR_EVERY_DAYS} days, brand stores every {BRAND_STORE_EVERY_DAYS} days, "
+        f"max {RUN2_MAX_PER_DAY or 'all'} a day)")
     args = argparse.Namespace(force=False)
     done_on = None                                       # remember 'done today' -> no database check every minute
     first = True                                         # website just started: a 'running' run today was cut off
@@ -1033,13 +1084,16 @@ def run2_scheduler(check_every=60):
 
 
 # ---------------------------------------------------------------- whole lists on the PC (Ounass, Al Injaz, Niche Gallerie)
-def pc_list_due(state, label, force=False):
-    """Due when it never ran, or its last good run is PC_LIST_DAYS days ago or more."""
+def pc_list_due(state, label, force=False, key=None):
+    """Due when it never ran, or its last good run is shop_every_days(key) days ago or more
+    (competitors 5, Brands Store shops 15)."""
+    every = shop_every_days(key) if key else PC_LIST_DAYS
     last = ((state.get("pc_lists") or {}).get(label) or {}).get("done_on")
     days = (date.today() - date.fromisoformat(last)).days if last else None
-    due = force or last is None or days >= PC_LIST_DAYS
+    due = force or last is None or days >= every
     log(f"[PC-LIST] {label}: last whole list {last or 'never'}"
-        + (f" ({days} days ago)" if days is not None else "") + f" -> {'RUN TODAY' if due else 'not due yet'}")
+        + (f" ({days} days ago)" if days is not None else "") + f", every {every} days"
+        + f" -> {'RUN TODAY' if due else 'not due yet'}")
     return due
 
 
@@ -1048,7 +1102,7 @@ def run_pc_lists(state, force=False):
     on saved products -> matching on Render. Returns True when at least one shop ran."""
     ran = False
     for key, label, table, scraper, match in PC_LISTS:
-        if not pc_list_due(state, label, force):
+        if not pc_list_due(state, label, force, key):
             continue
         path = os.path.join(HERE, scraper)
         if not os.path.exists(path):
