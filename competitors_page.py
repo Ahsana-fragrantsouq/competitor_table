@@ -36,6 +36,7 @@ import price_limits                                       # LOP / MOP boxes on t
 import link_edit                                          # 'Edit link' for admins on the cards (link_edit.py)
 import barcode_edit                                       # 'Edit' our barcode for admins (barcode_edit.py)
 import stock_edit                                         # 'Edit' our stock for admins -> Shopify (stock_edit.py)
+import stock_sync                                         # 'Sync the stock' on the Brands Store tabs (stock_sync.py)
 import new_link                                           # 'Add new link' for admins on the cards (new_link.py)
 import sort_option                                        # 'Sort by' SKU / Brand / Perfume / Product name (sort_option.py)
 import skip_auto                                          # 'Skip automatic price' checkbox on the cards (skip_auto.py)
@@ -678,6 +679,7 @@ HTML = """
 @@SHOP_LINK_CSS@@
 /* Edit our stock (admins): stock_edit.py STOCK_CSS */
 @@STOCK_CSS@@
+@@SYNC_CSS@@
  .upd-msg{font-size:13px;margin-top:6px;min-height:16px}
  .sitelink{color:inherit;text-decoration:underline;text-underline-offset:3px}
  .sitelink:hover{color:#f2d675}
@@ -817,7 +819,9 @@ HTML = """
   </form>
   <p class="hint">{{ total }} {{ 'product' if total == 1 else 'products' }}{% if q or stock or conds or brand %} match this filter{% endif %}.
   {# new products saved by the last full list (daily_update.py) - "Show" lists only them #}
-  {% if new_info %}<span class="newcount">{{ new_info.n }} new {{ 'product' if new_info.n == 1 else 'products' }} added{% if new_info.date %} ({{ new_info.date[8:10] }}-{{ new_info.date[5:7] }}){% endif %}{% if new_info.n and stock != 'new' %} &middot; <a href="?tab={{ src.key }}&stock=new">Show</a>{% endif %}</span>{% endif %}</p>
+  {% if new_info %}<span class="newcount">{{ new_info.n }} new {{ 'product' if new_info.n == 1 else 'products' }} added{% if new_info.date %} ({{ new_info.date[8:10] }}-{{ new_info.date[5:7] }}){% endif %}{% if new_info.n and stock != 'new' %} &middot; <a href="?tab={{ src.key }}&stock=new">Show</a>{% endif %}</span>{% endif %}
+  {# Sync the stock: Brands Store tabs, admins (stock_sync.py) #}
+  {% if admin and src.menu == 'brands' %}@@SYNC_BUTTON@@{% endif %}</p>
   {% if src.kind == 'competitor' and rows %}
   <div class="pickallrow"><label class="pickall">Select all on this page <input type="checkbox" id="pickAll" onchange="pickAll(this.checked)"></label></div>
   {# bottom bar (like Amazon "Save all"): appears when 2 or more products are ticked #}
@@ -1194,6 +1198,8 @@ HTML = """
   @@SHOP_LINK_JS@@
   {# Edit our stock script (admins): stock_edit.py STOCK_JS #}
   @@STOCK_JS@@
+  {# Sync the stock popup (admins, Brands Store tabs): stock_sync.py SYNC_JS #}
+  @@SYNC_JS@@
   {# Sort box (sort_option.py SORT_JS) #}
   @@SORT_JS@@
   async function updatePrice(fi, btn) {
@@ -1252,6 +1258,10 @@ HTML = (HTML.replace("@@LIMITS_CSS@@", price_limits.LIMITS_CSS)
             .replace("@@STOCK_CSS@@", stock_edit.STOCK_CSS)
             .replace("@@STOCK_HTML@@", stock_edit.stock_html("r.fi", "bcode"))
             .replace("@@STOCK_JS@@", stock_edit.STOCK_JS)
+            # Sync the stock on the Brands Store tabs (stock_sync.py SECTION 2)
+            .replace("@@SYNC_CSS@@", stock_sync.SYNC_CSS)
+            .replace("@@SYNC_BUTTON@@", stock_sync.SYNC_BUTTON)
+            .replace("@@SYNC_JS@@", stock_sync.sync_js())
             # Remove link / Add link on the shop pages (link_edit.py SECTION 2b)
             # link_edit.SHOP_LINK_BUTTONS = False -> nothing put on the page (user's choice 2026-11-03)
             .replace("@@SHOP_LINK_CSS@@", link_edit.SHOP_CSS if link_edit.SHOP_LINK_BUTTONS else "")
