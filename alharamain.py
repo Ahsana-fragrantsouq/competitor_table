@@ -338,6 +338,11 @@ ah_list_used = {"arg": None}           # which AH_LISTS entry worked (shown in t
 
 
 ah_gql_try = AH_GQL_TRIES[0]                      # address being tried (until one works)
+# 2026-11-09 Run 2 failed: "no product list found (not Shopify, no product sitemap)" = GraphQL did not answer that
+# morning (Al Haramain has no product sitemap, so the other ways can never work). Now: the first page is tried
+# again after AH_RETRY_WAITS, and the error shows what GraphQL answered (ah_last_error).
+AH_RETRY_WAITS = [60, 180, 600]
+ah_last_error = {"text": None}
 
 
 def ah_gql(arg, page):
@@ -348,12 +353,16 @@ def ah_gql(arg, page):
         url, extra = (ah_gql_used["url"], ah_gql_used["headers"]) if ah_gql_used["url"] else ah_gql_try
         r = requests.post(url, headers={**AH_GQL_HEADERS, **extra}, json={"query": q}, timeout=60)
     except requests.RequestException as ex:
+        ah_last_error["text"] = f"network error {str(ex)[:100]}"
         return 0, None, f"network error {str(ex)[:100]}"
     try:
         js = r.json()
     except ValueError:
+        ah_last_error["text"] = f"{url} HTTP {r.status_code}, not JSON: {r.text[:150]}"
         return r.status_code, None, f"HTTP {r.status_code}, not JSON: {r.text[:200]}"
     errs = "; ".join(e.get("message", "") for e in (js.get("errors") or []) if isinstance(e, dict))
+    if r.status_code != 200 or errs:
+        ah_last_error["text"] = f"{url} HTTP {r.status_code} {errs[:150]}"
     return r.status_code, js, errs
 
 
@@ -585,6 +594,13 @@ def ah_run():
             st["out_of_stock"] += sum(r["stock"] != "In stock" for r in rows)
 
         first, _ = ah_api_page(1)
+        for wait in AH_RETRY_WAITS:                         # GraphQL busy / blocked for a moment -> wait, try again
+            if first:
+                break
+            ah_log(f"[AH-GQL] product list not answered ({ah_last_error['text']}) -> trying again in {wait}s")
+            time.sleep(wait)
+            first, _ = ah_api_page(1)
+        st["graphql_error"] = None if first else ah_last_error["text"]
         if first:                                           # way 0: Magento GraphQL (SECTION 5c)
             st["mode"] = "graphql"
             seen_ids = set()
@@ -622,7 +638,9 @@ def ah_run():
             links, counts, _ = ah_product_links()
             st["links"], st["sitemaps"] = len(links), counts
             if not links:
-                raise RuntimeError("no product list found (not Shopify, no product sitemap) - check /alharamain/test")
+                raise RuntimeError(f"shop's product list (GraphQL) did not answer after {len(AH_RETRY_WAITS) + 1} tries: "
+                                   f"{ah_last_error['text'] or 'no answer'} - try /alharamain/run again later; "
+                                   f"if it keeps failing send /alharamain/test to Claude")
             st.update({"pages_done": 0, "pages_without_data": 0, "pages_failed": 0})
             batch = []
             with ThreadPoolExecutor(max_workers=AH_WORKERS) as pool:
