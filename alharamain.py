@@ -489,6 +489,12 @@ def ah_pages(arg, seen, on_rows):
             st, js, err = ah_gql(arg, page)
         items = ((((js or {}).get("data") or {}).get("products") or {}).get("items"))
         if not isinstance(items, list):
+            # 2026-11-09 Run again showed "incomplete: only 300 products read": Magento answers an ERROR (not an empty
+            # list) when asked for a page after the last one ("currentPage value 7 specified is greater than the 6
+            # page(s) available") -> that is the normal END of the list, not a failure
+            if page > 1 and re.search(r"greater than|page\(s\) available|currentpage", err or "", re.I):
+                ah_log(f"[AH-GQL] {arg}: end of list after page {page - 1}")
+                break
             ah_log(f"[AH-GQL] {arg} page {page}: HTTP {st} {(err or '')[:150]}")
             return page - 1, total, False
         new = [p for p in items if isinstance(p, dict) and p.get("sku") not in seen]
@@ -503,9 +509,12 @@ def ah_pages(arg, seen, on_rows):
             skipped += sk
         on_rows(rows, skipped)
         ah_log(f"[AH-GQL] {arg} page {page}: {len(items)} products ({len(new)} new), {len(rows)} rows kept, {len(skipped)} not perfume")
+        last = ((((js or {}).get("data") or {}).get("products") or {}).get("page_info") or {}).get("total_pages")
+        if last and page >= int(last):                  # the shop says this was the last page -> stop (no extra ask)
+            break
         page += 1
         time.sleep(AH_API_PAUSE)
-    return page - 1, total, True
+    return page, total, True
 
 
 def ah_api_all(on_rows):
