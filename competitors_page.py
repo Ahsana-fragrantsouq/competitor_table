@@ -1710,11 +1710,27 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
               {% elif s.status == 'incomplete' %}<span class="warnc">! {{ s.date }}</span>
               {% else %}<span class="gtin">due {{ s.due or '-' }}</span>{% endif %}</td>
           <td class="gtin">{% if s.status in ('error', 'incomplete') %}<span class="{{ 'errc' if s.status == 'error' else 'warnc' }}">{{ s.msg }}</span>
+              {# "Run again" (admins, 2026-11-09): reruns ONLY this shop's Run 2 now -> the error is replaced by the new result #}
+              {% if admin %}<button type="button" class="r2retry" onclick="run2Retry('{{ s.label }}', this)">Run again</button>{% endif %}
               {% elif s.status == 'done' %}{{ newlink(s) }}{% endif %}</td></tr>
       {% endfor %}
     </table>
   </div>
 </div>
+<style>.r2retry{margin-left:8px;background:transparent;color:#f2d675;border:1px solid #f2d675;border-radius:8px;padding:3px 10px;font-size:13px;cursor:pointer}</style>
+<script>
+  async function run2Retry(label, btn) {        // Run 2 "Run again" for ONE failed shop (app.py POST /settings/run2/retry)
+    btn.disabled = true; btn.textContent = "Starting ...";
+    try {
+      var r = await fetch("/settings/run2/retry", {method: "POST", headers: {"Content-Type": "application/json"},
+                          body: JSON.stringify({label: label})});
+      var d = await r.json().catch(function () { return {ok: false, error: "HTTP " + r.status}; });
+      if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
+      btn.textContent = "Running - reload this page in a few minutes";
+      console.log("[RUN2-RETRY] " + label + " started");
+    } catch (e) { btn.disabled = false; btn.textContent = "Run again"; alert("Not started: " + e.message); }
+  }
+</script>
 {# ======== 8d Brands (menu Item Master -> Brands, /item-master/brands; was on Automate): search + brand list ======== #}
 {% elif option and option[0] == 'brands' %}
 <form class="bsearch" method="get" onsubmit="return true">

@@ -2445,6 +2445,57 @@ def recalc_brands(brands):
 
 
 discount_rate.ON_BRAND_CHANGE = recalc_brands                    # discount_rate.py SECTION 7
+
+
+# ---------------------------------------------------------------- Run 2 "Run again" for ONE failed shop (2026-11-09)
+# User: Automate page kept showing "Al Haramain X 2026-11-09 no product list found" although /alharamain/run worked
+# by hand afterwards (a manual run does not change the Run 2 table). Button "Run again" next to a failed / incomplete
+# Run 2 shop -> the SAME steps as the 07:00 run for that shop (daily_update.run2_shop: download, new products,
+# matching) -> its row gets the new date + result, then least / suggested price (+ automatic brands).
+run2_retry_lock = threading.Lock()
+
+
+@app.post("/settings/run2/retry")
+def run2_retry_route():
+    if g.get("role") != "admin":                             # same check as auth.is_admin()
+        return jsonify({"ok": False, "error": "admins only"}), 403
+    label = str((request.get_json(silent=True) or {}).get("label") or "").strip()
+    import daily_update as du
+    key = next((k for k, lbl in du.RUN2_LABELS.items() if lbl == label), None)
+    if not key:
+        return jsonify({"ok": False, "error": f"'{label}' is not a Run 2 shop"}), 400
+    if not run2_retry_lock.acquire(blocking=False):
+        return jsonify({"ok": False, "error": "another 'Run again' is still running"}), 409
+
+    import json                                              # (app.py has no module-level json import)
+
+    def job():
+        try:
+            du.STATE_KEY = du.RUN2_STATE_KEY                  # Run 2 progress (app_settings 'full_lists'), never Run 1's
+            c = pg_conn()
+            try:
+                state = json.loads(du.read_setting(c.cursor(), du.RUN2_STATE_KEY) or "{}")
+            finally:
+                c.close()
+            if state.get("weekly_status") == "running":
+                log(f"[RUN2-RETRY] {label}: the 07:00 Run 2 is running now -> not started")
+                return
+            log(f"[RUN2-RETRY] {label}: started by {user}")
+            res = du.run2_shop(state, key)                   # download -> new products -> matching (writes the state)
+            res["done_on"] = du.india_now().date().isoformat()
+            state.setdefault("weekly_results", {})[label] = res
+            du.write_state(state)
+            r = du.render_get("/competitor/update-least")   # least + suggested price + automatic brands
+            log(f"[RUN2-RETRY] {label}: done {json.dumps(res, default=str)[:300]} | update-least "
+                f"{r.status_code if r is not None else 'not started'}")
+        except Exception as ex:
+            log(f"[RUN2-RETRY] {label}: ERROR {ex}\n{traceback.format_exc()}")
+        finally:
+            run2_retry_lock.release()
+
+    user = g.get("user")
+    threading.Thread(target=job, daemon=True, name="run2-retry").start()
+    return jsonify({"ok": True, "started": label})
 log("[DISCOUNT] Settings page linked: saving a new rate will recalculate suggested prices")
 
 
