@@ -214,9 +214,11 @@ def choices(cur):
 
 def product_name(v):
     """Brand + Perfume Name + Size + Type + Category + Product type (empty ones left out), e.g.
-    'Mercedes Benz Man Fresh 100ml EDT Men Perfume': size without space ('100 ml' -> '100ml'),
+    'Mercedes Benz Man Fresh 100 ml EDT Men Perfume': size WITH a space before the unit ('100ml' -> '100 ml',
+    user 2026-11-09: "i want like 100 ml but when i edit 30 ml it saved as 30ml"; was: space removed),
     category with a capital first letter ('men' -> 'Men'). Used by Create a new item AND Item Master Edit."""
-    size = re.sub(r"\s+", "", v.get("size") or "")                     # "100 ml" -> "100ml"
+    size = re.sub(r"\s+", " ", (v.get("size") or "").strip())
+    size = re.sub(r"(\d)\s*([A-Za-z]+)$", r"\1 \2", size)                # "100ml" / "100 ml" -> "100 ml"
     cat = (v.get("category") or "").strip()
     cat = cat[:1].upper() + cat[1:]                                     # "men" -> "Men"
     return " ".join(x.strip() for x in [v.get("brand"), v.get("perfume_name"), size, v.get("type"), cat,
