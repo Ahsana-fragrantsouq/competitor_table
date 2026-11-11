@@ -82,6 +82,16 @@ EP_SKIP_WORDS = ["gift set", "giftset", "coffret", "set", "body mist", "hair mis
                  "oil", "oils", "dakhoon", "dukhoon", "bakhoor", "bukhoor", "incense", "burner", "mabkhara",
                  "room spray", "home spray", "car perfume", "car freshener"]
 
+# NEVER a product (checked FIRST, in title / product type / vendor, any capitals): fees that Shopify apps add to the
+# shop as hidden products. Live 2026-11-11: "ShipTection Shipping Protection - 0.98 / 1.15 / 1.35 ..." (vendor
+# ShipTection) came in as 'New, In stock, No price'; their link opens the All Fragrances page.
+EP_NOT_PRODUCTS = ["shiptection", "shipping protection", "shipping insurance", "package protection",
+                   "order protection", "route protection"]
+# rows of these already in emiratespride_catalog are DELETED at the start of every run (EP_JUNK_DELETE)
+EP_JUNK_DELETE = ("DELETE FROM emiratespride_catalog WHERE LOWER(COALESCE(name, '') || ' ' || COALESCE(brand, '')) "
+                  "~ '(shiptection|shipping protection|shipping insurance|package protection|order protection|route protection)' "
+                  "RETURNING product_url")
+
 ep_lock = threading.Lock()
 ep_state = {"running": False, "last": None, "source": None}   # source = collection used (or "all products")
 
@@ -145,6 +155,10 @@ def ep_is_perfume(p, whole_shop, gift=False):
     text = re.sub(r"[^a-z0-9]+", " ", text)                 # "Gift-Set" -> " gift set "
     has = lambda words: any(re.search(rf"\b{re.escape(w.rstrip('*'))}" + ("" if w.endswith("*") else r"\b"), text)
                             for w in words)
+    vendor = re.sub(r"[^a-z0-9]+", " ", f" {p.get('vendor') or ''} ".lower())
+    if has(EP_NOT_PRODUCTS) or any(re.search(rf"\b{re.escape(w)}\b", vendor) for w in EP_NOT_PRODUCTS):
+        ep_log(f"[EP-SKIP] not a product (app fee): {p.get('title')!r} (vendor {p.get('vendor')!r})")
+        return False
     if gift:
         return not has(EP_GIFT_SKIP)
     if has(EP_GIFT_WORDS) and not has(EP_GIFT_SKIP):     # gift set inside the perfume list -> kept
@@ -264,9 +278,12 @@ def ep_items(products, whole_shop=False, check_uae=True, skipped=None, gift=Fals
             continue
         if check_uae:
             time.sleep(0.3)                               # be gentle: one request per product
-        variants = [v for v in p.get("variants", []) if gift or ep_variant_ok(v.get("title"))]   # gift set: all
+        # a SET (gift list, or "Set Box" in the title) keeps ALL its options: "White Oud Set Box - 100ml + 8ml Oil"
+        is_set = gift or bool(re.search(r"\b(gift set|giftset|gift box|set box|set|coffret|collection)\b",
+                                        re.sub(r"[^a-z0-9]+", " ", title.lower())))
+        variants = [v for v in p.get("variants", []) if is_set or ep_variant_ok(v.get("title"))]
         for v in p.get("variants", []):
-            if not gift and not ep_variant_ok(v.get("title")) and skipped is not None:
+            if not is_set and not ep_variant_ok(v.get("title")) and skipped is not None:
                 skipped.append(f"{title} - {v.get('title')} (set / oil)")
         for v in variants:
             vtitle = (v.get("title") or "").strip()
@@ -375,6 +392,17 @@ def ep_run():
     cur = conn.cursor()
     try:
         cur.execute(EP_CREATE)
+        # app fees saved by older runs (ShipTection ...) -> out of the list + off our products' link / suggestion
+        cur.execute(EP_JUNK_DELETE)
+        junk = sorted({r[0] for r in cur.fetchall() if r[0]})
+        if junk:
+            cur.execute("SELECT to_regclass('competitor_table') IS NOT NULL")
+            if cur.fetchone()[0]:
+                cur.execute("UPDATE competitor_table SET ep_suggestion = NULL WHERE ep_suggestion = ANY(%s)", (junk,))
+                cur.execute("UPDATE competitor_table SET ep_link = NULL, ep_title = NULL, ep_price = NULL, "
+                            "ep_stock = FALSE WHERE ep_link = ANY(%s)", (junk,))
+            ep_log(f"[EP-SKIP] {len(junk)} app-fee link(s) removed from emiratespride_catalog: {junk[:5]}")
+        st["junk_removed"] = len(junk)
         cur.execute("SELECT NOW()")
         run_start = cur.fetchone()[0]
         conn.commit()
