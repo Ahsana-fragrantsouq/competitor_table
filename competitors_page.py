@@ -885,7 +885,8 @@ HTML = """
 @@BC_HTML@@    <div class="least">
       {% if r.least_price is not none %}
         <div><div class="plabel">Least price (in stock)</div>
-             <span class="price">AED {{ '%.2f' % r.least_price }}</span></div>
+             {# id: "Update price" puts the new least price here at once (updatePrice JS) #}
+             <span class="price" id="least-{{ r.fi }}">AED {{ '%.2f' % r.least_price }}</span></div>
         <div><div class="plabel">Least priced website</div>
              {# each website name opens that product on that website #}
              {% set site_links = {
@@ -900,7 +901,7 @@ HTML = """
                   'Abdul Samad Al Qurashi': r.aq_url, 'Arabian Oud': r.ao_url,
                   'Al Jazeera Perfumes': r.jz_url, 'Ajmal': r.jm_url,
                   'Al Haramain': r.ah_url, 'Reef Perfumes': r.rf_url} %}
-             <span class="{{ 'in' if 'Fragrant Souq' in (r.least_site or '') else 'out' }}">
+             <span class="{{ 'in' if 'Fragrant Souq' in (r.least_site or '') else 'out' }}" id="lsite-{{ r.fi }}">
                {%- for site in (r.least_site or '').split(', ') -%}
                  {%- if site_links.get(site) -%}
                    <a class="sitelink" href="{{ site_links[site] }}" target="_blank">{{ site }}</a>
@@ -1218,6 +1219,14 @@ HTML = """
       });
       if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
       document.getElementById("our-" + fi).textContent = "AED " + d.price.toFixed(2);
+      // least price box follows at once (was only right after a page reload, 2026-11-11)
+      var lp = document.getElementById("least-" + fi), ls = document.getElementById("lsite-" + fi);
+      if (lp && d.least_price != null) lp.textContent = "AED " + d.least_price.toFixed(2);
+      if (ls && d.least_site) {
+        if (d.least_site.indexOf("Fragrant Souq") < 0) ls.textContent = d.least_site;   // other website(s) now cheapest
+        ls.className = d.least_site.indexOf("Fragrant Souq") >= 0 ? "in" : "out";
+      }
+      console.log("[PRICE] " + fi + ": least now " + d.least_price + " (" + d.least_site + ")");
       msg.className = "upd-msg in";
       msg.textContent = "Updated in Shopify: AED " + d.price.toFixed(2) +
                         (d.least_site ? " | Least now: " + d.least_site : "");
