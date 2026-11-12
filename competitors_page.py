@@ -821,7 +821,76 @@ HTML = """
   {# new products saved by the last full list (daily_update.py) - "Show" lists only them #}
   {% if new_info %}<span class="newcount">{{ new_info.n }} new {{ 'product' if new_info.n == 1 else 'products' }} added{% if new_info.date %} ({{ new_info.date[8:10] }}-{{ new_info.date[5:7] }}){% endif %}{% if new_info.n and stock != 'new' %} &middot; <a href="?tab={{ src.key }}&stock=new">Show</a>{% endif %}</span>{% endif %}
   {# Sync the stock: Brands Store tabs, admins (stock_sync.py) #}
-  {% if admin and src.menu == 'brands' %}@@SYNC_BUTTON@@{% endif %}</p>
+  {% if admin and src.menu == 'brands' %}@@SYNC_BUTTON@@{% endif %}
+  {# Manual sync (admins, every competitor / Brands Store tab, 2026-11-12): whole list of THIS shop now =
+     same steps as the 07:00 Run 2 (app.py POST /settings/run2/retry {shop}). PC shops: only a note. #}
+  {% if admin and src.kind != 'competitor' %}
+    {% if src.key in run2_keys %}
+    <button type="button" class="msync-btn" id="msync-btn" data-shop="{{ src.key }}" data-label="{{ src.label }}"
+            onclick="msyncStart(this)">Manual sync</button><span class="msync-msg" id="msync-msg"></span>
+    {% else %}
+    <span class="msync-pc" title="This shop blocks the website server, so its list is read on the PC (daily_update.bat --ounass)">Synced from the PC</span>
+    {% endif %}
+  {% endif %}</p>
+  {% if admin and src.kind != 'competitor' and src.key in run2_keys %}
+  <style>
+   .msync-btn{background:transparent;color:#f2d675;border:1px solid #f2d675;border-radius:8px;padding:6px 13px;font-weight:700;
+              cursor:pointer;font-size:13px;margin-left:8px}
+   .msync-btn:disabled{opacity:.55;cursor:default}
+   .msync-msg{margin-left:8px;font-size:13px} .msync-msg.ok{color:#8fd19e} .msync-msg.err{color:#e0806c}
+  </style>
+  <script>
+    // ---- Manual sync (admins): whole list of this shop now, then matching + least price (app.py Run 2 retry route) ----
+    var msyncTimer = null;
+    function msyncShow(d, shop) {
+      var btn = document.getElementById("msync-btn"), msg = document.getElementById("msync-msg");
+      var s = d.sync || {};
+      if (s.status === "running") {
+        btn.disabled = true; btn.textContent = "Syncing ...";
+        msg.className = "msync-msg";
+        msg.textContent = (s.shop === shop ? "" : s.label + " is syncing now - ") + "started " + (s.started || "").slice(11, 16) +
+                          (s.shop === shop ? " - you can leave this page, it keeps running" : "");
+        if (!msyncTimer) msyncTimer = setInterval(function () { msyncPoll(shop); }, 15000);
+        return;
+      }
+      if (msyncTimer) { clearInterval(msyncTimer); msyncTimer = null; }
+      btn.disabled = false; btn.textContent = "Manual sync";
+      if (s.shop === shop && s.finished && (s.finished || "").slice(0, 10) === new Date().toISOString().slice(0, 10)) {
+        msg.className = "msync-msg " + (s.status === "done" ? "ok" : "err");
+        msg.textContent = (s.status === "done" ? "Synced " : "Sync failed ") + (s.finished || "").slice(11, 16) + ": " + (s.msg || "");
+      }
+    }
+    async function msyncPoll(shop) {
+      try {
+        var r = await fetch("/settings/run2/sync-status"), d = await r.json();
+        var was = msyncTimer !== null;
+        msyncShow(d, shop);
+        if (was && msyncTimer === null && (d.sync || {}).shop === shop) {
+          console.log("[MANUAL-SYNC] " + shop + " finished -> reload for the new prices");
+          document.getElementById("msync-msg").textContent += " - reload the page to see the new list";
+        }
+      } catch (e) { console.log("[MANUAL-SYNC] status not read: " + e.message); }
+    }
+    async function msyncStart(btn) {
+      var shop = btn.dataset.shop, label = btn.dataset.label, msg = document.getElementById("msync-msg");
+      if (!confirm("Download ALL products of " + label + " now?\\n\\nNew products are saved, prices + stock updated, then " +
+                   "matching and least price.\\nTakes a few minutes (Samawa about 1 hour).")) return;
+      btn.disabled = true; btn.textContent = "Starting ...";
+      try {
+        var r = await fetch("/settings/run2/retry", {method: "POST", headers: {"Content-Type": "application/json"},
+                                                   body: JSON.stringify({shop: shop})});
+        var d = await r.json().catch(function () { return {ok: false, error: "HTTP " + r.status}; });
+        if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
+        console.log("[MANUAL-SYNC] " + shop + " started");
+        setTimeout(function () { msyncPoll(shop); }, 1500);
+      } catch (e) {
+        btn.disabled = false; btn.textContent = "Manual sync";
+        msg.className = "msync-msg err"; msg.textContent = "Not started: " + e.message;
+      }
+    }
+    msyncPoll("{{ src.key }}");                     // page opened while a sync runs -> show it
+  </script>
+  {% endif %}
   {% if src.kind == 'competitor' and rows %}
   <div class="pickallrow"><label class="pickall">Select all on this page <input type="checkbox" id="pickAll" onchange="pickAll(this.checked)"></label></div>
   {# bottom bar (like Amazon "Save all"): appears when 2 or more products are ticked #}
@@ -1527,6 +1596,7 @@ def competitors():
           f"{'Competitor table' if active == 'competitor' else 'Competitors'})", flush=True)
     return render_template_string(HTML, sources=SOURCES, src=src, counts=counts, rows=rows, same_barcode=same_barcode,
                                   admin=is_admin(),             # 'Edit link' buttons only for admins (link_edit.py)
+                                  run2_keys=run2_keys(),        # shops with a Manual sync button (website downloads them)
                                   nl_shops=[(k, link_edit.SHOP_LISTS[k][0]) for k in new_link.NL_SHOPS],   # Add new link
                                   shop_lists=link_edit.SHOP_LISTS,   # shops that can Remove / Add link (link_edit.py)
                                   nav_html=render_nav(active, src["key"], counts), nav_css=NAV_CSS,
@@ -2096,6 +2166,16 @@ DAILY_DEFAULT = 10      # RUN 1 brands per day when nothing is saved (same as da
 # RUN 1 START TIME: only text on the page. The real time is in Windows Task Scheduler on the PC
 # (Task "Competitor daily update" -> Triggers). Change it there, then here.
 RUN1_TIME = "11:30 AM"
+
+
+def run2_keys():
+    """Shop keys the WEBSITE downloads (Run 2 order) -> 'Manual sync' button on their tab; the others = PC shops."""
+    try:
+        import daily_update as du
+        return list(du.RUN2_ORDER)
+    except Exception as ex:
+        print(f"[MANUAL-SYNC] daily_update.py not importable ({ex}) -> no Manual sync buttons", flush=True)
+        return []
 
 
 def run2_rows(rs):

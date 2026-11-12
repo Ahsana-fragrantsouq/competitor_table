@@ -265,6 +265,38 @@ if price_check_bp is not None:
 app.register_blueprint(auth_bp)
 init_auth(app)                                     # users from Render env var USERS (see auth.py)
 
+# ============================================================ SECTION 1b: TEST SITE switch (2026-11-11)
+# A 2nd Render website (test copy) runs the SAME code with Render env TEST_SITE=on + its OWN database copy +
+# SHOPIFY_SHOP / SHOPIFY_API_TOKEN of the DEV store (devfragrantsouq). Then:
+#   - NOTHING is written to Airtable (in_airtable() = False -> every write is skipped, our test database still saved)
+#   - Run 2 + Brands Perfume quick check are OFF unless RUN2_SCHEDULER=on / BR_QUICK_CHECK=on is set
+#   - a red "TEST SITE" bar on every page (test_banner, after_request) so nobody mixes the two sites up
+TEST_SITE = os.environ.get("TEST_SITE", "off").lower() in ("on", "1", "true", "yes")
+if TEST_SITE:
+    print(f"[TEST-SITE] ON: Airtable writes OFF, Shopify store = {os.environ.get('SHOPIFY_SHOP') or '(SHOPIFY_SHOP not set!)'}",
+          flush=True)
+    os.environ.setdefault("RUN2_SCHEDULER", "off")
+    os.environ.setdefault("BR_QUICK_CHECK", "off")
+TEST_BAR = ('<div style="position:sticky;top:0;z-index:9999;background:#b3261e;color:#fff;text-align:center;'
+            'font:600 14px sans-serif;padding:6px">TEST SITE &middot; Shopify: '
+            + (os.environ.get("SHOPIFY_SHOP") or "not set") + ' &middot; Airtable not changed</div>')
+
+
+@app.after_request
+def test_banner(resp):
+    """TEST_SITE=on: red bar at the top of every HTML page (runs before gzip_response, which is added earlier)."""
+    try:
+        if (TEST_SITE and not resp.direct_passthrough and resp.status_code == 200
+                and (resp.mimetype or "") == "text/html" and not resp.headers.get("Content-Encoding")):
+            html = resp.get_data(as_text=True)
+            i = html.find("<body")
+            j = html.find(">", i) + 1 if i >= 0 else 0
+            resp.set_data(html[:j] + TEST_BAR + html[j:])
+    except Exception as ex:                          # never breaks a page
+        print(f"[TEST-SITE] banner not added: {ex}", flush=True)
+    return resp
+
+
 # ============================================================ SECTION 2: RUN 2 scheduler (one shop a day, inside this website)
 # Time / order / round length are set in daily_update.py (RUN2_TIME, RUN2_ORDER, RUN2_ROUND_DAYS).
 # RUN 2 (full lists of Samawa, Ounass, V Perfumes, Amberiya, Al Injaz, Niche Gallerie) runs INSIDE this website:
@@ -2458,19 +2490,40 @@ discount_rate.ON_BRAND_CHANGE = recalc_brands                    # discount_rate
 run2_retry_lock = threading.Lock()
 
 
+# Used by 2 buttons (admins): "Run again" (Automate page, failed shop) and "Manual sync" (every Render shop tab,
+# 2026-11-12, user: "in each competitors and brand store add manual sync button to sync all products").
+# Body {"label": "Samawa"} or {"shop": "samawa"}. Same steps as the 07:00 Run 2 for that ONE shop: whole list
+# downloaded, new products saved, matching, least + suggested price; the shop's timer starts again today.
+# Progress in app_settings 'full_lists' -> "manual_sync" {label, status running/done/error, started, finished, msg};
+# GET /settings/run2/sync-status reads it. The 07:00 Run 2 waits while it runs (daily_update.render_full_lists).
 @app.post("/settings/run2/retry")
 def run2_retry_route():
     if g.get("role") != "admin":                             # same check as auth.is_admin()
         return jsonify({"ok": False, "error": "admins only"}), 403
-    label = str((request.get_json(silent=True) or {}).get("label") or "").strip()
+    body = request.get_json(silent=True) or {}
+    label = str(body.get("label") or "").strip()
     import daily_update as du
-    key = next((k for k, lbl in du.RUN2_LABELS.items() if lbl == label), None)
-    if not key:
-        return jsonify({"ok": False, "error": f"'{label}' is not a Run 2 shop"}), 400
+    key = str(body.get("shop") or "").strip() or next((k for k, lbl in du.RUN2_LABELS.items() if lbl == label), None)
+    if key not in du.RUN2_ORDER:
+        return jsonify({"ok": False, "error": f"'{label or key}' is not synced by the website (PC shop)"}), 400
+    label = du.RUN2_LABELS[key]
     if not run2_retry_lock.acquire(blocking=False):
-        return jsonify({"ok": False, "error": "another 'Run again' is still running"}), 409
+        busy = (_manual_sync_info() or {}).get("label") or "another shop"
+        return jsonify({"ok": False, "error": f"{busy} is syncing now - wait until it is finished"}), 409
 
     import json                                              # (app.py has no module-level json import)
+
+    def mark(state, status, msg=""):
+        """Save the Manual sync progress in the Run 2 state (shop tab + Automate page read it)."""
+        ms = state.setdefault("manual_sync", {})
+        now = du.india_now().isoformat(timespec="minutes")
+        if status == "running":
+            ms.clear()
+            ms.update({"label": label, "shop": key, "by": user, "started": now})
+        else:
+            ms["finished"] = now
+        ms.update({"status": status, "msg": msg})
+        du.write_state(state)
 
     def job():
         try:
@@ -2482,23 +2535,53 @@ def run2_retry_route():
                 c.close()
             if state.get("weekly_status") == "running":
                 log(f"[RUN2-RETRY] {label}: the 07:00 Run 2 is running now -> not started")
+                mark(state, "error", "the 07:00 Run 2 is running now - try again when it is finished")
                 return
             log(f"[RUN2-RETRY] {label}: started by {user}")
+            mark(state, "running")
             res = du.run2_shop(state, key)                   # download -> new products -> matching (writes the state)
             res["done_on"] = du.india_now().date().isoformat()
             state.setdefault("weekly_results", {})[label] = res
             du.write_state(state)
             r = du.render_get("/competitor/update-least")   # least + suggested price + automatic brands
+            err = str(res.get("error") or (res.get("match") or {}).get("error") or "")
+            if err:
+                mark(state, "error", err[:200])
+            elif res.get("incomplete"):
+                mark(state, "done", f"incomplete: only {res.get('saved', '?')} products read - old prices kept for the rest")
+            else:
+                mark(state, "done", f"{res.get('saved', '?')} products read, {res.get('new_added', 0)} new")
             log(f"[RUN2-RETRY] {label}: done {json.dumps(res, default=str)[:300]} | update-least "
                 f"{r.status_code if r is not None else 'not started'}")
         except Exception as ex:
             log(f"[RUN2-RETRY] {label}: ERROR {ex}\n{traceback.format_exc()}")
+            try:
+                mark(state, "error", str(ex)[:200])
+            except Exception:
+                pass
         finally:
             run2_retry_lock.release()
 
     user = g.get("user")
     threading.Thread(target=job, daemon=True, name="run2-retry").start()
     return jsonify({"ok": True, "started": label})
+
+
+def _manual_sync_info():
+    """The last Manual sync / Run again (app_settings 'full_lists' -> manual_sync), or None."""
+    import json
+    import daily_update as du
+    c = pg_conn()
+    try:
+        return (json.loads(du.read_setting(c.cursor(), du.RUN2_STATE_KEY) or "{}").get("manual_sync") or None)
+    finally:
+        c.close()
+
+
+@app.get("/settings/run2/sync-status")
+def run2_sync_status_route():
+    """Progress of the Manual sync button: {"ok": true, "sync": {label, status, started, finished, msg}}."""
+    return jsonify({"ok": True, "sync": _manual_sync_info(), "busy": run2_retry_lock.locked()})
 log("[DISCOUNT] Settings page linked: saving a new rate will recalculate suggested prices")
 
 
@@ -2673,7 +2756,10 @@ OWN_ID_PREFIXES = ("rec", "new")             # ids a route accepts: rec = from A
 
 
 def in_airtable(fid):
-    """True for products that exist in Airtable (record id rec...)."""
+    """True for products that exist in Airtable (record id rec...). Every Airtable WRITE checks this first.
+    TEST SITE (TEST_SITE=on) -> always False = nothing is ever written to the real Airtable."""
+    if TEST_SITE:
+        return False
     return str(fid).startswith("rec")
 
 

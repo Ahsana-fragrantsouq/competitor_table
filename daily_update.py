@@ -1009,6 +1009,13 @@ def render_full_lists(args, quiet=False, restart_stopped=False):
     cur.close()
     conn.close()
     started = state.get("weekly_started") or ""
+    # "Manual sync" button (shop tab / Automate, app.py) running right now -> wait, do not run 2 shops at once.
+    # After a website restart that sync is dead -> not waited for (restart_stopped).
+    ms = state.get("manual_sync") or {}
+    if ms.get("status") == "running" and (ms.get("started") or "")[:10] == today and not restart_stopped:
+        if not quiet:
+            log(f"[RUN2] Manual sync of {ms.get('label')} is running -> Run 2 waits")
+        return None                                      # None = busy, the scheduler asks again next minute
     cut_off = state.get("weekly_status") == "running" and started[:10] == today
     if cut_off and restart_stopped:
         log(f"[RUN2] Today's shop started at {started[11:16]} was stopped (website restarted / deployed) -> again")
@@ -1070,6 +1077,9 @@ def run2_scheduler(check_every=60):
             today = india_now().date().isoformat()
             if done_on != today:
                 ran = render_full_lists(args, quiet=True, restart_stopped=first)
+                if ran is None:                          # a Manual sync is running -> ask again next minute
+                    time.sleep(check_every)
+                    continue
                 if india_now().strftime("%H:%M") >= RUN2_TIME:
                     first = False                        # the cut-off check is only needed once, at/after RUN2_TIME
                 now = india_now()
