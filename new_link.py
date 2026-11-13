@@ -50,7 +50,8 @@ NL_HOSTS = [("samawa.ae", "samawa"), ("frenchfragrance.com", "ff"), ("vperfumes.
             ("abdulsamadalqurashi.com", "aq"), ("arabianoud.com", "ao"), ("aljazeeraperfumes.com", "jz"),
             ("ajmal.com", "jm"),
             ("alharamainperfumes.com", "ah"), ("reefperfumes.com", "rf")]
-NL_SHOPS = [k for k in link_edit.SHOP_LISTS if k not in ("bp", "es")]     # BP / ES follow French Fragrance
+NL_SHOPS = [k for k in link_edit.SHOP_LISTS if k not in ("bp", "es", "br")]   # BP / ES follow French Fragrance;
+# br = Brands Perfume is not linked to our products (2026-11-13, app.UNLINKED_SHOPS)
 NL_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                             "Chrome/124 Safari/537.36", "Accept": "application/json"}
 
@@ -352,6 +353,8 @@ def new_link_save():
     shop = body.get("shop") or nl_shop_of(url)
     if not fid.startswith(("rec", "new")) or not url.lower().startswith("http"):
         return jsonify({"ok": False, "error": "Paste the full product link (https://...)"}), 400
+    if shop == "br":                                   # Brands Perfume: competitor tab only (app.UNLINKED_SHOPS)
+        return jsonify({"ok": False, "error": "Brands Perfume is not linked to our products (competitor tab only)"}), 400
     if shop not in NL_SHOPS:
         return jsonify({"ok": False, "error": "Shop not found from the link - pick the shop in the list"}), 400
     if not link_edit.HOOKS:

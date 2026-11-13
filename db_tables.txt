@@ -1,0 +1,41 @@
+[SQL] Database: dpg-d9pk54m1egvs73fi1g8g-a.oregon-postgres.render.com/french_fragrance_db
+[SQL] Query: SELECT table_name, (xpath('/row/c/text()', query_to_xml(format('SELECT COUNT(*) AS c FROM %I', table_name), false, true, '')))[1]::text AS rows, pg_size_pretty(pg_total_relation_size(quote_ident(table_name))) AS size FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name
+[SQL] table_name | rows | size
+      abdulsamad_catalog | 72 | 104 kB
+      ajmal_catalog | 228 | 200 kB
+      alharamain_catalog | 300 | 296 kB
+      alinjaz_catalog | 1486 | 912 kB
+      aljazeera_catalog | 151 | 144 kB
+      amberiya_catalog | 3234 | 1976 kB
+      anfasic_catalog | 57 | 104 kB
+      app_settings | 9 | 280 kB
+      app_users | 5 | 32 kB
+      arabianoud_catalog | 189 | 136 kB
+      brand_automation | 65 | 32 kB
+      brand_discount | 0 | 32 kB
+      brand_sku | 470 | 264 kB
+      branded_perfume_catalog | 15406 | 9168 kB
+      brandsperfume_catalog | 11816 | 4896 kB
+      button_runs | 164 | 592 kB
+      competitor_table | 9619 | 285 MB
+      emiratespride_catalog | 30 | 104 kB
+      essenzi_catalog | 15406 | 8936 kB
+      french_fragrance_catalog | 15499 | 6032 kB
+      item_master | 9619 | 47 MB
+      item_master_deleted | 1 | 32 kB
+      item_options | 0 | 16 kB
+      khaltat_catalog | 70 | 112 kB
+      mhgboutique_catalog | 662 | 432 kB
+      nichegallerie_catalog | 5910 | 2744 kB
+      oudelite_catalog | 156 | 128 kB
+      ounass_catalog | 3670 | 2096 kB
+      perfumedubai_catalog | 1524 | 960 kB
+      price_check_log | 214 | 136 kB
+      price_check_progress | 51 | 32 kB
+      price_check_runs | 3 | 32 kB
+      reefperfumes_catalog | 60 | 88 kB
+      samawa_catalog | 26871 | 14 MB
+      test_price_backup | 0 | 32 kB
+      vperfumes_catalog | 8620 | 4032 kB
+[SQL] 36 row(s)
+[SQL] Done (saved)

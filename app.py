@@ -144,6 +144,7 @@ from barcode_edit import barcode_bp                # POST /competitor/barcode
 import stock_edit                                  # admins: edit OUR stock -> Shopify (stock_edit.py)
 from stock_edit import stock_bp                    # POST /stock/edit
 import stock_sync                                  # admins: 'Sync the stock' on Brands Store tabs (stock_sync.py)
+import bundle                                      # menu Bundle -> Create bundle form (bundle.py)
 from stock_sync import stock_sync_bp               # GET /stock-sync/list?shop=
 import item_master                                 # Item Master page: all French Inventories fields (item_master.py)
 from item_master import item_master_bp             # /item-master, /item-master/reload, /load, /status
@@ -232,6 +233,7 @@ app.register_blueprint(shopify_prices.shopify_prices_bp)   # Item Master: Load p
 app.register_blueprint(barcode_bp)                 # 'Edit' our barcode for admins (barcode_edit.py)
 app.register_blueprint(stock_bp)                   # 'Edit' our stock for admins -> Shopify (stock_edit.py)
 app.register_blueprint(stock_sync_bp)              # 'Sync the stock' popup on Brands Store tabs (stock_sync.py)
+app.register_blueprint(bundle.bundle_bp)           # menu Bundle -> /bundle/new (bundle.py)
 app.register_blueprint(item_master_bp)             # Item Master page (item_master.py)
 app.register_blueprint(desc_bp)                    # 'Create product description' button (description_gen.py)
 app.register_blueprint(web_bp)                     # 'Create in website' button (shopify_create.py)
@@ -272,14 +274,24 @@ init_auth(app)                                     # users from Render env var U
 #   - Run 2 + Brands Perfume quick check are OFF unless RUN2_SCHEDULER=on / BR_QUICK_CHECK=on is set
 #   - a red "TEST SITE" bar on every page (test_banner, after_request) so nobody mixes the two sites up
 TEST_SITE = os.environ.get("TEST_SITE", "off").lower() in ("on", "1", "true", "yes")
+# the REAL database name = last part of FF_DATABASE_URL (shown in the log + red bar; never the password)
+DB_NAME = (os.environ.get("FF_DATABASE_URL") or "").partition("?")[0].rpartition("/")[2] or "(FF_DATABASE_URL not set)"
+DB_IS_PRODUCTION = DB_NAME == "french_fragrance_db"
 if TEST_SITE:
-    print(f"[TEST-SITE] ON: Airtable writes OFF, Shopify store = {os.environ.get('SHOPIFY_SHOP') or '(SHOPIFY_SHOP not set!)'}",
-          flush=True)
+    print(f"[TEST-SITE] ON: Airtable writes OFF, Shopify store = {os.environ.get('SHOPIFY_SHOP') or '(SHOPIFY_SHOP not set!)'}"
+          f", database = {DB_NAME}", flush=True)
+    if DB_IS_PRODUCTION:
+        print("[TEST-SITE] !!! WARNING: the TEST site uses the PRODUCTION database french_fragrance_db - change "
+              "FF_DATABASE_URL to .../french_fragrance_test in Render !!!", flush=True)
     os.environ.setdefault("RUN2_SCHEDULER", "off")
     os.environ.setdefault("BR_QUICK_CHECK", "off")
-TEST_BAR = ('<div style="position:sticky;top:0;z-index:9999;background:#b3261e;color:#fff;text-align:center;'
-            'font:600 14px sans-serif;padding:6px">TEST SITE &middot; Shopify: '
-            + (os.environ.get("SHOPIFY_SHOP") or "not set") + ' &middot; Airtable not changed</div>')
+# fixed at the very top of EVERY page (login page centres its box with flex -> a normal div sat beside it, 2026-11-12)
+TEST_BAR = ('<style>body{padding-top:34px!important}</style>'
+            '<div style="position:fixed;top:0;left:0;right:0;z-index:99999;background:#b3261e;color:#fff;text-align:center;'
+            'font:600 14px sans-serif;padding:6px;box-sizing:border-box">TEST SITE &middot; Shopify: '
+            + (os.environ.get("SHOPIFY_SHOP") or "not set") + ' &middot; Database: ' + DB_NAME
+            + (' &mdash; WARNING: this is the PRODUCTION database!' if DB_IS_PRODUCTION else '')
+            + ' &middot; Airtable not changed</div>')
 
 
 @app.after_request
@@ -312,9 +324,18 @@ if os.environ.get("RUN2_SCHEDULER", "on").lower() != "off":
         print(f"[RUN2] Scheduler NOT started: {ex}", flush=True)
 else:
     print("[RUN2] Scheduler switched off (RUN2_SCHEDULER=off)", flush=True)
+# ---- SHOPS NOT LINKED to our products (2026-11-13, user: "remove brands perfume from linking to competitor table
+#      just be in competitor only"): the shop is still downloaded (Run 2 / Manual sync) and has its own tab under
+#      Competitors, but matching gives NO link / suggestion -> never on the Competitor table cards, never in least
+#      price / suggested price / AUTO. ct_match_shop + unlink_shop (SECTION matching), cleared at every start.
+#      To link Brands Perfume again: remove "br" here, then /competitor/match-br?secret= .
+UNLINKED_SHOPS = {"br"}
 # Brands Perfume DAILY QUICK CHECK (brandsperfume.py SECTION 6): only pages linked to our products re-read every day
 # at BR_QUICK_TIME (06:15 India) -> fresh price + stock. Render env BR_QUICK_CHECK=off switches it off.
-if os.environ.get("BR_QUICK_CHECK", "on").lower() != "off":
+# Brands Perfume not linked (UNLINKED_SHOPS) -> nothing to check -> not started.
+if "br" in UNLINKED_SHOPS:
+    print("[BR-QUICK] Not started: Brands Perfume is not linked to our products (UNLINKED_SHOPS)", flush=True)
+elif os.environ.get("BR_QUICK_CHECK", "on").lower() != "off":
     try:
         import brandsperfume
         threading.Thread(target=brandsperfume.br_quick_scheduler, daemon=True, name="br-quick").start()
@@ -326,7 +347,9 @@ if os.environ.get("BR_QUICK_CHECK", "on").lower() != "off":
 # Change Airtable table / field names and the match threshold here.
 # ---------------------------------------------------------------- config
 # Settings. Values in os.environ come from Render -> Environment; the rest are fixed IDs / names.
-AIRTABLE_TOKEN = os.environ["AIRTABLE_TOKEN"]
+AIRTABLE_TOKEN = os.environ.get("AIRTABLE_TOKEN", "")
+if not AIRTABLE_TOKEN:                 # was a crash at start (test site 2026-11-12) -> now only Airtable READS fail
+    print("[CONFIG] AIRTABLE_TOKEN not set in Render -> Load from Airtable / Airtable reads will not work", flush=True)
 RUN_SECRET = os.environ.get("RUN_SECRET", "")
 BASE_ID = "app5gOqDt9aZrW5bV"
 FI_TABLE = "tblL03CEHdYy1kUdQ"      # French Inventories
@@ -1313,7 +1336,7 @@ def pg_conn():
     url = os.environ.get("FF_DATABASE_URL")
     if not url:
         raise RuntimeError("FF_DATABASE_URL is not set")
-    log("[PG] Opening connection to french_fragrance_db")
+    log(f"[PG] Opening connection to {DB_NAME}")              # real name from FF_DATABASE_URL
     return psycopg2.connect(url, sslmode="require")
 
 
@@ -1802,6 +1825,47 @@ def brand_core(bnorm):
 NO_SIZE_ONLY_SUGGEST = False
 
 
+# ---- SHOPS NOT LINKED to our products: UNLINKED_SHOPS is set in SECTION 2 (before the schedulers)
+UNLINK_COLS = ["link", "title", "price", "stock", "suggestion", "method", "score", "confirmed"]
+
+
+def unlink_shop(shop_key, only_brands=None):
+    """Clear every link / suggestion of shop_key in competitor_table (the shop's own list is NOT touched).
+    Returns the fi_record_ids that had something."""
+    p = SHOPS[shop_key]["prefix"]
+    sets = ", ".join(f"{p}_{c} = NULL" if c not in ("stock", "confirmed") else f"{p}_{c} = FALSE"
+                     for c in UNLINK_COLS)
+    where = f"({p}_link IS NOT NULL OR {p}_suggestion IS NOT NULL)"
+    params = []
+    if only_brands:
+        where += " AND LOWER(brand) = ANY(%s)"
+        params.append([b.lower() for b in only_brands])
+    conn = pg_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(CT_CREATE)
+        cur.execute(f"UPDATE competitor_table SET {sets} WHERE {where} RETURNING fi_record_id", params)
+        ids = [r[0] for r in cur.fetchall()]
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    log(f"[UNLINK-{p.upper()}] {SHOPS[shop_key]['label']}: {len(ids)} products un-linked "
+        f"(shop not linked to our products, UNLINKED_SHOPS)")
+    return ids
+
+
+def unlink_at_start():
+    """Website start: links of an un-linked shop still in the table -> cleared + least / suggested price again."""
+    try:
+        cleared = sum(len(unlink_shop(k)) for k in UNLINKED_SHOPS if k in SHOPS)
+        if cleared:
+            log(f"[UNLINK] {cleared} products changed -> least / suggested price recalculated")
+            ct_update_least()
+    except Exception as ex:
+        log(f"[UNLINK] at start FAILED: {ex}")
+
+
 def ct_match_shop(shop_key, only_brands=None, least=True):
     """STEP 2 / 3 - find every competitor_table product on ONE shop and save link / price / stock / suggestion.
 
@@ -1818,6 +1882,15 @@ def ct_match_shop(shop_key, only_brands=None, least=True):
     shop = SHOPS[shop_key]
     tag = f"CT-{shop_key.upper()}"                # log prefix: [CT-SAMAWA ...] / [CT-FF ...]
     started = time.time()
+    if shop_key in UNLINKED_SHOPS:                # not linked to our products -> only clear (see UNLINKED_SHOPS)
+        ids = unlink_shop(shop_key, only_brands)
+        if ids and least:
+            ct_update_least()
+        summary = {"step": f"match-{shop_key}", "products": 0, "unlinked": len(ids),
+                   "note": f"{shop['label']} is not linked to our products (UNLINKED_SHOPS)"}
+        state["last_summary"] = summary
+        log(f"[{tag}] skipped: {summary['note']}")
+        return summary
     summary = {"step": f"match-{shop_key}", "products": 0, "matched_barcode": 0, "matched_fuzzy": 0,
                "unmatched": 0, "with_suggestion": 0, "skipped_no_brand": 0, "brands_done": 0}
     state["last_summary"] = summary
@@ -2976,10 +3049,15 @@ def our_stock_numbers():
     """Stock NUMBER of every SKU on fragrantsouq.com: Shopify ADMIN API (the public list only says in / out of stock).
     Uses Render env SHOPIFY_SHOP + SHOPIFY_API_TOKEN (same as 'Create in website'). Returns {SKU: qty} ({} when the
     token is missing or Shopify refuses - the page then simply shows no stock number)."""
-    shop, token = os.environ.get("SHOPIFY_SHOP", ""), os.environ.get("SHOPIFY_API_TOKEN", "")
-    ver = os.environ.get("SHOPIFY_API_VERSION", "2025-01")
-    if not shop or not token:
-        log("[OUR-QTY] SHOPIFY_SHOP / SHOPIFY_API_TOKEN not set -> no stock numbers")
+    import shopify_create as sc                          # fixed token, or client id + secret (Dev Dashboard app)
+    shop, ver = sc.SHOP, sc.API_VERSION
+    if not shop or not sc.TOKEN:
+        log("[OUR-QTY] SHOPIFY_SHOP / SHOPIFY_API_TOKEN (or SHOPIFY_CLIENT_ID + SECRET) not set -> no stock numbers")
+        return {}
+    try:
+        token = sc.access_token()
+    except Exception as ex:
+        log(f"[OUR-QTY] no Shopify token: {ex} -> no stock numbers")
         return {}
     url = f"https://{shop}/admin/api/{ver}/products.json"
     params = {"limit": 250, "fields": "id,variants"}
@@ -3298,6 +3376,7 @@ link_edit.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Edit link' for
 barcode_edit.init(connect=pg_conn, airtable_barcode=airtable_set_barcode)   # 'Edit' our barcode (barcode_edit.py)
 stock_edit.init(connect=pg_conn)                                             # 'Edit' our stock -> Shopify (stock_edit.py)
 stock_sync.init(connect=pg_conn)                                             # 'Sync the stock' list (stock_sync.py)
+bundle.init(connect=pg_conn)                                                 # Bundle menu page (bundle.py)
 shopify_prices.init(connect=pg_conn)                                         # Item Master: prices FROM Shopify (shopify_prices.py)
 item_master.init(connect=pg_conn, read_airtable=at_list,       # Item Master: Airtable -> item_master (item_master.py)
                  fi_table=FI_TABLE, brands_table=BRANDS_TABLE, brands_name_field=BRANDS_NAME_FIELD,
@@ -3350,7 +3429,13 @@ def install_db_triggers():
             conn.close()
 
 
-threading.Thread(target=install_db_triggers, daemon=True).start()
+def start_jobs():
+    """Website start (background): database triggers, then un-linked shops cleared (UNLINKED_SHOPS)."""
+    install_db_triggers()
+    unlink_at_start()
+
+
+threading.Thread(target=start_jobs, daemon=True).start()
 
 
 @app.get("/competitor/update-least")

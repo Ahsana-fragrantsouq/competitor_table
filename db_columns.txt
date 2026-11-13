@@ -1,0 +1,605 @@
+[SQL] Database: dpg-d9pk54m1egvs73fi1g8g-a.oregon-postgres.render.com/french_fragrance_db
+[SQL] Query: SELECT table_name, column_name, data_type, is_nullable, left(COALESCE(column_default, ''), 60) AS column_default FROM information_schema.columns WHERE table_schema = 'public' ORDER BY table_name, ordinal_position
+[SQL] table_name | column_name | data_type | is_nullable | column_default
+      abdulsamad_catalog | id | integer | NO | nextval('abdulsamad_catalog_id_seq'::regclass)
+      abdulsamad_catalog | variant_id | bigint | NO | 
+      abdulsamad_catalog | product_url | text | YES | 
+      abdulsamad_catalog | gtin | text | YES | 
+      abdulsamad_catalog | sku | text | YES | 
+      abdulsamad_catalog | brand | text | YES | 
+      abdulsamad_catalog | name | text | YES | 
+      abdulsamad_catalog | product_type | text | YES | 
+      abdulsamad_catalog | price_inc_tax | numeric | YES | 
+      abdulsamad_catalog | price | numeric | YES | 
+      abdulsamad_catalog | stock | text | YES | 
+      abdulsamad_catalog | volume | text | YES | 
+      abdulsamad_catalog | updated_at | timestamp without time zone | YES | now()
+      ajmal_catalog | id | integer | NO | nextval('ajmal_catalog_id_seq'::regclass)
+      ajmal_catalog | variant_id | bigint | NO | 
+      ajmal_catalog | product_url | text | YES | 
+      ajmal_catalog | gtin | text | YES | 
+      ajmal_catalog | sku | text | YES | 
+      ajmal_catalog | brand | text | YES | 
+      ajmal_catalog | name | text | YES | 
+      ajmal_catalog | product_type | text | YES | 
+      ajmal_catalog | price_inc_tax | numeric | YES | 
+      ajmal_catalog | price | numeric | YES | 
+      ajmal_catalog | stock | text | YES | 
+      ajmal_catalog | volume | text | YES | 
+      ajmal_catalog | updated_at | timestamp without time zone | YES | now()
+      alharamain_catalog | id | integer | NO | nextval('alharamain_catalog_id_seq'::regclass)
+      alharamain_catalog | variant_id | bigint | NO | 
+      alharamain_catalog | product_url | text | YES | 
+      alharamain_catalog | gtin | text | YES | 
+      alharamain_catalog | sku | text | YES | 
+      alharamain_catalog | brand | text | YES | 
+      alharamain_catalog | name | text | YES | 
+      alharamain_catalog | product_type | text | YES | 
+      alharamain_catalog | price_inc_tax | numeric | YES | 
+      alharamain_catalog | price | numeric | YES | 
+      alharamain_catalog | stock | text | YES | 
+      alharamain_catalog | volume | text | YES | 
+      alharamain_catalog | updated_at | timestamp without time zone | YES | now()
+      alinjaz_catalog | id | integer | NO | nextval('alinjaz_catalog_id_seq'::regclass)
+      alinjaz_catalog | product_url | text | NO | 
+      alinjaz_catalog | gtin | text | YES | 
+      alinjaz_catalog | sku | text | YES | 
+      alinjaz_catalog | name | text | YES | 
+      alinjaz_catalog | price_inc_tax | numeric | YES | 
+      alinjaz_catalog | price | numeric | YES | 
+      alinjaz_catalog | stock | text | YES | 
+      alinjaz_catalog | volume | text | YES | 
+      alinjaz_catalog | updated_at | timestamp without time zone | YES | now()
+      aljazeera_catalog | id | integer | NO | nextval('aljazeera_catalog_id_seq'::regclass)
+      aljazeera_catalog | variant_id | bigint | NO | 
+      aljazeera_catalog | product_url | text | YES | 
+      aljazeera_catalog | gtin | text | YES | 
+      aljazeera_catalog | sku | text | YES | 
+      aljazeera_catalog | brand | text | YES | 
+      aljazeera_catalog | name | text | YES | 
+      aljazeera_catalog | product_type | text | YES | 
+      aljazeera_catalog | price_inc_tax | numeric | YES | 
+      aljazeera_catalog | price | numeric | YES | 
+      aljazeera_catalog | stock | text | YES | 
+      aljazeera_catalog | volume | text | YES | 
+      aljazeera_catalog | updated_at | timestamp without time zone | YES | now()
+      amberiya_catalog | id | integer | NO | nextval('amberiya_catalog_id_seq'::regclass)
+      amberiya_catalog | variant_id | bigint | NO | 
+      amberiya_catalog | product_url | text | YES | 
+      amberiya_catalog | gtin | text | YES | 
+      amberiya_catalog | sku | text | YES | 
+      amberiya_catalog | brand | text | YES | 
+      amberiya_catalog | name | text | YES | 
+      amberiya_catalog | product_type | text | YES | 
+      amberiya_catalog | price_inc_tax | numeric | YES | 
+      amberiya_catalog | price | numeric | YES | 
+      amberiya_catalog | stock | text | YES | 
+      amberiya_catalog | volume | text | YES | 
+      amberiya_catalog | updated_at | timestamp without time zone | YES | now()
+      anfasic_catalog | id | integer | NO | nextval('anfasic_catalog_id_seq'::regclass)
+      anfasic_catalog | variant_id | bigint | NO | 
+      anfasic_catalog | product_url | text | YES | 
+      anfasic_catalog | gtin | text | YES | 
+      anfasic_catalog | sku | text | YES | 
+      anfasic_catalog | brand | text | YES | 
+      anfasic_catalog | name | text | YES | 
+      anfasic_catalog | product_type | text | YES | 
+      anfasic_catalog | price_inc_tax | numeric | YES | 
+      anfasic_catalog | price | numeric | YES | 
+      anfasic_catalog | stock | text | YES | 
+      anfasic_catalog | volume | text | YES | 
+      anfasic_catalog | updated_at | timestamp without time zone | YES | now()
+      app_settings | key | text | NO | 
+      app_settings | value | text | YES | 
+      app_settings | updated_by | text | YES | 
+      app_settings | updated_at | timestamp without time zone | YES | now()
+      app_users | username | text | NO | 
+      app_users | password_hash | text | NO | 
+      app_users | role | text | NO | 'user'::text
+      app_users | active | boolean | NO | true
+      app_users | created_by | text | YES | 
+      app_users | created_at | timestamp without time zone | YES | now()
+      app_users | last_login | timestamp without time zone | YES | 
+      app_users | failed_logins | integer | NO | 0
+      app_users | locked_until | timestamp without time zone | YES | 
+      arabianoud_catalog | id | integer | NO | nextval('arabianoud_catalog_id_seq'::regclass)
+      arabianoud_catalog | variant_id | bigint | NO | 
+      arabianoud_catalog | product_url | text | YES | 
+      arabianoud_catalog | gtin | text | YES | 
+      arabianoud_catalog | sku | text | YES | 
+      arabianoud_catalog | brand | text | YES | 
+      arabianoud_catalog | name | text | YES | 
+      arabianoud_catalog | product_type | text | YES | 
+      arabianoud_catalog | price_inc_tax | numeric | YES | 
+      arabianoud_catalog | price | numeric | YES | 
+      arabianoud_catalog | stock | text | YES | 
+      arabianoud_catalog | volume | text | YES | 
+      arabianoud_catalog | updated_at | timestamp without time zone | YES | now()
+      brand_automation | brand | text | NO | 
+      brand_automation | auto | boolean | NO | false
+      brand_automation | updated_by | text | YES | 
+      brand_automation | updated_at | timestamp without time zone | YES | now()
+      brand_discount | brand_key | text | NO | 
+      brand_discount | brand | text | YES | 
+      brand_discount | rate | numeric | NO | 
+      brand_discount | updated_by | text | YES | 
+      brand_discount | updated_at | timestamp without time zone | YES | now()
+      brand_sku | brand | text | NO | 
+      brand_sku | sku_prefix | text | YES | 
+      brand_sku | next_sku_number | integer | YES | 1001
+      brand_sku | airtable_id | text | YES | 
+      brand_sku | updated_at | timestamp without time zone | YES | now()
+      brand_sku | created_by | text | YES | 
+      branded_perfume_catalog | id | integer | NO | nextval('branded_perfume_catalog_id_seq'::regclass)
+      branded_perfume_catalog | ff_id | integer | NO | 
+      branded_perfume_catalog | ff_url | text | YES | 
+      branded_perfume_catalog | gtin | text | YES | 
+      branded_perfume_catalog | name | text | YES | 
+      branded_perfume_catalog | volume | text | YES | 
+      branded_perfume_catalog | bp_url | text | YES | 
+      branded_perfume_catalog | bp_price | numeric | YES | 
+      branded_perfume_catalog | bp_price_inc_tax | numeric | YES | 
+      branded_perfume_catalog | bp_stock | text | YES | 
+      branded_perfume_catalog | bp_status | text | YES | 
+      branded_perfume_catalog | checked_at | timestamp without time zone | YES | 
+      branded_perfume_catalog | updated_at | timestamp without time zone | YES | now()
+      branded_perfume_catalog | bp_title | text | YES | 
+      branded_perfume_catalog | bp_size | text | YES | 
+      brandsperfume_catalog | id | integer | NO | nextval('brandsperfume_catalog_id_seq'::regclass)
+      brandsperfume_catalog | variant_id | bigint | NO | 
+      brandsperfume_catalog | product_url | text | YES | 
+      brandsperfume_catalog | gtin | text | YES | 
+      brandsperfume_catalog | sku | text | YES | 
+      brandsperfume_catalog | brand | text | YES | 
+      brandsperfume_catalog | name | text | YES | 
+      brandsperfume_catalog | product_type | text | YES | 
+      brandsperfume_catalog | price_inc_tax | numeric | YES | 
+      brandsperfume_catalog | price | numeric | YES | 
+      brandsperfume_catalog | stock | text | YES | 
+      brandsperfume_catalog | volume | text | YES | 
+      brandsperfume_catalog | updated_at | timestamp without time zone | YES | now()
+      button_runs | id | integer | NO | nextval('button_runs_id_seq'::regclass)
+      button_runs | action | text | NO | 
+      button_runs | fi_record_id | text | YES | 
+      button_runs | product | text | YES | 
+      button_runs | started_by | text | YES | 
+      button_runs | started_at | timestamp without time zone | YES | now()
+      button_runs | finished_at | timestamp without time zone | YES | 
+      button_runs | status | text | YES | 
+      button_runs | error | text | YES | 
+      button_runs | steps | jsonb | YES | 
+      competitor_table | id | integer | NO | nextval('competitor_table_id_seq'::regclass)
+      competitor_table | fi_record_id | text | NO | 
+      competitor_table | updated_at | timestamp without time zone | YES | now()
+      competitor_table | french_inventory_code | text | YES | 
+      competitor_table | sku | text | YES | 
+      competitor_table | product_name | text | YES | 
+      competitor_table | uae_price | numeric | YES | 
+      competitor_table | brand | text | YES | 
+      competitor_table | barcode | text | YES | 
+      competitor_table | perfume_name | text | YES | 
+      competitor_table | samawa_link | text | YES | 
+      competitor_table | samawa_price | numeric | YES | 
+      competitor_table | samawa_stock | boolean | YES | false
+      competitor_table | samawa_suggestion | text | YES | 
+      competitor_table | samawa_method | text | YES | 
+      competitor_table | samawa_score | numeric | YES | 
+      competitor_table | ff_link | text | YES | 
+      competitor_table | ff_price | numeric | YES | 
+      competitor_table | ff_stock | boolean | YES | false
+      competitor_table | ff_suggestion | text | YES | 
+      competitor_table | ff_method | text | YES | 
+      competitor_table | ff_score | numeric | YES | 
+      competitor_table | bp_link | text | YES | 
+      competitor_table | bp_price | numeric | YES | 
+      competitor_table | bp_stock | boolean | YES | false
+      competitor_table | es_link | text | YES | 
+      competitor_table | es_price | numeric | YES | 
+      competitor_table | es_stock | boolean | YES | false
+      competitor_table | least_price | numeric | YES | 
+      competitor_table | least_priced_website | text | YES | 
+      competitor_table | suggested_price | numeric | YES | 
+      competitor_table | vp_link | text | YES | 
+      competitor_table | vp_price | numeric | YES | 
+      competitor_table | vp_stock | boolean | YES | false
+      competitor_table | vp_suggestion | text | YES | 
+      competitor_table | vp_method | text | YES | 
+      competitor_table | vp_score | numeric | YES | 
+      competitor_table | samawa_title | text | YES | 
+      competitor_table | ff_title | text | YES | 
+      competitor_table | bp_title | text | YES | 
+      competitor_table | es_title | text | YES | 
+      competitor_table | vp_title | text | YES | 
+      competitor_table | samawa_confirmed | boolean | YES | false
+      competitor_table | ff_confirmed | boolean | YES | false
+      competitor_table | vp_confirmed | boolean | YES | false
+      competitor_table | samawa_rejected | text | YES | 
+      competitor_table | ff_rejected | text | YES | 
+      competitor_table | vp_rejected | text | YES | 
+      competitor_table | aj_link | text | YES | 
+      competitor_table | aj_price | numeric | YES | 
+      competitor_table | aj_stock | boolean | YES | false
+      competitor_table | aj_suggestion | text | YES | 
+      competitor_table | aj_method | text | YES | 
+      competitor_table | aj_score | numeric | YES | 
+      competitor_table | aj_title | text | YES | 
+      competitor_table | aj_confirmed | boolean | YES | false
+      competitor_table | aj_rejected | text | YES | 
+      competitor_table | our_link | text | YES | 
+      competitor_table | our_title | text | YES | 
+      competitor_table | on_link | text | YES | 
+      competitor_table | on_price | numeric | YES | 
+      competitor_table | on_stock | boolean | YES | false
+      competitor_table | on_suggestion | text | YES | 
+      competitor_table | on_method | text | YES | 
+      competitor_table | on_score | numeric | YES | 
+      competitor_table | on_title | text | YES | 
+      competitor_table | on_confirmed | boolean | YES | false
+      competitor_table | on_rejected | text | YES | 
+      competitor_table | am_link | text | YES | 
+      competitor_table | am_price | numeric | YES | 
+      competitor_table | am_stock | boolean | YES | false
+      competitor_table | am_suggestion | text | YES | 
+      competitor_table | am_method | text | YES | 
+      competitor_table | am_score | numeric | YES | 
+      competitor_table | am_title | text | YES | 
+      competitor_table | am_confirmed | boolean | YES | false
+      competitor_table | am_rejected | text | YES | 
+      competitor_table | ng_link | text | YES | 
+      competitor_table | ng_price | numeric | YES | 
+      competitor_table | ng_stock | boolean | YES | false
+      competitor_table | ng_suggestion | text | YES | 
+      competitor_table | ng_method | text | YES | 
+      competitor_table | ng_score | numeric | YES | 
+      competitor_table | ng_title | text | YES | 
+      competitor_table | ng_confirmed | boolean | YES | false
+      competitor_table | ng_rejected | text | YES | 
+      competitor_table | our_stock | boolean | YES | 
+      competitor_table | lop | numeric | YES | 
+      competitor_table | mop | numeric | YES | 
+      competitor_table | limits_by | text | YES | 
+      competitor_table | limits_at | timestamp without time zone | YES | 
+      competitor_table | no_auto | boolean | NO | false
+      competitor_table | no_auto_by | text | YES | 
+      competitor_table | no_auto_at | timestamp without time zone | YES | 
+      competitor_table | bp_confirmed | boolean | YES | false
+      competitor_table | es_confirmed | boolean | YES | false
+      competitor_table | pd_link | text | YES | 
+      competitor_table | pd_price | numeric | YES | 
+      competitor_table | pd_stock | boolean | YES | false
+      competitor_table | pd_suggestion | text | YES | 
+      competitor_table | pd_method | text | YES | 
+      competitor_table | pd_score | numeric | YES | 
+      competitor_table | pd_title | text | YES | 
+      competitor_table | pd_confirmed | boolean | YES | false
+      competitor_table | pd_rejected | text | YES | 
+      competitor_table | mh_link | text | YES | 
+      competitor_table | mh_price | numeric | YES | 
+      competitor_table | mh_stock | boolean | YES | false
+      competitor_table | mh_suggestion | text | YES | 
+      competitor_table | mh_method | text | YES | 
+      competitor_table | mh_score | numeric | YES | 
+      competitor_table | mh_title | text | YES | 
+      competitor_table | mh_confirmed | boolean | YES | false
+      competitor_table | mh_rejected | text | YES | 
+      competitor_table | ep_link | text | YES | 
+      competitor_table | ep_price | numeric | YES | 
+      competitor_table | ep_stock | boolean | YES | false
+      competitor_table | ep_suggestion | text | YES | 
+      competitor_table | ep_method | text | YES | 
+      competitor_table | ep_score | numeric | YES | 
+      competitor_table | ep_title | text | YES | 
+      competitor_table | ep_confirmed | boolean | YES | false
+      competitor_table | ep_rejected | text | YES | 
+      competitor_table | an_link | text | YES | 
+      competitor_table | an_price | numeric | YES | 
+      competitor_table | an_stock | boolean | YES | false
+      competitor_table | an_suggestion | text | YES | 
+      competitor_table | an_method | text | YES | 
+      competitor_table | an_score | numeric | YES | 
+      competitor_table | an_title | text | YES | 
+      competitor_table | an_confirmed | boolean | YES | false
+      competitor_table | an_rejected | text | YES | 
+      competitor_table | our_stock_qty | integer | YES | 
+      competitor_table | kh_link | text | YES | 
+      competitor_table | kh_price | numeric | YES | 
+      competitor_table | kh_stock | boolean | YES | false
+      competitor_table | kh_suggestion | text | YES | 
+      competitor_table | kh_method | text | YES | 
+      competitor_table | kh_score | numeric | YES | 
+      competitor_table | kh_title | text | YES | 
+      competitor_table | kh_confirmed | boolean | YES | false
+      competitor_table | kh_rejected | text | YES | 
+      competitor_table | oe_link | text | YES | 
+      competitor_table | oe_price | numeric | YES | 
+      competitor_table | oe_stock | boolean | YES | false
+      competitor_table | oe_suggestion | text | YES | 
+      competitor_table | oe_method | text | YES | 
+      competitor_table | oe_score | numeric | YES | 
+      competitor_table | oe_title | text | YES | 
+      competitor_table | oe_confirmed | boolean | YES | false
+      competitor_table | oe_rejected | text | YES | 
+      competitor_table | uae_price_website | boolean | YES | false
+      competitor_table | br_link | text | YES | 
+      competitor_table | br_price | numeric | YES | 
+      competitor_table | br_stock | boolean | YES | false
+      competitor_table | br_suggestion | text | YES | 
+      competitor_table | br_method | text | YES | 
+      competitor_table | br_score | numeric | YES | 
+      competitor_table | br_title | text | YES | 
+      competitor_table | br_confirmed | boolean | YES | false
+      competitor_table | br_rejected | text | YES | 
+      competitor_table | aq_link | text | YES | 
+      competitor_table | aq_price | numeric | YES | 
+      competitor_table | aq_stock | boolean | YES | false
+      competitor_table | aq_suggestion | text | YES | 
+      competitor_table | aq_method | text | YES | 
+      competitor_table | aq_score | numeric | YES | 
+      competitor_table | aq_title | text | YES | 
+      competitor_table | aq_confirmed | boolean | YES | false
+      competitor_table | aq_rejected | text | YES | 
+      competitor_table | ao_link | text | YES | 
+      competitor_table | ao_price | numeric | YES | 
+      competitor_table | ao_stock | boolean | YES | false
+      competitor_table | ao_suggestion | text | YES | 
+      competitor_table | ao_method | text | YES | 
+      competitor_table | ao_score | numeric | YES | 
+      competitor_table | ao_title | text | YES | 
+      competitor_table | ao_confirmed | boolean | YES | false
+      competitor_table | ao_rejected | text | YES | 
+      competitor_table | jz_link | text | YES | 
+      competitor_table | jz_price | numeric | YES | 
+      competitor_table | jz_stock | boolean | YES | false
+      competitor_table | jz_suggestion | text | YES | 
+      competitor_table | jz_method | text | YES | 
+      competitor_table | jz_score | numeric | YES | 
+      competitor_table | jz_title | text | YES | 
+      competitor_table | jz_confirmed | boolean | YES | false
+      competitor_table | jz_rejected | text | YES | 
+      competitor_table | jm_link | text | YES | 
+      competitor_table | jm_price | numeric | YES | 
+      competitor_table | jm_stock | boolean | YES | false
+      competitor_table | jm_suggestion | text | YES | 
+      competitor_table | jm_method | text | YES | 
+      competitor_table | jm_score | numeric | YES | 
+      competitor_table | jm_title | text | YES | 
+      competitor_table | jm_confirmed | boolean | YES | false
+      competitor_table | jm_rejected | text | YES | 
+      competitor_table | ah_link | text | YES | 
+      competitor_table | ah_price | numeric | YES | 
+      competitor_table | ah_stock | boolean | YES | false
+      competitor_table | ah_suggestion | text | YES | 
+      competitor_table | ah_method | text | YES | 
+      competitor_table | ah_score | numeric | YES | 
+      competitor_table | ah_title | text | YES | 
+      competitor_table | ah_confirmed | boolean | YES | false
+      competitor_table | ah_rejected | text | YES | 
+      competitor_table | rf_link | text | YES | 
+      competitor_table | rf_price | numeric | YES | 
+      competitor_table | rf_stock | boolean | YES | false
+      competitor_table | rf_suggestion | text | YES | 
+      competitor_table | rf_method | text | YES | 
+      competitor_table | rf_score | numeric | YES | 
+      competitor_table | rf_title | text | YES | 
+      competitor_table | rf_confirmed | boolean | YES | false
+      competitor_table | rf_rejected | text | YES | 
+      competitor_table | website_edits | jsonb | YES | 
+      emiratespride_catalog | id | integer | NO | nextval('emiratespride_catalog_id_seq'::regclass)
+      emiratespride_catalog | variant_id | bigint | NO | 
+      emiratespride_catalog | product_url | text | YES | 
+      emiratespride_catalog | gtin | text | YES | 
+      emiratespride_catalog | sku | text | YES | 
+      emiratespride_catalog | brand | text | YES | 
+      emiratespride_catalog | name | text | YES | 
+      emiratespride_catalog | product_type | text | YES | 
+      emiratespride_catalog | price_inc_tax | numeric | YES | 
+      emiratespride_catalog | price | numeric | YES | 
+      emiratespride_catalog | stock | text | YES | 
+      emiratespride_catalog | volume | text | YES | 
+      emiratespride_catalog | updated_at | timestamp without time zone | YES | now()
+      essenzi_catalog | id | integer | NO | nextval('essenzi_catalog_id_seq'::regclass)
+      essenzi_catalog | ff_id | integer | NO | 
+      essenzi_catalog | ff_url | text | YES | 
+      essenzi_catalog | gtin | text | YES | 
+      essenzi_catalog | name | text | YES | 
+      essenzi_catalog | volume | text | YES | 
+      essenzi_catalog | es_url | text | YES | 
+      essenzi_catalog | es_price | numeric | YES | 
+      essenzi_catalog | es_price_inc_tax | numeric | YES | 
+      essenzi_catalog | es_stock | text | YES | 
+      essenzi_catalog | es_status | text | YES | 
+      essenzi_catalog | es_title | text | YES | 
+      essenzi_catalog | es_size | text | YES | 
+      essenzi_catalog | checked_at | timestamp without time zone | YES | 
+      essenzi_catalog | updated_at | timestamp without time zone | YES | now()
+      french_fragrance_catalog | id | integer | NO | nextval('french_fragrance_catalog_id_seq'::regclass)
+      french_fragrance_catalog | airtable_record_id | text | NO | 
+      french_fragrance_catalog | product_url | text | YES | 
+      french_fragrance_catalog | gtin | text | YES | 
+      french_fragrance_catalog | name | text | YES | 
+      french_fragrance_catalog | price_inc_tax | numeric | YES | 
+      french_fragrance_catalog | price | numeric | YES | 
+      french_fragrance_catalog | stock | text | YES | 
+      french_fragrance_catalog | volume | text | YES | 
+      french_fragrance_catalog | updated_at | timestamp without time zone | YES | now()
+      item_master | fi_record_id | text | NO | 
+      item_master | airtable_fields | jsonb | YES | 
+      item_master | loaded_at | timestamp without time zone | YES | now()
+      item_master | sku | text | YES | 
+      item_master | brand | text | YES | 
+      item_master | product_type | text | YES | 
+      item_master | perfume_name | text | YES | 
+      item_master | uae_price | numeric | YES | 
+      item_master | asia_price | numeric | YES | 
+      item_master | america_price | numeric | YES | 
+      item_master | kuwait_price | numeric | YES | 
+      item_master | qatar_price | numeric | YES | 
+      item_master | uae_comparison_price | numeric | YES | 
+      item_master | stock_qty | numeric | YES | 
+      item_master | type | text | YES | 
+      item_master | category | text | YES | 
+      item_master | size | text | YES | 
+      item_master | barcode | text | YES | 
+      item_master | top_notes | text | YES | 
+      item_master | middle_notes | text | YES | 
+      item_master | base_notes | text | YES | 
+      item_master | shopify_description | text | YES | 
+      item_master | product_name | text | YES | 
+      item_master | shopify_id | text | YES | 
+      item_master | image_urls | text | YES | 
+      item_master | gift_items | text | YES | 
+      item_master | desc_created_at | timestamp without time zone | YES | 
+      item_master | source | text | YES | 
+      item_master | edited_fields | jsonb | YES | 
+      item_master | asia_comparison_price | numeric | YES | 
+      item_master | kuwait_comparison_price | numeric | YES | 
+      item_master | america_comparison_price | numeric | YES | 
+      item_master | qatar_comparison_price | numeric | YES | 
+      item_master_deleted | fi_record_id | text | NO | 
+      item_master_deleted | sku | text | YES | 
+      item_master_deleted | product_name | text | YES | 
+      item_master_deleted | deleted_by | text | YES | 
+      item_master_deleted | deleted_at | timestamp without time zone | YES | now()
+      item_options | field | text | NO | 
+      item_options | value | text | NO | 
+      item_options | added_by | text | YES | 
+      item_options | added_at | timestamp without time zone | YES | now()
+      khaltat_catalog | id | integer | NO | nextval('khaltat_catalog_id_seq'::regclass)
+      khaltat_catalog | variant_id | bigint | NO | 
+      khaltat_catalog | product_url | text | YES | 
+      khaltat_catalog | gtin | text | YES | 
+      khaltat_catalog | sku | text | YES | 
+      khaltat_catalog | brand | text | YES | 
+      khaltat_catalog | name | text | YES | 
+      khaltat_catalog | product_type | text | YES | 
+      khaltat_catalog | price_inc_tax | numeric | YES | 
+      khaltat_catalog | price | numeric | YES | 
+      khaltat_catalog | stock | text | YES | 
+      khaltat_catalog | volume | text | YES | 
+      khaltat_catalog | updated_at | timestamp without time zone | YES | now()
+      mhgboutique_catalog | id | integer | NO | nextval('mhgboutique_catalog_id_seq'::regclass)
+      mhgboutique_catalog | variant_id | bigint | NO | 
+      mhgboutique_catalog | product_url | text | YES | 
+      mhgboutique_catalog | gtin | text | YES | 
+      mhgboutique_catalog | sku | text | YES | 
+      mhgboutique_catalog | brand | text | YES | 
+      mhgboutique_catalog | name | text | YES | 
+      mhgboutique_catalog | product_type | text | YES | 
+      mhgboutique_catalog | price_inc_tax | numeric | YES | 
+      mhgboutique_catalog | price | numeric | YES | 
+      mhgboutique_catalog | stock | text | YES | 
+      mhgboutique_catalog | volume | text | YES | 
+      mhgboutique_catalog | updated_at | timestamp without time zone | YES | now()
+      nichegallerie_catalog | id | integer | NO | nextval('nichegallerie_catalog_id_seq'::regclass)
+      nichegallerie_catalog | product_url | text | NO | 
+      nichegallerie_catalog | gtin | text | YES | 
+      nichegallerie_catalog | sku | text | YES | 
+      nichegallerie_catalog | name | text | YES | 
+      nichegallerie_catalog | price_inc_tax | numeric | YES | 
+      nichegallerie_catalog | price | numeric | YES | 
+      nichegallerie_catalog | stock | text | YES | 
+      nichegallerie_catalog | volume | text | YES | 
+      nichegallerie_catalog | updated_at | timestamp without time zone | YES | now()
+      oudelite_catalog | id | integer | NO | nextval('oudelite_catalog_id_seq'::regclass)
+      oudelite_catalog | variant_id | bigint | NO | 
+      oudelite_catalog | product_url | text | YES | 
+      oudelite_catalog | gtin | text | YES | 
+      oudelite_catalog | sku | text | YES | 
+      oudelite_catalog | brand | text | YES | 
+      oudelite_catalog | name | text | YES | 
+      oudelite_catalog | product_type | text | YES | 
+      oudelite_catalog | price_inc_tax | numeric | YES | 
+      oudelite_catalog | price | numeric | YES | 
+      oudelite_catalog | stock | text | YES | 
+      oudelite_catalog | volume | text | YES | 
+      oudelite_catalog | updated_at | timestamp without time zone | YES | now()
+      ounass_catalog | id | integer | NO | nextval('ounass_catalog_id_seq'::regclass)
+      ounass_catalog | product_url | text | NO | 
+      ounass_catalog | gtin | text | YES | 
+      ounass_catalog | sku | text | YES | 
+      ounass_catalog | brand | text | YES | 
+      ounass_catalog | name | text | YES | 
+      ounass_catalog | price_inc_tax | numeric | YES | 
+      ounass_catalog | price | numeric | YES | 
+      ounass_catalog | stock | text | YES | 
+      ounass_catalog | volume | text | YES | 
+      ounass_catalog | updated_at | timestamp without time zone | YES | now()
+      perfumedubai_catalog | id | integer | NO | nextval('perfumedubai_catalog_id_seq'::regclass)
+      perfumedubai_catalog | variant_id | bigint | NO | 
+      perfumedubai_catalog | product_url | text | YES | 
+      perfumedubai_catalog | gtin | text | YES | 
+      perfumedubai_catalog | sku | text | YES | 
+      perfumedubai_catalog | brand | text | YES | 
+      perfumedubai_catalog | name | text | YES | 
+      perfumedubai_catalog | product_type | text | YES | 
+      perfumedubai_catalog | price_inc_tax | numeric | YES | 
+      perfumedubai_catalog | price | numeric | YES | 
+      perfumedubai_catalog | stock | text | YES | 
+      perfumedubai_catalog | volume | text | YES | 
+      perfumedubai_catalog | updated_at | timestamp without time zone | YES | now()
+      price_check_log | id | bigint | NO | nextval('price_check_log_id_seq'::regclass)
+      price_check_log | run_id | text | YES | 
+      price_check_log | fi_record_id | text | YES | 
+      price_check_log | shop | text | YES | 
+      price_check_log | url | text | YES | 
+      price_check_log | status | text | YES | 
+      price_check_log | old_price | numeric | YES | 
+      price_check_log | new_price | numeric | YES | 
+      price_check_log | old_stock | boolean | YES | 
+      price_check_log | new_stock | boolean | YES | 
+      price_check_log | error | text | YES | 
+      price_check_log | checked_at | timestamp without time zone | YES | now()
+      price_check_progress | fi_record_id | text | NO | 
+      price_check_progress | last_checked_at | timestamp without time zone | YES | 
+      price_check_progress | last_run_id | text | YES | 
+      price_check_progress | links_checked | integer | YES | 
+      price_check_progress | links_failed | integer | YES | 
+      price_check_runs | run_id | text | NO | 
+      price_check_runs | started_at | timestamp without time zone | YES | now()
+      price_check_runs | finished_at | timestamp without time zone | YES | 
+      price_check_runs | status | text | YES | 
+      price_check_runs | trigger | text | YES | 
+      price_check_runs | products | integer | YES | 0
+      price_check_runs | links | integer | YES | 0
+      price_check_runs | verified | integer | YES | 0
+      price_check_runs | changed | integer | YES | 0
+      price_check_runs | failed | integer | YES | 0
+      price_check_runs | summary | jsonb | YES | 
+      reefperfumes_catalog | id | integer | NO | nextval('reefperfumes_catalog_id_seq'::regclass)
+      reefperfumes_catalog | variant_id | bigint | NO | 
+      reefperfumes_catalog | product_url | text | YES | 
+      reefperfumes_catalog | gtin | text | YES | 
+      reefperfumes_catalog | sku | text | YES | 
+      reefperfumes_catalog | brand | text | YES | 
+      reefperfumes_catalog | name | text | YES | 
+      reefperfumes_catalog | product_type | text | YES | 
+      reefperfumes_catalog | price_inc_tax | numeric | YES | 
+      reefperfumes_catalog | price | numeric | YES | 
+      reefperfumes_catalog | stock | text | YES | 
+      reefperfumes_catalog | volume | text | YES | 
+      reefperfumes_catalog | updated_at | timestamp without time zone | YES | now()
+      samawa_catalog | id | integer | NO | nextval('samawa_catalog_id_seq'::regclass)
+      samawa_catalog | variant_id | bigint | NO | 
+      samawa_catalog | product_id | bigint | YES | 
+      samawa_catalog | product_url | text | YES | 
+      samawa_catalog | gtin | text | YES | 
+      samawa_catalog | brand | text | YES | 
+      samawa_catalog | name | text | YES | 
+      samawa_catalog | price | numeric | YES | 
+      samawa_catalog | stock | text | YES | 
+      samawa_catalog | volume | text | YES | 
+      samawa_catalog | updated_at | timestamp without time zone | YES | now()
+      test_price_backup | ff_link | text | NO | 
+      test_price_backup | ff_price | numeric | YES | 
+      test_price_backup | ff_stock | boolean | YES | 
+      vperfumes_catalog | id | integer | NO | nextval('vperfumes_catalog_id_seq'::regclass)
+      vperfumes_catalog | product_url | text | NO | 
+      vperfumes_catalog | gtin | text | YES | 
+      vperfumes_catalog | name | text | YES | 
+      vperfumes_catalog | price_inc_tax | numeric | YES | 
+      vperfumes_catalog | price | numeric | YES | 
+      vperfumes_catalog | stock | text | YES | 
+      vperfumes_catalog | volume | text | YES | 
+      vperfumes_catalog | updated_at | timestamp without time zone | YES | now()
+[SQL] 600 row(s)
+[SQL] Done (saved)

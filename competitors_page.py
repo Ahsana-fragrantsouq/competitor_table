@@ -36,6 +36,7 @@ import price_limits                                       # LOP / MOP boxes on t
 import link_edit                                          # 'Edit link' for admins on the cards (link_edit.py)
 import barcode_edit                                       # 'Edit' our barcode for admins (barcode_edit.py)
 import stock_edit                                         # 'Edit' our stock for admins -> Shopify (stock_edit.py)
+import bundle                                             # menu Bundle -> Create bundle form (bundle.py)
 import stock_sync                                         # 'Sync the stock' on the Brands Store tabs (stock_sync.py)
 import new_link                                           # 'Add new link' for admins on the cards (new_link.py)
 import sort_option                                        # 'Sort by' SKU / Brand / Perfume / Product name (sort_option.py)
@@ -62,7 +63,8 @@ SOURCES = [
                ("V Perfumes", "vp"), ("Al Injaz", "aj"),
                ("Ounass", "on"), ("Amberiya", "am"), ("Niche Gallerie", "ng"), ("Perfume Dubai", "pd"),
                ("MHG Boutique", "mh"), ("Emirates Pride", "ep"),
-               ("Anfasic", "an"), ("Khaltat", "kh"), ("Oud Elite", "oe"), ("Brands Perfume", "br"),
+               ("Anfasic", "an"), ("Khaltat", "kh"), ("Oud Elite", "oe"),
+               # Brands Perfume ("br") NOT on the cards (2026-11-13): competitor tab only, see app.UNLINKED_SHOPS
                ("Abdul Samad Al Qurashi", "aq"), ("Arabian Oud", "ao"),
                ("Al Jazeera Perfumes", "jz"), ("Ajmal", "jm"),
                ("Al Haramain", "ah"), ("Reef Perfumes", "rf")],
@@ -297,6 +299,15 @@ NAV_HTML = """
       {% endfor %}
     </div>
   </details>
+  {# Bundle dropdown (bundle.py BUNDLE_OPTIONS, 2026-11-12): Create bundle form - content added later #}
+  <details class="dd" id="ddBundle">
+    <summary class="{{ 'on' if active == 'bundle' else '' }}">Bundle<span class="car">&#9662;</span></summary>
+    <div class="ddmenu">
+      {% for key, url, label in bundle_options %}
+      <a href="{{ url }}" class="{{ 'cur' if key == cur_key else '' }}"><span>{{ label }}</span></a>
+      {% endfor %}
+    </div>
+  </details>
 </nav>
 <script>
   // Menu logs: open the browser console (F12 -> Console) to see them
@@ -359,7 +370,8 @@ def render_nav(active, cur_key, counts):
     print(f"[MENU] Building menu: active={active!r} current page={cur_key!r} | "
           f"Competitors dropdown has {len(shops)} shops: {', '.join(shops)}", flush=True)
     return render_template_string(NAV_HTML, active=active, cur_key=cur_key, counts=counts or {}, sources=SOURCES,
-                                  settings_options=SETTINGS_OPTIONS, item_options=ITEM_OPTIONS)
+                                  settings_options=SETTINGS_OPTIONS, item_options=ITEM_OPTIONS,
+                                  bundle_options=bundle.BUNDLE_OPTIONS)
 # competitor names for the "Competitor" filter: "Samawa" -> column prefix "samawa" (samawa_link, samawa_stock ...)
 # ============================================================ SECTION 4: competitor table filters
 # Price / stock filters = PRICE_FILTERS, Airtable-style filter fields = FILTER_FIELDS, SQL = filter_sql().
@@ -1618,7 +1630,7 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
  :root{--bg:#1c1b19;--card:#252420;--line:#3a3833;--text:#f2efe9;--muted:#a9a397;--gold:#d8b76e}
  *{box-sizing:border-box}
  body{margin:0;background:var(--bg);color:var(--text);font-family:Roboto,-apple-system,Segoe UI,Arial,sans-serif}
- .page{max-width:760px;margin:0 auto;padding:22px 18px 40px}
+ .page{max-width:920px;margin:0 auto;padding:22px 18px 40px}   /* same width as the other pages -> menu on one line (Bundle added 2026-11-12) */
  h1{font-size:26px;margin:4px 0 18px}
  .topbar{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
  .who{color:var(--muted);font-size:14px} .who b{color:var(--text)} .who a{color:var(--gold)}
