@@ -36,7 +36,11 @@ import price_limits                                       # LOP / MOP boxes on t
 import link_edit                                          # 'Edit link' for admins on the cards (link_edit.py)
 import barcode_edit                                       # 'Edit' our barcode for admins (barcode_edit.py)
 import stock_edit                                         # 'Edit' our stock for admins -> Shopify (stock_edit.py)
-import bundle                                             # menu Bundle -> Create bundle form (bundle.py)
+try:                                                      # menu Bundle (bundle.py) - OPTIONAL (2026-11-13):
+    import bundle                                         # live site without bundle.py -> no Bundle menu
+except ImportError:
+    bundle = None
+    print("[BUNDLE] bundle.py not found -> Bundle menu hidden", flush=True)
 import stock_sync                                         # 'Sync the stock' on the Brands Store tabs (stock_sync.py)
 import new_link                                           # 'Add new link' for admins on the cards (new_link.py)
 import sort_option                                        # 'Sort by' SKU / Brand / Perfume / Product name (sort_option.py)
@@ -300,6 +304,7 @@ NAV_HTML = """
     </div>
   </details>
   {# Bundle dropdown (bundle.py BUNDLE_OPTIONS, 2026-11-12): Create bundle form - content added later #}
+  {% if bundle_options %}
   <details class="dd" id="ddBundle">
     <summary class="{{ 'on' if active == 'bundle' else '' }}">Bundle<span class="car">&#9662;</span></summary>
     <div class="ddmenu">
@@ -308,6 +313,7 @@ NAV_HTML = """
       {% endfor %}
     </div>
   </details>
+  {% endif %}
 </nav>
 <script>
   // Menu logs: open the browser console (F12 -> Console) to see them
@@ -371,7 +377,7 @@ def render_nav(active, cur_key, counts):
           f"Competitors dropdown has {len(shops)} shops: {', '.join(shops)}", flush=True)
     return render_template_string(NAV_HTML, active=active, cur_key=cur_key, counts=counts or {}, sources=SOURCES,
                                   settings_options=SETTINGS_OPTIONS, item_options=ITEM_OPTIONS,
-                                  bundle_options=bundle.BUNDLE_OPTIONS)
+                                  bundle_options=bundle.BUNDLE_OPTIONS if bundle else [])
 # competitor names for the "Competitor" filter: "Samawa" -> column prefix "samawa" (samawa_link, samawa_stock ...)
 # ============================================================ SECTION 4: competitor table filters
 # Price / stock filters = PRICE_FILTERS, Airtable-style filter fields = FILTER_FIELDS, SQL = filter_sql().

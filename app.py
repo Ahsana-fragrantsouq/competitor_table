@@ -144,7 +144,10 @@ from barcode_edit import barcode_bp                # POST /competitor/barcode
 import stock_edit                                  # admins: edit OUR stock -> Shopify (stock_edit.py)
 from stock_edit import stock_bp                    # POST /stock/edit
 import stock_sync                                  # admins: 'Sync the stock' on Brands Store tabs (stock_sync.py)
-import bundle                                      # menu Bundle -> Create bundle form (bundle.py)
+try:                                               # menu Bundle (bundle.py) - OPTIONAL: missing -> no Bundle pages
+    import bundle
+except ImportError:
+    bundle = None
 from stock_sync import stock_sync_bp               # GET /stock-sync/list?shop=
 import item_master                                 # Item Master page: all French Inventories fields (item_master.py)
 from item_master import item_master_bp             # /item-master, /item-master/reload, /load, /status
@@ -233,7 +236,8 @@ app.register_blueprint(shopify_prices.shopify_prices_bp)   # Item Master: Load p
 app.register_blueprint(barcode_bp)                 # 'Edit' our barcode for admins (barcode_edit.py)
 app.register_blueprint(stock_bp)                   # 'Edit' our stock for admins -> Shopify (stock_edit.py)
 app.register_blueprint(stock_sync_bp)              # 'Sync the stock' popup on Brands Store tabs (stock_sync.py)
-app.register_blueprint(bundle.bundle_bp)           # menu Bundle -> /bundle/new (bundle.py)
+if bundle:
+    app.register_blueprint(bundle.bundle_bp)       # menu Bundle -> /bundle/new (bundle.py)
 app.register_blueprint(item_master_bp)             # Item Master page (item_master.py)
 app.register_blueprint(desc_bp)                    # 'Create product description' button (description_gen.py)
 app.register_blueprint(web_bp)                     # 'Create in website' button (shopify_create.py)
@@ -3376,7 +3380,8 @@ link_edit.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Edit link' for
 barcode_edit.init(connect=pg_conn, airtable_barcode=airtable_set_barcode)   # 'Edit' our barcode (barcode_edit.py)
 stock_edit.init(connect=pg_conn)                                             # 'Edit' our stock -> Shopify (stock_edit.py)
 stock_sync.init(connect=pg_conn)                                             # 'Sync the stock' list (stock_sync.py)
-bundle.init(connect=pg_conn)                                                 # Bundle menu page (bundle.py)
+if bundle:
+    bundle.init(connect=pg_conn)                                             # Bundle menu page (bundle.py)
 shopify_prices.init(connect=pg_conn)                                         # Item Master: prices FROM Shopify (shopify_prices.py)
 item_master.init(connect=pg_conn, read_airtable=at_list,       # Item Master: Airtable -> item_master (item_master.py)
                  fi_table=FI_TABLE, brands_table=BRANDS_TABLE, brands_name_field=BRANDS_NAME_FIELD,
