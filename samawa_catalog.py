@@ -32,6 +32,11 @@ SM_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebK
 SM_MAX_PAGES = 100            # Shopify limit: page 101+ returns 400 (max 25,000 products per list)
 SM_RETRY_WAITS = [10, 30, 60, 120, 180]
 SM_PER_PAGE_VIEW = 100
+# NO ENDLESS WAITING (2026-11-17, live: the download stopped after ~11,750 products and stayed "running" for hours ->
+# Run 2 "timeout", every "Run again" refused as busy; the database showed nothing waiting). Every step now has a limit:
+SM_PAGE_SECONDS = 120         # one Samawa page must be fully downloaded within this (else: retry, like a network error)
+SM_DB_STATEMENT = "600s"      # one database statement (save of a page incl. price triggers) at most 10 min
+SM_DB_LOCK = "120s"           # rows busy (refresh / price update) longer than 2 min -> error instead of waiting forever
 
 sm_lock = threading.Lock()
 sm_state = {"running": False, "last": None}
@@ -80,7 +85,10 @@ def sm_db_conn():
     if not url:
         raise RuntimeError("FF_DATABASE_URL is not set")
     sm_log("[SM-DB] Opening connection to french_fragrance_db")
-    return psycopg2.connect(url, sslmode="require")
+    # keepalives: a connection that silently dropped is noticed in ~1 min (else a query waits on it forever)
+    return psycopg2.connect(url, sslmode="require", connect_timeout=30,
+                            keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5,
+                            options=f"-c statement_timeout={SM_DB_STATEMENT} -c lock_timeout={SM_DB_LOCK}")
 
 
 # ---------------------------------------------------------------- helpers
@@ -122,16 +130,38 @@ def sm_rows(products):
     return rows
 
 
+def _get_with_deadline(url, params):
+    """requests.get with a limit on the WHOLE download. timeout=60 alone is per piece of data: a server that keeps
+    sending a few bytes never times out. The download runs in its own thread; not finished after SM_PAGE_SECONDS ->
+    TimeoutError (that thread is left to end on its own - it never holds sm_lock or the database)."""
+    box = {}
+
+    def fetch():
+        try:
+            box["r"] = requests.get(url, params=params, headers=SM_HEADERS, timeout=(15, 60))
+        except Exception as ex:                     # handed to the caller below
+            box["ex"] = ex
+
+    t = threading.Thread(target=fetch, daemon=True, name="sm-page")
+    t.start()
+    t.join(SM_PAGE_SECONDS)
+    if t.is_alive():
+        raise TimeoutError(f"page not downloaded within {SM_PAGE_SECONDS}s")
+    if "ex" in box:
+        raise box["ex"]
+    return box["r"]
+
+
 def sm_get(path, page, label):
     """GET one page from Samawa with retries on 429 / 5xx / network errors. Returns Response or None."""
     for attempt, wait in enumerate([0] + SM_RETRY_WAITS):
         if wait:
             sm_log(f"[SM] {label} page {page}: retry {attempt}/{len(SM_RETRY_WAITS)} in {wait}s")
             time.sleep(wait)
+        sm_state["at"] = f"downloading {label} page {page} (since {time.strftime('%H:%M:%S')} UTC)"
         try:
-            r = requests.get(f"{SM_BASE}{path}", params={"limit": 250, "page": page},
-                             headers=SM_HEADERS, timeout=60)
-        except requests.RequestException as ex:
+            r = _get_with_deadline(f"{SM_BASE}{path}", {"limit": 250, "page": page})
+        except (requests.RequestException, TimeoutError) as ex:
             sm_log(f"[SM] {label} page {page}: network error {ex}")
             continue
         if r.status_code == 429 or r.status_code >= 500:
@@ -190,6 +220,7 @@ def sm_run():
         seen.update(p.get("id") for p in new)
         rows = sm_rows(new)
         if rows:
+            sm_state["at"] = f"saving {len(rows)} variants in the database (since {time.strftime('%H:%M:%S')} UTC)"
             execute_values(cur, UPSERT_SQL, rows)
             conn.commit()
         st["products"] += len(new)
@@ -265,7 +296,8 @@ def sm_run_route():
 
 @samawa_catalog_bp.route("/samawa-catalog/status")
 def sm_status_route():
-    return jsonify({"running": sm_state["running"], "last": sm_state["last"]})
+    return jsonify({"running": sm_state["running"], "last": sm_state["last"],
+                    "at": sm_state.get("at")})        # the step it is on now (shows where a slow run waits)
 
 
 SM_HTML = """

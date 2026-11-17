@@ -52,6 +52,13 @@ RF_EXTRA_SECTIONS = [("Perfumes (screenshot link)", f"{SITE}/en/-/c585180698")] 
 RF_MENU_WORDS = ["perfume", "perfumes", "offer", "offers", "gift", "set", "bundle", "collection", "men", "women",
                  "unisex", "oud", "musk", "best seller", "new"]
 RF_MENU_SKIP = ["body", "hair", "beauty", "home", "gift card", "digital", "makeup", "candle", "incense", "bakhoor"]
+# The UAE menu is shown in ARABIC since 2026-11 (links /ar/-/c...): same rule with Arabic words (plain text search),
+# the section is then read on its /en/ page. عطور = perfumes, عروض = offers | الجسم body, الشعر hair, بيوتي beauty,
+# المنزل home, بطاقات (gift) cards, بخور bakhoor, مكياج makeup
+RF_MENU_WORDS_AR = ["عطور", "العطور", "عروض"]
+RF_MENU_SKIP_AR = ["الجسم", "الشعر", "بيوتي", "المنزل", "بطاقات", "بخور", "مكياج"]
+# safety: a read with fewer than this share of the products saved now is NOT complete (nothing marked 'Not on site')
+RF_MIN_SHARE = 0.5
 CDP_URL = "http://localhost:9222"
 # PERFUMES + GIFT SETS (same lists as reefperfumes.py - copied so this PC file needs no Flask)
 RF_ALWAYS_SKIP = ['gift card', 'sample', 'samples', 'discovery', 'giveaway*']
@@ -152,11 +159,16 @@ def rf_sections(page):
         text = a["text"]
         if not cid or "c" + cid in seen or not text:
             continue
-        if has_word(RF_MENU_SKIP, text) or not has_word(RF_MENU_WORDS, text):
+        arabic = re.search(r"[\u0600-\u06FF]", text) is not None
+        if arabic:
+            skip = any(w in text for w in RF_MENU_SKIP_AR) or not any(w in text for w in RF_MENU_WORDS_AR)
+        else:
+            skip = has_word(RF_MENU_SKIP, text) or not has_word(RF_MENU_WORDS, text)
+        if skip:
             log(f"[RF-MENU] skipped section '{text}' {a['url']}")
             continue
         seen.add("c" + cid)
-        out.append((text, a["url"].split("?")[0]))
+        out.append((text, a["url"].split("?")[0].replace("/ar/", "/en/")))      # English page (AED, English names)
     log(f"[RF-MENU] {len(out)} sections: {[t for t, _ in out]}")
     return out
 
@@ -183,6 +195,53 @@ JS_CARDS = """() => Array.from(document.querySelectorAll('custom-salla-product-c
           price: prices.length ? prices[0] : null,
           out: /out of stock|sold out|غير متوفر|نفذت|نفدت/i.test(txt)};
 })"""
+# NEW PAGE DESIGN (2026-11-17, salla_check.py on the PC): Reef's category page has NO salla-product-card any more,
+# but every product still has Salla's "Add to cart" button (salla-add-product-button). -> card = the biggest block
+# around that button that holds no other product's button; link / name / price / stock are read from that block.
+# Used only when the old selector finds 0 cards (old design keeps working as before).
+JS_CARDS_BY_BUTTON = r"""() => {
+  const btns = Array.from(document.querySelectorAll('salla-add-product-button'));
+  const nBtns = el => el.querySelectorAll('salla-add-product-button').length;
+  const seen = new Set(), out = [];
+  for (const b of btns) {
+    let card = b;
+    while (card.parentElement && card.parentElement !== document.body && nBtns(card.parentElement) === 1) {
+      card = card.parentElement;
+    }
+    if (card === b || seen.has(card)) continue;
+    if (card.closest('salla-modal, salla-offer-modal, salla-cart-summary, [class*="cart-drawer"]')) continue;
+    seen.add(card);
+    const links = Array.from(card.querySelectorAll('a[href]')).filter(a => {
+      const h = a.getAttribute('href') || '';
+      return h && !h.startsWith('#') && !/\/c\d{5,}/.test(h) && a.hostname === location.hostname;
+    });
+    const a = links[0];
+    const img = card.querySelector('img[alt]');
+    const txt = card.innerText || '';
+    // name: NOT an offer badge ("1+2 FREE", "25% off", "New arrival") / price / button / "Bought 1,769,433 times!"
+    const junk = t => !t || t.length < 3 || !/[a-z\u0600-\u06FF]{2}/i.test(t)
+      || /^[^a-z\u0600-\u06FF]*(\d+\s*\+\s*\d+\s*free|\d+\s*%\s*off|new arrival|best ?seller|add to cart|sold out|out of stock|bought [\d,]+ times)/i.test(t)
+      || /^[\d,.\s]*(AED|د\.إ)/i.test(t);
+    const clean = t => (t || '').replace(/[\u2728\u{1F300}-\u{1FAFF}]/gu, '').replace(/\s+/g, ' ').trim();
+    const cands = [];
+    card.querySelectorAll('.product-card__title, h3, h2, h4, [class*="name"], [class*="title"]').forEach(e => cands.push(clean(e.innerText)));
+    if (img) cands.push(clean(img.alt));
+    if (a) cands.push(clean(a.innerText));
+    let name = cands.find(t => !junk(t)) || '';
+    if (!name) {   // longest real text line of the card
+      name = txt.split('\n').map(clean).filter(t => !junk(t)).sort((x, y) => y.length - x.length)[0] || '';
+    }
+    const prices = (txt.match(/[0-9][0-9,]*(?:\.[0-9]+)?(?=\s*(?:AED|د\.إ|\u0631\.\u0633))/g) || []).map(x => x.replace(/,/g, ''));
+    const pid = b.getAttribute('product-id') || b.getAttribute('data-id') || '';
+    out.push({id: /^\d+$/.test(pid) ? pid : '', url: a ? a.href : null,
+              name: name,
+              price: prices.length ? prices[0] : null,
+              out: /out of stock|sold out|غير متوفر|نفذت|نفدت/i.test(txt)});
+  }
+  return out;
+}"""
+JS_COUNT = """() => Math.max(document.querySelectorAll('custom-salla-product-card, salla-product-card').length,
+                             document.querySelectorAll('salla-add-product-button').length)"""
 JS_MORE = """() => {
   window.scrollTo(0, document.body.scrollHeight);
   const b = Array.from(document.querySelectorAll('button, a')).find(x => /load more|show more|المزيد/i.test(x.innerText || ''));
@@ -194,7 +253,7 @@ def rf_cards(page):
     """Scroll / click 'load more' until the number of cards stops growing, then read every card."""
     last, same = -1, 0
     for _ in range(80):
-        n = safe_eval(page, "() => document.querySelectorAll('custom-salla-product-card, salla-product-card').length")
+        n = safe_eval(page, JS_COUNT)                        # old cards OR "Add to cart" buttons (new design)
         same = same + 1 if n == last else 0
         if same >= 3:
             break
@@ -202,7 +261,11 @@ def rf_cards(page):
         safe_eval(page, JS_MORE)
         page.wait_for_timeout(2500)
     rows = []
-    for c in safe_eval(page, JS_CARDS):
+    cards = safe_eval(page, JS_CARDS)
+    if not cards:                                        # new page design -> cards found from "Add to cart" buttons
+        cards = safe_eval(page, JS_CARDS_BY_BUTTON)
+        log(f"[RF-CARDS] no salla-product-card on the page -> {len(cards)} cards found from 'Add to cart' buttons")
+    for c in cards:
         if not c["url"]:
             continue
         url = c["url"].split("?")[0].split("#")[0]
@@ -244,6 +307,12 @@ def save(rows, complete):
                          rf_volume(r["name"], r["url"].replace("-", " "))))
         execute_values(cur, RF_UPSERT, vals)
         gone = 0
+        cur.execute("SELECT COUNT(*) FROM reefperfumes_catalog WHERE stock <> 'Not on site'")
+        saved_now = cur.fetchone()[0]
+        if complete and len(vals) < saved_now * RF_MIN_SHARE:
+            log(f"[RF-SAVE] only {len(vals)} read but {saved_now} on the site last time -> treated as NOT complete "
+                f"(nothing marked 'Not on site')")
+            complete = False
         if complete and vals:
             cur.execute("UPDATE reefperfumes_catalog SET stock = 'Not on site', updated_at = NOW() "
                         "WHERE updated_at < %s AND stock <> 'Not on site'", (started,))

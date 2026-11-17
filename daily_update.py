@@ -1123,8 +1123,8 @@ def run_pc_lists(state, force=False):
         before_id = max_row_id(table)                    # everything above this after the download = new products
         if RUN2_ONLY_PRICE_STOCK:
             keep_details(table, label)                   # names / brands / links are put back afterwards
-        p = subprocess.run([sys.executable, path], cwd=HERE, env=dict(os.environ), capture_output=True, text=True,
-                           encoding="utf-8", errors="replace")
+            p = subprocess.run([sys.executable, path], cwd=HERE, env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         tail = [ln for ln in (p.stdout or "").splitlines() if ln.strip()][-3:]
         for ln in tail:
             log(f"[PC-LIST] {scraper}: {ln}")
