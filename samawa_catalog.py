@@ -41,6 +41,7 @@ SM_DB_LOCK = "120s"           # rows busy (refresh / price update) longer than 2
 # collection is read for the ~1,900 missing ones; Samawa answers "429 busy" again and again -> hours -> Run 2 gave up
 # ("timeout") and "Run again" was refused while it kept running. Now: at most this many minutes for the collections,
 # then the run ends (missing products keep their last price; nothing marked 'Not on site' because it is incomplete).
+SM_GONE_SAFETY = 0.97         # a complete read with fewer than 97% of the products saved now -> nothing marked 'Not on site'
 SM_COLLECTIONS_MINUTES = 40   # the next run continues with the collection after the last one read (sm_state)
 
 sm_lock = threading.Lock()
@@ -157,7 +158,7 @@ def _get_with_deadline(url, params):
     return box["r"]
 
 
-def sm_get(path, page, label):
+def sm_get(path, page, label, extra=None):
     """GET one page from Samawa with retries on 429 / 5xx / network errors. Returns Response or None."""
     for attempt, wait in enumerate([0] + SM_RETRY_WAITS):
         if wait:
@@ -165,7 +166,7 @@ def sm_get(path, page, label):
             time.sleep(wait)
         sm_state["at"] = f"downloading {label} page {page} (since {time.strftime('%H:%M:%S')} UTC)"
         try:
-            r = _get_with_deadline(f"{SM_BASE}{path}", {"limit": 250, "page": page})
+            r = _get_with_deadline(f"{SM_BASE}{path}", {"limit": 250, "page": page, **(extra or {})})
         except (requests.RequestException, TimeoutError) as ex:
             sm_log(f"[SM] {label} page {page}: network error {ex}")
             continue
@@ -175,6 +176,34 @@ def sm_get(path, page, label):
         return r
     sm_log(f"[SM] {label} page {page}: giving up")
     return None
+
+
+def sm_newest(save, st):
+    """All products NEWEST FIRST (/collections/all/products.json?sort_by=created-descending) until 2 pages in a row
+    bring nothing new. Returns True when it finished normally, False when Samawa did not answer."""
+    page, streak = 1, 0
+    while page <= SM_MAX_PAGES:
+        sm_state["at"] = f"downloading newest-first page {page} (since {time.strftime('%H:%M:%S')} UTC)"
+        r = sm_get("/collections/all/products.json", page, "newest", extra={"sort_by": "created-descending"})
+        if r is None:
+            return False
+        if r.status_code in (400, 404):
+            sm_log(f"[SM] newest: stopped at page {page} (HTTP {r.status_code})")
+            return True
+        r.raise_for_status()
+        batch = r.json().get("products", [])
+        if not batch:
+            return True
+        before = st["products"]
+        save(batch, "newest")
+        added = st["products"] - before
+        sm_log(f"[SM] newest page {page}: {len(batch)} items, {added} not in the main list")
+        streak = streak + 1 if added == 0 else 0
+        if streak >= 2 or len(batch) < 250:
+            return True
+        page += 1
+        time.sleep(1.5)
+    return True
 
 
 def sm_pages(path, label, list_key, on_batch, max_pages=SM_MAX_PAGES, deadline=None):
@@ -235,6 +264,8 @@ def sm_run():
         st["products"] += len(new)
         st["saved"] = st["products"]       # the Automate page / Run again message read "saved" (was "only ? products read")
         st["variants"] += len(rows)
+        if source == "newest":
+            st["from_newest"] = st.get("from_newest", 0) + len(new)
         if source == "collection":
             st["from_collections"] += len(new)
         st["seconds"] = round(time.time() - started, 1)
@@ -247,7 +278,25 @@ def sm_run():
         hit_cap, incomplete = sm_pages("/products.json", "catalog", "products", lambda b: save(b, "catalog"))
         st["incomplete"] |= incomplete
 
-        # 2) catalog capped at 25,000 -> fill the rest from every collection
+        # 2a) catalog capped at 25,000 -> the SAME list NEWEST FIRST (2026-11-18): the products after number 25,000
+        #     are the newest ones, so a few pages sorted newest-first add them (~1 min instead of hours of collections).
+        #     Check: page 1 newest-first must bring products the main list did not have (= Samawa really sorted),
+        #     else 2b) collections.
+        if hit_cap:
+            cur.execute("SELECT COUNT(*) FROM samawa_catalog WHERE stock <> 'Not on site'")
+            expected = cur.fetchone()[0]
+            sm_log(f"[SM] Catalog hit the 25,000 limit -> reading the newest products first "
+                   f"({expected} products on Samawa last time)")
+            newest_ok = sm_newest(save, st)
+            if newest_ok and st.get("from_newest", 0) > 0:
+                sm_log(f"[SM] Newest-first list: {st.get('from_newest', 0)} more products -> {st['products']} in total "
+                       f"= the whole shop (collections not needed)")
+                hit_cap = False
+            else:
+                sm_log(f"[SM] Newest-first list gave {st.get('from_newest', 0)} more ({st['products']} of ~{expected}) "
+                       f"-> reading collections for the rest")
+
+        # 2b) still missing products -> fill the rest from every collection (slow: Samawa answers 429 often)
         if hit_cap:
             sm_log("[SM] Catalog hit the 25,000 limit -> reading all collections for missing products")
             collections = []
@@ -281,8 +330,12 @@ def sm_run():
                 _coll_next_set(cur, conn, 0)         # all collections read -> next run starts at 1 again
 
         # 3) products not seen in a COMPLETE run are gone from Samawa
+        cur.execute("SELECT COUNT(*) FROM samawa_catalog WHERE stock <> 'Not on site'")
+        saved_now = cur.fetchone()[0]
         if st["incomplete"] or st.get("collections_partial"):
             sm_log("[SM] Download incomplete / collections not all read -> NOT marking missing products")
+        elif st["products"] < saved_now * SM_GONE_SAFETY:
+            sm_log(f"[SM] Only {st['products']} read of {saved_now} -> NOT marking missing products (safety)")
         else:
             cur.execute("UPDATE samawa_catalog SET stock = 'Not on site', updated_at = NOW() "
                         "WHERE updated_at < %s AND stock <> 'Not on site'", (run_start,))
