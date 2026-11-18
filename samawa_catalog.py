@@ -41,6 +41,7 @@ SM_DB_LOCK = "120s"           # rows busy (refresh / price update) longer than 2
 # collection is read for the ~1,900 missing ones; Samawa answers "429 busy" again and again -> hours -> Run 2 gave up
 # ("timeout") and "Run again" was refused while it kept running. Now: at most this many minutes for the collections,
 # then the run ends (missing products keep their last price; nothing marked 'Not on site' because it is incomplete).
+SM_SORTS = ["created-descending", "title-ascending", "title-descending", "price-ascending", "price-descending"]
 SM_GONE_SAFETY = 0.97         # a complete read with fewer than 97% of the products saved now -> nothing marked 'Not on site'
 SM_COLLECTIONS_MINUTES = 40   # the next run continues with the collection after the last one read (sm_state)
 
@@ -178,32 +179,33 @@ def sm_get(path, page, label, extra=None):
     return None
 
 
-def sm_newest(save, st):
-    """All products NEWEST FIRST (/collections/all/products.json?sort_by=created-descending) until 2 pages in a row
-    bring nothing new. Returns True when it finished normally, False when Samawa did not answer."""
-    page, streak = 1, 0
-    while page <= SM_MAX_PAGES:
-        sm_state["at"] = f"downloading newest-first page {page} (since {time.strftime('%H:%M:%S')} UTC)"
-        r = sm_get("/collections/all/products.json", page, "newest", extra={"sort_by": "created-descending"})
+def sm_sorted(save, st, sort):
+    """The whole shop in ANOTHER ORDER (/collections/all/products.json?sort_by=<sort>), up to the same 25,000 limit.
+    Live 2026-11-18: the products missing from the main list are spread over the whole list (not only the newest),
+    so every page is read. Returns how many products this order added, or None when Samawa did not answer."""
+    added_total = 0
+    for page in range(1, SM_MAX_PAGES + 1):
+        sm_state["at"] = f"downloading {sort} page {page} (since {time.strftime('%H:%M:%S')} UTC)"
+        r = sm_get("/collections/all/products.json", page, sort, extra={"sort_by": sort})
         if r is None:
-            return False
+            return None
         if r.status_code in (400, 404):
-            sm_log(f"[SM] newest: stopped at page {page} (HTTP {r.status_code})")
-            return True
+            break
         r.raise_for_status()
         batch = r.json().get("products", [])
         if not batch:
-            return True
+            break
         before = st["products"]
-        save(batch, "newest")
+        save(batch, "sorted")
         added = st["products"] - before
-        sm_log(f"[SM] newest page {page}: {len(batch)} items, {added} not in the main list")
-        streak = streak + 1 if added == 0 else 0
-        if streak >= 2 or len(batch) < 250:
-            return True
-        page += 1
+        added_total += added
+        if added:
+            sm_log(f"[SM] {sort} page {page}: {added} not read before")
+        if len(batch) < 250:
+            break
         time.sleep(1.5)
-    return True
+    sm_log(f"[SM] {sort}: {added_total} more products (total {st['products']})")
+    return added_total
 
 
 def sm_pages(path, label, list_key, on_batch, max_pages=SM_MAX_PAGES, deadline=None):
@@ -264,8 +266,8 @@ def sm_run():
         st["products"] += len(new)
         st["saved"] = st["products"]       # the Automate page / Run again message read "saved" (was "only ? products read")
         st["variants"] += len(rows)
-        if source == "newest":
-            st["from_newest"] = st.get("from_newest", 0) + len(new)
+        if source == "sorted":
+            st["from_sorted"] = st.get("from_sorted", 0) + len(new)
         if source == "collection":
             st["from_collections"] += len(new)
         st["seconds"] = round(time.time() - started, 1)
@@ -278,23 +280,27 @@ def sm_run():
         hit_cap, incomplete = sm_pages("/products.json", "catalog", "products", lambda b: save(b, "catalog"))
         st["incomplete"] |= incomplete
 
-        # 2a) catalog capped at 25,000 -> the SAME list NEWEST FIRST (2026-11-18): the products after number 25,000
-        #     are the newest ones, so a few pages sorted newest-first add them (~1 min instead of hours of collections).
-        #     Check: page 1 newest-first must bring products the main list did not have (= Samawa really sorted),
-        #     else 2b) collections.
+        # 2a) catalog capped at 25,000 (Shopify limit; Samawa has ~26,900) -> the same shop read in OTHER ORDERS
+        #     (SM_SORTS). Each order shows 25,000 products; together they cover the rest (~3 min per order).
+        #     The shop counts as COMPLETE (missing products may be marked 'Not on site') only when the LAST order read
+        #     brought nothing new. Otherwise done as well (✓), but nothing is marked 'Not on site'.
+        #     The slow collections (2b) are no longer needed.
         if hit_cap:
-            cur.execute("SELECT COUNT(*) FROM samawa_catalog WHERE stock <> 'Not on site'")
-            expected = cur.fetchone()[0]
-            sm_log(f"[SM] Catalog hit the 25,000 limit -> reading the newest products first "
-                   f"({expected} products on Samawa last time)")
-            newest_ok = sm_newest(save, st)
-            if newest_ok and st.get("from_newest", 0) > 0:
-                sm_log(f"[SM] Newest-first list: {st.get('from_newest', 0)} more products -> {st['products']} in total "
-                       f"= the whole shop (collections not needed)")
-                hit_cap = False
+            sm_log(f"[SM] Catalog hit the 25,000 limit -> reading the shop in other orders: {', '.join(SM_SORTS)}")
+            last_added = None
+            for sort in SM_SORTS:
+                last_added = sm_sorted(save, st, sort)
+                if last_added is None:                       # Samawa did not answer -> stop, keep what was read
+                    break
+                if last_added == 0:                          # this order found nothing new -> the shop is complete
+                    break
+            if last_added == 0:
+                sm_log(f"[SM] Whole shop read: {st['products']} products")
             else:
-                sm_log(f"[SM] Newest-first list gave {st.get('from_newest', 0)} more ({st['products']} of ~{expected}) "
-                       f"-> reading collections for the rest")
+                st["collections_partial"] = True             # done (✓), but nothing marked 'Not on site'
+                sm_log(f"[SM] {st['products']} products read - a few may still be missing (kept with their last "
+                       f"price, nothing marked 'Not on site')")
+            hit_cap = False
 
         # 2b) still missing products -> fill the rest from every collection (slow: Samawa answers 429 often)
         if hit_cap:
