@@ -233,6 +233,7 @@ def sm_run():
             execute_values(cur, UPSERT_SQL, rows)
             conn.commit()
         st["products"] += len(new)
+        st["saved"] = st["products"]       # the Automate page / Run again message read "saved" (was "only ? products read")
         st["variants"] += len(rows)
         if source == "collection":
             st["from_collections"] += len(new)
