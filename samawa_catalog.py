@@ -37,6 +37,11 @@ SM_PER_PAGE_VIEW = 100
 SM_PAGE_SECONDS = 120         # one Samawa page must be fully downloaded within this (else: retry, like a network error)
 SM_DB_STATEMENT = "600s"      # one database statement (save of a page incl. price triggers) at most 10 min
 SM_DB_LOCK = "120s"           # rows busy (refresh / price update) longer than 2 min -> error instead of waiting forever
+# COLLECTIONS TIME BUDGET (2026-11-18, live log): the catalog stops at 25,000 products (Shopify limit), then EVERY
+# collection is read for the ~1,900 missing ones; Samawa answers "429 busy" again and again -> hours -> Run 2 gave up
+# ("timeout") and "Run again" was refused while it kept running. Now: at most this many minutes for the collections,
+# then the run ends (missing products keep their last price; nothing marked 'Not on site' because it is incomplete).
+SM_COLLECTIONS_MINUTES = 40   # the next run continues with the collection after the last one read (sm_state)
 
 sm_lock = threading.Lock()
 sm_state = {"running": False, "last": None}
@@ -172,10 +177,14 @@ def sm_get(path, page, label):
     return None
 
 
-def sm_pages(path, label, list_key, on_batch, max_pages=SM_MAX_PAGES):
-    """Walk pages and hand each batch to on_batch(). Returns (hit_cap, incomplete)."""
+def sm_pages(path, label, list_key, on_batch, max_pages=SM_MAX_PAGES, deadline=None):
+    """Walk pages and hand each batch to on_batch(). Returns (hit_cap, incomplete).
+    deadline (time.time() value): past it -> stop before the next page, counted as incomplete."""
     page = 1
     while page <= max_pages:
+        if deadline and time.time() > deadline:
+            sm_log(f"[SM] {label}: time budget used up at page {page} -> stopped")
+            return False, True
         r = sm_get(path, page, label)
         if r is None:
             return False, True
@@ -244,10 +253,24 @@ def sm_run():
             _, inc = sm_pages("/collections.json", "collections", "collections", collections.extend)
             st["incomplete"] |= inc
             sm_log(f"[SM] {len(collections)} collections to check")
-            for i, c in enumerate(collections, 1):
+            coll_started = time.time()
+            first = sm_state.get("coll_next", 0) % max(1, len(collections))     # continue where the last run stopped
+            if first:
+                sm_log(f"[SM] Collections: starting at {first + 1} (the last run stopped there)")
+            order = collections[first:] + collections[:first]
+            sm_state["coll_next"] = 0
+            for i, c in enumerate(order, 1):
+                if time.time() - coll_started > SM_COLLECTIONS_MINUTES * 60:
+                    sm_state["coll_next"] = (first + i - 1) % len(collections)
+                    sm_log(f"[SM] Collections: {SM_COLLECTIONS_MINUTES} min used, {i - 1}/{len(collections)} read "
+                           f"-> next run continues there (products not reached keep their last price)")
+                    st["incomplete"] = True
+                    st["collections_read"] = f"{i - 1}/{len(collections)}"
+                    break
                 sm_log(f"[SM] Collection {i}/{len(collections)}: {c.get('title')}")
                 _, inc = sm_pages(f"/collections/{c['handle']}/products.json", c["handle"], "products",
-                                  lambda b: save(b, "collection"))
+                                  lambda b: save(b, "collection"),
+                                  deadline=coll_started + SM_COLLECTIONS_MINUTES * 60)
                 st["incomplete"] |= inc
 
         # 3) products not seen in a COMPLETE run are gone from Samawa
