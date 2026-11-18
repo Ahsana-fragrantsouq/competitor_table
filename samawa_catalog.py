@@ -264,7 +264,10 @@ def sm_run():
                     _coll_next_set(cur, conn, (first + i - 1) % len(collections))
                     sm_log(f"[SM] Collections: {SM_COLLECTIONS_MINUTES} min used, {i - 1}/{len(collections)} read "
                            f"-> next run continues there (products not reached keep their last price)")
-                    st["incomplete"] = True
+                    # NOT "incomplete" (2026-11-18, user "still same"): the planned 40-min stop showed "!" on the Automate
+                    # page every run. The main list (25,000) was read completely -> shown as done (✓); nothing is marked
+                    # 'Not on site' because not every collection was read (collections_partial below).
+                    st["collections_partial"] = True
                     st["collections_read"] = f"{i - 1}/{len(collections)}"
                     break
                 sm_log(f"[SM] Collection {i}/{len(collections)}: {c.get('title')}")
@@ -278,8 +281,8 @@ def sm_run():
                 _coll_next_set(cur, conn, 0)         # all collections read -> next run starts at 1 again
 
         # 3) products not seen in a COMPLETE run are gone from Samawa
-        if st["incomplete"]:
-            sm_log("[SM] Download incomplete -> NOT marking missing products")
+        if st["incomplete"] or st.get("collections_partial"):
+            sm_log("[SM] Download incomplete / collections not all read -> NOT marking missing products")
         else:
             cur.execute("UPDATE samawa_catalog SET stock = 'Not on site', updated_at = NOW() "
                         "WHERE updated_at < %s AND stock <> 'Not on site'", (run_start,))
