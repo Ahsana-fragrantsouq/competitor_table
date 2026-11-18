@@ -20,7 +20,10 @@ Images: item_master.image_urls (links); none -> search the Shopify Files by prod
 
 Render -> Environment of THIS website needs (copy them from the combined-codes service):
   SHOPIFY_SHOP         e.g. yourstore.myshopify.com
-  SHOPIFY_API_TOKEN    Admin API access token (never write it in code or chat)
+  SHOPIFY_API_TOKEN    Admin API access token (never write it in code or chat) - old-style permanent token (production)
+  or, for an app made in Shopify's DEV DASHBOARD (since 2026 no permanent token any more, e.g. the dev store):
+  SHOPIFY_CLIENT_ID + SHOPIFY_CLIENT_SECRET -> access_token() asks Shopify for a token (client credentials grant,
+                       valid ~24 h) and asks again before it runs out. SHOPIFY_API_TOKEN wins when both are set.
   SHOPIFY_API_VERSION  optional, default 2025-01 (same default as the API)
 NOTE: item_master is only as fresh as the last "Load from Airtable now".
 
@@ -35,6 +38,8 @@ Where things are (change them here):
 
 import os
 import re
+import threading
+import time
 import unicodedata
 
 import requests
@@ -54,7 +59,11 @@ def log(*a):
 
 # ============================================================ SECTION 1: settings
 SHOP = os.environ.get("SHOPIFY_SHOP", "")
-TOKEN = os.environ.get("SHOPIFY_API_TOKEN", "")
+CLIENT_ID = os.environ.get("SHOPIFY_CLIENT_ID", "")
+CLIENT_SECRET = os.environ.get("SHOPIFY_CLIENT_SECRET", "")
+# TOKEN = the fixed token, or a marker that Shopify access is set up via client id + secret (other files only check
+# that TOKEN is not empty; the real token for every call comes from access_token())
+TOKEN = os.environ.get("SHOPIFY_API_TOKEN", "") or ("(client credentials)" if CLIENT_ID and CLIENT_SECRET else "")
 API_VERSION = os.environ.get("SHOPIFY_API_VERSION", "2025-01")
 TIMEOUT = 40                         # seconds per Shopify request
 SAVE_URL = "/item-master/create-in-website"
@@ -222,20 +231,62 @@ def save_shopify_id(fid, sid):
 
 
 # ============================================================ SECTION 4: Shopify (copy of create_shopify_item.py)
+# ---- Admin API token (2026-11-12): fixed SHOPIFY_API_TOKEN, else client id + secret -> short-lived token ----
+_token_cache = {"token": None, "until": 0.0}
+_token_lock = threading.Lock()
+TOKEN_RENEW_EARLY = 600              # ask for a new token 10 min before the old one runs out
+
+
+def access_token():
+    """Token for the X-Shopify-Access-Token header. Fixed token -> as is. Client id + secret -> POST
+    https://<shop>/admin/oauth/access_token (grant_type=client_credentials), kept until ~10 min before it expires."""
+    fixed = os.environ.get("SHOPIFY_API_TOKEN", "")
+    if fixed or not (CLIENT_ID and CLIENT_SECRET):
+        return fixed
+    with _token_lock:
+        if _token_cache["token"] and time.time() < _token_cache["until"]:
+            return _token_cache["token"]
+        r = requests.post(f"https://{SHOP}/admin/oauth/access_token", timeout=TIMEOUT,
+                          data={"grant_type": "client_credentials", "client_id": CLIENT_ID,
+                                "client_secret": CLIENT_SECRET})
+        if not r.ok:
+            log(f"[SHOPIFY-TOKEN] {SHOP}: new token REFUSED (HTTP {r.status_code}): {r.text[:200]}")
+            raise RuntimeError(f"Shopify refused the client id / secret (HTTP {r.status_code}): {r.text[:150]}")
+        d = r.json()
+        life = int(d.get("expires_in") or 86399)
+        _token_cache.update(token=d["access_token"], until=time.time() + max(60, life - TOKEN_RENEW_EARLY))
+        log(f"[SHOPIFY-TOKEN] {SHOP}: new token from client id + secret, valid {life // 3600} h "
+            f"(scopes: {d.get('scope', '?')})")
+        return _token_cache["token"]
+
+
+def forget_token():
+    """Shopify said 401 -> the next call asks for a fresh token (client id + secret only)."""
+    _token_cache.update(token=None, until=0.0)
+
+
 def _headers():
-    return {"Content-Type": "application/json", "X-Shopify-Access-Token": TOKEN}
+    return {"Content-Type": "application/json", "X-Shopify-Access-Token": access_token()}
 
 
 def shopify_rest(method, path, body=None):
     """One Shopify Admin REST call -> requests.Response."""
     url = f"https://{SHOP}/admin/api/{API_VERSION}/{path}"
-    return requests.request(method, url, headers=_headers(), json=body, timeout=TIMEOUT)
+    r = requests.request(method, url, headers=_headers(), json=body, timeout=TIMEOUT)
+    if r.status_code == 401 and CLIENT_ID:           # short-lived token ended early -> once more with a new one
+        forget_token()
+        r = requests.request(method, url, headers=_headers(), json=body, timeout=TIMEOUT)
+    return r
 
 
 def shopify_graphql(query, variables=None):
     """One Shopify Admin GraphQL call -> answer (dict). Raises on HTTP errors (same as shopify_utils)."""
-    r = requests.post(f"https://{SHOP}/admin/api/{API_VERSION}/graphql.json", headers=_headers(),
-                      json={"query": query, **({"variables": variables} if variables else {})}, timeout=TIMEOUT)
+    body = {"query": query, **({"variables": variables} if variables else {})}
+    url = f"https://{SHOP}/admin/api/{API_VERSION}/graphql.json"
+    r = requests.post(url, headers=_headers(), json=body, timeout=TIMEOUT)
+    if r.status_code == 401 and CLIENT_ID:           # short-lived token ended early -> once more with a new one
+        forget_token()
+        r = requests.post(url, headers=_headers(), json=body, timeout=TIMEOUT)
     r.raise_for_status()
     return r.json()
 
@@ -459,7 +510,8 @@ def create_in_website():
         log(f"[WEB-CREATE] {fid}: " + (f"created (id {sid}) but a later step failed - {ex}" if sid else f"NOT created - {ex}"))
         run.finish("failed", ex)
         msg = (f"Created in Shopify (ID {sid}), but a later step failed: {ex}" if sid else str(ex))
-        return jsonify({"ok": False, "error": msg[:300], "shopify_id": sid, "run_id": run.id}), 502
+        return jsonify({"ok": False, "error": run_history.clean_error(msg)[:300],   # no internal ids / paths
+                        "shopify_id": sid, "run_id": run.id}), 502
 
 
 # ============================================================ SECTION 6: hooks
@@ -468,3 +520,46 @@ def init(connect):
     _hooks["connect"] = connect
     log(f"[WEB-CREATE] Linked to app.py: 'Create in website' -> Item Master (database) -> Shopify "
         f"{SHOP or '(SHOPIFY_SHOP not set!)'} API {API_VERSION} (no Airtable, Combined_codes not used)")
+
+
+# ============================================================ SECTION 8: connection check (2026-11-12, test site)
+# GET /shopify/check (admins) = READ ONLY: which Shopify store this website talks to, how it logs in
+# (fixed token / client id + secret), shop name + a few products with SKUs. Nothing is changed in Shopify.
+CHECK_QUERY = """{ shop { name myshopifyDomain primaryDomain { url } currencyCode }
+  productsCount { count }
+  products(first: 5, sortKey: UPDATED_AT, reverse: true) { edges { node { title variants(first: 3) {
+    edges { node { sku inventoryQuantity } } } } } } }"""
+
+
+@web_bp.get("/shopify/check")
+def shopify_check():
+    """Admins: read-only test of the Shopify connection (log [SHOPIFY-CHECK])."""
+    if not is_admin():
+        return jsonify({"ok": False, "error": "admins only"}), 403
+    how = ("fixed token (SHOPIFY_API_TOKEN)" if os.environ.get("SHOPIFY_API_TOKEN")
+           else "client id + secret (SHOPIFY_CLIENT_ID / SECRET)" if CLIENT_ID and CLIENT_SECRET else "NOT SET")
+    out = {"ok": False, "SHOPIFY_SHOP": SHOP or "NOT SET", "login": how, "api_version": API_VERSION}
+    if not (SHOP and TOKEN):
+        out["error"] = "SHOPIFY_SHOP and a token / client id + secret must be set in Render -> Environment"
+        return jsonify(out), 400
+    try:
+        d = shopify_graphql(CHECK_QUERY)
+    except Exception as ex:
+        out["error"] = str(ex)[:300]
+        log(f"[SHOPIFY-CHECK] {SHOP}: FAILED {out['error']}")
+        return jsonify(out), 502
+    if d.get("errors"):
+        out["error"] = str(d["errors"])[:300]
+        log(f"[SHOPIFY-CHECK] {SHOP}: Shopify answered errors {out['error']}")
+        return jsonify(out), 502
+    data = d.get("data") or {}
+    shop = data.get("shop") or {}
+    out.update(ok=True, shop_name=shop.get("name"), myshopify_domain=shop.get("myshopifyDomain"),
+               website=(shop.get("primaryDomain") or {}).get("url"), currency=shop.get("currencyCode"),
+               products=(data.get("productsCount") or {}).get("count"),
+               latest_products=[{"title": e["node"]["title"],
+                                 "skus": [v["node"]["sku"] for v in e["node"]["variants"]["edges"]],
+                                 "stock": [v["node"]["inventoryQuantity"] for v in e["node"]["variants"]["edges"]]}
+                                for e in (data.get("products") or {}).get("edges", [])])
+    log(f"[SHOPIFY-CHECK] OK: {out['shop_name']} ({out['myshopify_domain']}), {out['products']} products, login {how}")
+    return jsonify(out)

@@ -27,6 +27,7 @@ Where things are (change them here):
 """
 
 import json
+import re
 import time
 import contextlib
 from datetime import datetime
@@ -147,6 +148,7 @@ class Run:
             st["status"] = "success"
         except Exception as ex:
             st["status"], st["error"] = "failed", str(ex)[:500]
+            log(f"[RUN-HISTORY] Run {self.id} step '{name}' FAILED (full text): {ex}")
             raise
         finally:
             st["seconds"] = round(time.time() - t, 2)
@@ -248,6 +250,30 @@ HIST_HTML = """<!doctype html><html><head><title>Run history - Item Master</titl
 </div></body></html>"""
 
 
+# ---- ERROR TEXT SHOWN ON PAGES (2026-11-18, outside review: failed runs showed the Airtable app / table / record ids
+# and Python file paths). The FULL text stays in the database + server log; pages show clean_error(text).
+_CLEAN = [
+    (re.compile(r'File "[^"]*", line \d+(, in \S+)?'), ""),                     # Python trace lines
+    (re.compile(r'(?:[A-Za-z]:\\|/(?:opt|home|usr|tmp|var|root|srv|app)/)[^\s"\',)]*'), "[path]"),
+    (re.compile(r'https?://api\.airtable\.com\S*'), "Airtable"),
+    (re.compile(r'\bapp[A-Za-z0-9]{14}\b'), "[base]"),
+    (re.compile(r'\btbl[A-Za-z0-9]{14}\b'), "[table]"),
+    (re.compile(r'\b(?:rec|fld|viw)[A-Za-z0-9]{14}\b'), "[id]"),
+    (re.compile(r'(https?://[^/\s]+)/\S*'), r"\1"),                              # links -> site name only
+    (re.compile(r'\s{2,}'), " "),
+]
+
+
+def clean_error(text):
+    """Error text for the page / browser: internal ids, file paths and long links taken out."""
+    if not text:
+        return text
+    t = str(text)
+    for rx, rep in _CLEAN:
+        t = rx.sub(rep, t)
+    return t.strip()
+
+
 HIDDEN_KEYS = {"record_id", "airtable_record_id", "fi_record_id"}   # Airtable record id: saved, NOT shown on the page
 
 
@@ -287,6 +313,10 @@ def history_page():
         conn.close()
     for r in runs:
         r["steps"] = hide_ids(r["steps"] or [])
+        r["error"] = clean_error(r["error"])                  # full text stays in the database
+        for s in r["steps"]:
+            if isinstance(s, dict) and s.get("error"):
+                s["error"] = clean_error(s["error"])
         r["secs"] = round((r["finished_at"] - r["started_at"]).total_seconds(), 1) if r["finished_at"] else None
     pages = max(1, -(-total // PER_PAGE))
     log(f"[RUN-HISTORY] Page shown to {g.get('user')}: {total} runs" + (f" for {fi}" if fi else "")

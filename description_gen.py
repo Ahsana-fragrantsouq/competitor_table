@@ -216,7 +216,7 @@ def create_description():
     except Exception as ex:
         log(f"[DESC] {fid}: NOT created - {ex}")
         run.finish("failed", ex)
-        return jsonify({"ok": False, "error": str(ex)[:300], "run_id": run.id}), 502
+        return jsonify({"ok": False, "error": run_history.clean_error(str(ex))[:300], "run_id": run.id}), 502
 
 
 # ============================================================ SECTION 5: hooks (called once from app.py)

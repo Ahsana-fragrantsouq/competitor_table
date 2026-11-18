@@ -118,7 +118,7 @@ import unicodedata
 from urllib.parse import urlparse
 
 import requests
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify, g, session
 
 # ============================================================ SECTION 1: imports + blueprints (pages in their own files)
 # New page file = import its blueprint here + app.register_blueprint(...) below.
@@ -221,6 +221,55 @@ def gzip_response(resp):
             log(f"[GZIP] {request.path}: {len(data) // 1024} KB -> {len(packed) // 1024} KB")
     except Exception as ex:                           # never break a page because of packing
         log(f"[GZIP] skipped ({ex})")
+    return resp
+
+
+# ---- SECURITY (2026-11-18, outside review): 1 CSRF  2 security headers. Session cookie = SameSite=Lax + HttpOnly +
+# Secure (auth.py init_auth) -> other sites' pages cannot send our login cookie with a POST. ON TOP of that:
+#   ORIGIN CHECK: every POST / PUT / PATCH / DELETE must come from a page of THIS website (browser 'Origin' header, else
+#   'Referer'). A request from another site -> 403, nothing changed (log [CSRF]). No browser header at all (scripts,
+#   curl) -> allowed: CSRF needs a browser, and browsers always send Origin on a POST. No PC script POSTs here
+#   (Run 1 / scrapers use GET ...?secret=).
+#   HEADERS on every answer: no framing by other sites (clickjacking), no MIME guessing, HTTPS only (HSTS),
+#   referrer = our site name only for other sites, CSP limited to things that cannot break the inline page code.
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Content-Security-Policy": "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'",
+}
+HSTS = "max-age=31536000"                            # 1 year; only sent over https (Render)
+
+
+@app.before_request
+def csrf_origin_check():
+    if request.method not in UNSAFE_METHODS:
+        return None
+    origin = request.headers.get("Origin")
+    src = origin if origin and origin != "null" else request.headers.get("Referer") or ""
+    if not src:
+        if origin == "null":                          # sandboxed / privacy page without Referer -> not trusted
+            log(f"[CSRF] BLOCKED {request.method} {request.path}: Origin null")
+            return jsonify({"ok": False, "error": "Request refused (not sent from this website)"}), 403
+        return None                                   # no browser header = not a browser
+    host = urlparse(src).netloc.lower()
+    if host != request.host.lower():
+        log(f"[CSRF] BLOCKED {request.method} {request.path}: from {host or src[:60]!r}, this site {request.host!r}, "
+            f"user {session.get('user')!r}")
+        return jsonify({"ok": False, "error": "Request refused (not sent from this website)"}), 403
+    return None
+
+
+@app.after_request
+def security_headers(resp):
+    try:
+        for k, v in SECURITY_HEADERS.items():
+            resp.headers.setdefault(k, v)
+        if request.is_secure or request.headers.get("X-Forwarded-Proto", "") == "https":
+            resp.headers.setdefault("Strict-Transport-Security", HSTS)
+    except Exception as ex:                           # never break a page
+        log(f"[SECURITY] headers not added: {ex}")
     return resp
 
 
