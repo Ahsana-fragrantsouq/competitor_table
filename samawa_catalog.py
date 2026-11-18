@@ -255,14 +255,13 @@ def sm_run():
             st["incomplete"] |= inc
             sm_log(f"[SM] {len(collections)} collections to check")
             coll_started = time.time()
-            first = sm_state.get("coll_next", 0) % max(1, len(collections))     # continue where the last run stopped
+            first = _coll_next_get(cur, conn) % max(1, len(collections))     # continue where the last run stopped
             if first:
                 sm_log(f"[SM] Collections: starting at {first + 1} (the last run stopped there)")
             order = collections[first:] + collections[:first]
-            sm_state["coll_next"] = 0
             for i, c in enumerate(order, 1):
                 if time.time() - coll_started > SM_COLLECTIONS_MINUTES * 60:
-                    sm_state["coll_next"] = (first + i - 1) % len(collections)
+                    _coll_next_set(cur, conn, (first + i - 1) % len(collections))
                     sm_log(f"[SM] Collections: {SM_COLLECTIONS_MINUTES} min used, {i - 1}/{len(collections)} read "
                            f"-> next run continues there (products not reached keep their last price)")
                     st["incomplete"] = True
@@ -273,6 +272,10 @@ def sm_run():
                                   lambda b: save(b, "collection"),
                                   deadline=coll_started + SM_COLLECTIONS_MINUTES * 60)
                 st["incomplete"] |= inc
+                if i % 5 == 0:                       # progress kept even if the website restarts during the run
+                    _coll_next_set(cur, conn, (first + i) % len(collections))
+            else:
+                _coll_next_set(cur, conn, 0)         # all collections read -> next run starts at 1 again
 
         # 3) products not seen in a COMPLETE run are gone from Samawa
         if st["incomplete"]:
@@ -290,6 +293,32 @@ def sm_run():
         cur.close()
         conn.close()
         sm_log(f"[SM-DONE] {st}")
+
+
+COLL_NEXT_KEY = "samawa_collections_next"   # app_settings: where the next run continues in the collections
+
+
+def _coll_next_get(cur, conn):
+    """Saved collection position (survives a website restart / deploy; memory alone did not - 2026-11-18)."""
+    try:
+        cur.execute("SELECT value FROM app_settings WHERE key = %s", (COLL_NEXT_KEY,))
+        row = cur.fetchone()
+        return int(row[0]) if row and str(row[0]).isdigit() else 0
+    except Exception as ex:
+        conn.rollback()
+        sm_log(f"[SM] collection position not read ({str(ex)[:100]}) -> starting at 1")
+        return 0
+
+
+def _coll_next_set(cur, conn, n):
+    try:
+        cur.execute("""INSERT INTO app_settings (key, value, updated_by) VALUES (%s, %s, 'samawa_catalog')
+                       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by,
+                                                       updated_at = NOW()""", (COLL_NEXT_KEY, str(n)))
+        conn.commit()
+    except Exception as ex:
+        conn.rollback()
+        sm_log(f"[SM] collection position not saved ({str(ex)[:100]})")
 
 
 def sm_worker():
