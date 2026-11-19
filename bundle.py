@@ -51,6 +51,9 @@ BUNDLE_OPTIONS = [
 MIN_ITEMS, MAX_ITEMS = 2, 5          # products in one bundle
 MAX_QTY = 20                         # quantity of one product in a bundle
 SKU_JOIN = ""                        # AFN1057 + ARM1002 -> "AFN1057ARM1002" (change to "-" / "+" later if wanted)
+# Airtable import buttons on the Bundles list (2026-11-19, user: "remove these" after the 149 bundles were loaded).
+# False = buttons hidden; the routes stay (/bundle/airtable/preview still opens for admins). True = buttons back.
+AT_BUTTONS = False
 PICK_LIMIT = 50                      # products listed in the "Select products" popup (search narrows it down)
 
 
@@ -632,9 +635,9 @@ LIST_HTML = PAGE_HEAD.replace("@@TITLE@@", "Bundles") + r"""
   <input type="text" name="q" value="{{ q }}" placeholder="Search bundles by title or SKU">
   <button class="btn" type="submit">Go</button>
   {% if admin %}<a class="ghost" href="/bundle/new" style="text-decoration:none">+ Create bundle</a>
-  {# Airtable import (SECTION 8): Preview = nothing saved; Load = add / update every Airtable bundle #}
-  <a class="ghost" href="/bundle/airtable/preview" target="_blank" style="text-decoration:none">Preview Airtable</a>
-  <button type="button" class="ghost" id="atLoad" onclick="loadAirtable(this)">Load bundles from Airtable</button>{% endif %}
+  {# Airtable import (SECTION 8): Preview = nothing saved; Load = add / update every Airtable bundle. AT_BUTTONS #}
+  {% if at_buttons %}<a class="ghost" href="/bundle/airtable/preview" target="_blank" style="text-decoration:none">Preview Airtable</a>
+  <button type="button" class="ghost" id="atLoad" onclick="loadAirtable(this)">Load bundles from Airtable</button>{% endif %}{% endif %}
 </form>
 <div class="rmmsg" id="atmsg" style="font-size:14px;margin:8px 0;white-space:pre-line"></div>
 <p class="muted" style="font-size:14px" id="bcount">{{ rows|length }} bundle{{ '' if rows|length == 1 else 's' }}{% if q %} matching "{{ q }}"{% endif %}.</p>
@@ -808,7 +811,8 @@ def bundle_list():
             b[k] = float(b[k] or 0)
     nav_html, nav_css = _nav("bundle-list")
     log(f"[BUNDLE] list: {len(rows)} bundles{f' for {q!r}' if q else ''}")
-    return render_template_string(LIST_HTML, nav_html=nav_html, nav_css=nav_css, rows=rows, q=q, admin=is_admin())
+    return render_template_string(LIST_HTML, nav_html=nav_html, nav_css=nav_css, rows=rows, q=q, admin=is_admin(),
+                                  at_buttons=AT_BUTTONS)
 
 
 @bundle_bp.post("/bundle/delete")
