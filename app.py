@@ -3430,7 +3430,7 @@ barcode_edit.init(connect=pg_conn, airtable_barcode=airtable_set_barcode)   # 'E
 stock_edit.init(connect=pg_conn)                                             # 'Edit' our stock -> Shopify (stock_edit.py)
 stock_sync.init(connect=pg_conn)                                             # 'Sync the stock' list (stock_sync.py)
 if bundle:
-    bundle.init(connect=pg_conn)                                             # Bundle menu page (bundle.py)
+    bundle.init(connect=pg_conn, read_airtable=at_list)                      # Bundle menu + Airtable import (bundle.py)
 shopify_prices.init(connect=pg_conn)                                         # Item Master: prices FROM Shopify (shopify_prices.py)
 item_master.init(connect=pg_conn, read_airtable=at_list,       # Item Master: Airtable -> item_master (item_master.py)
                  fi_table=FI_TABLE, brands_table=BRANDS_TABLE, brands_name_field=BRANDS_NAME_FIELD,

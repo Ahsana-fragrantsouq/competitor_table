@@ -20,6 +20,7 @@ Where things are (change them here):
   SECTION 5  create / edit   -> POST /bundle/create, POST /bundle/update (same checks, _save_bundle)
   SECTION 6  pages           -> FORM_HTML (/bundle/new, /bundle/edit/<id>), LIST_HTML (/bundle)
   SECTION 7  hooks           -> init(): database connection from app.py
+  SECTION 8  Airtable import -> 'Load bundles from Airtable' button (Bundle offers table): preview + load
 """
 
 import json
@@ -71,7 +72,10 @@ CREATE TABLE IF NOT EXISTS bundles (
 );
 ALTER TABLE bundles ADD COLUMN IF NOT EXISTS updated_by TEXT;       -- Edit (2026-11-13): last change by
 ALTER TABLE bundles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;  -- and when
-ALTER TABLE bundles ADD COLUMN IF NOT EXISTS active_until DATE;     -- listing period (2026-11-13): last day; NULL = no end
+ALTER TABLE bundles ADD COLUMN IF NOT EXISTS active_until DATE;
+ALTER TABLE bundles ADD COLUMN IF NOT EXISTS airtable_id TEXT;      -- Airtable import (2026-11-18): Bundle offers rec id
+ALTER TABLE bundles ADD COLUMN IF NOT EXISTS description TEXT;      -- Airtable 'Description' (HTML), kept for later
+CREATE UNIQUE INDEX IF NOT EXISTS bundles_airtable_id ON bundles (airtable_id) WHERE airtable_id IS NOT NULL;     -- listing period (2026-11-13): last day; NULL = no end
 """
 
 
@@ -619,7 +623,7 @@ LIST_HTML = PAGE_HEAD.replace("@@TITLE@@", "Bundles") + r"""
  .foot{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
  .rm{background:none;border:1px solid #e0806c;color:#e0806c;border-radius:10px;padding:7px 14px;cursor:pointer;font-size:14px}
  .rm:hover{background:rgba(224,128,108,.12)} .rm:disabled{opacity:.5;cursor:default}
- .rmmsg{font-size:13px;margin-top:6px}
+ .rmmsg{font-size:13px;margin-top:6px} .rmmsg.ok{color:#8cc58c} .rmmsg.err{color:#e0806c}
 </style></head><body><div class="page">
 <div class="topbar"><h1>Bundles</h1>
   {% if g.user %}<span class="who">Logged in as <b>{{ g.user }}</b> · <a href="/logout">Log out</a></span>{% endif %}</div>
@@ -627,8 +631,12 @@ LIST_HTML = PAGE_HEAD.replace("@@TITLE@@", "Bundles") + r"""
 <form class="bar" method="get" style="margin-top:12px">
   <input type="text" name="q" value="{{ q }}" placeholder="Search bundles by title or SKU">
   <button class="btn" type="submit">Go</button>
-  {% if admin %}<a class="ghost" href="/bundle/new" style="text-decoration:none">+ Create bundle</a>{% endif %}
+  {% if admin %}<a class="ghost" href="/bundle/new" style="text-decoration:none">+ Create bundle</a>
+  {# Airtable import (SECTION 8): Preview = nothing saved; Load = add / update every Airtable bundle #}
+  <a class="ghost" href="/bundle/airtable/preview" target="_blank" style="text-decoration:none">Preview Airtable</a>
+  <button type="button" class="ghost" id="atLoad" onclick="loadAirtable(this)">Load bundles from Airtable</button>{% endif %}
 </form>
+<div class="rmmsg" id="atmsg" style="font-size:14px;margin:8px 0;white-space:pre-line"></div>
 <p class="muted" style="font-size:14px" id="bcount">{{ rows|length }} bundle{{ '' if rows|length == 1 else 's' }}{% if q %} matching "{{ q }}"{% endif %}.</p>
 {% for b in rows %}
 <div class="card bcard" id="bundle-{{ b.id }}">
@@ -658,6 +666,29 @@ LIST_HTML = PAGE_HEAD.replace("@@TITLE@@", "Bundles") + r"""
 <div class="card"><p class="sub" style="margin:0">No bundles yet.{% if admin %} <a href="/bundle/new" style="color:var(--gold)">Create the first one</a>.{% endif %}</p></div>
 {% endfor %}
 <script>
+  // ---- Load bundles from Airtable (admins, bundle.py SECTION 8): add new / update same ones, then reload ----
+  async function loadAirtable(btn) {
+    var m = document.getElementById("atmsg");
+    if (!confirm("Load all bundles from Airtable 'Bundle offers'?\n\nNew ones are added, ones loaded before are updated." +
+                 "\nNo Shopify stock check. Nothing changes in Airtable or Shopify.")) return;
+    btn.disabled = true; btn.textContent = "Loading ..."; m.className = "rmmsg"; m.textContent = "Reading Airtable ...";
+    try {
+      var r = await fetch("/bundle/airtable/load", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+      var d = await r.json().catch(function () { return {ok: false, error: "HTTP " + r.status}; });
+      if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
+      m.className = "rmmsg ok";
+      m.textContent = "Airtable: " + d.read + " bundles read - " + d.added + " added, " + d.updated + " updated, " +
+                      d.skipped.length + " skipped." +
+                      (d.skipped.length ? "\nSkipped: " + d.skipped.slice(0, 15).join("; ") + (d.skipped.length > 15 ? " ..." : "") : "") +
+                      (d.warnings.length ? "\nNote: " + d.warnings.slice(0, 10).join("; ") + (d.warnings.length > 10 ? " ..." : "") : "") +
+                      "\nReloading the list ...";
+      console.log("[BUNDLE-AT] " + JSON.stringify(d).slice(0, 500));
+      setTimeout(function () { location.reload(); }, d.skipped.length || d.warnings.length ? 8000 : 2000);
+    } catch (e) {
+      m.className = "rmmsg err"; m.textContent = "Not loaded: " + e.message;
+      btn.disabled = false; btn.textContent = "Load bundles from Airtable";
+    }
+  }
   // ---- Remove a bundle (admins): our database only (bundles are not in Shopify) ----
   async function removeBundle(btn) {
     var id = btn.dataset.id, msg = document.getElementById("rmmsg-" + id);
@@ -808,9 +839,10 @@ def bundle_delete():
 
 
 # ============================================================ SECTION 7: hooks
-def init(connect):
-    """connect() -> new Postgres connection (app.pg_conn)."""
+def init(connect, read_airtable=None):
+    """connect() -> new Postgres connection (app.pg_conn); read_airtable(table, params) -> records (app.at_list)."""
     _hooks["connect"] = connect
+    _hooks["read_airtable"] = read_airtable
     try:
         conn = connect()
         try:
@@ -821,3 +853,238 @@ def init(connect):
     except Exception as ex:
         log(f"[BUNDLE] table bundles not checked at start: {ex}")
     log("[BUNDLE] Linked to app.py: menu Bundle -> Bundles (/bundle) + Create bundle form (/bundle/new), table bundles")
+
+
+# ============================================================ SECTION 8: Airtable import (2026-11-18)
+# User: "bring these bundles to competitor table" (Airtable base -> 'Bundle offers', 149 rows) -> Bundles list,
+# ONE button (run again any time), NO Shopify stock check. Airtable / Shopify are never changed.
+# Each Airtable row -> one bundle, matched on airtable_id (loaded again = UPDATED, never a 2nd copy; a bundle made with
+# the form that has the same SKU is taken over). Fields are FOUND, not hard-coded (preview shows what was used):
+#   products : linked-record fields whose rec ids are our products (item_master.fi_record_id = French Inventories id);
+#              none -> the SKUs inside 'Bundle SKU' (RYN1042RYN1045 -> RYN1042 + RYN1045). Same product twice = qty 2.
+#   title    : AT_TITLE_FIELDS (first one with text)      sku: AT_SKU_FIELDS, else our SKUs joined
+#   price    : a bundle / offer price field -> discount = our total - that price; else a discount % / amount field
+AT_BUNDLE_TABLE = "tblrLoQBAs143vvDn"                     # Airtable 'Bundle offers' (same base as French Inventories)
+AT_TITLE_FIELDS = ["Bundle name", "Bundle Name", "Name", "Title"]
+AT_SKU_FIELDS = ["Bundle SKU", "SKU"]
+AT_DESC_FIELDS = ["Description", "Shopify Description"]
+AT_SKU_RE = re.compile(r"[A-Z]{2,5}\d{3,5}")               # one product SKU inside 'Bundle SKU' (RYN1042)
+AT_BY = "Airtable import"                                  # created_by / updated_by of imported bundles
+
+
+def _at_text(v):
+    """Airtable value -> plain text (formula errors / lists / objects handled)."""
+    if v is None:
+        return ""
+    if isinstance(v, list):
+        return " ".join(_at_text(x) for x in v).strip()
+    if isinstance(v, dict):                                 # {'specialValue': 'NaN'} / {'error': ...} / attachment
+        return str(v.get("name") or v.get("text") or "")
+    return str(v).strip()
+
+
+def _at_number(v):
+    if isinstance(v, list):
+        v = v[0] if v else None
+    try:
+        return money(v) if v not in (None, "") else None
+    except Exception:
+        return None
+
+
+def _at_first(fields, names):
+    for n in names:
+        t = _at_text(fields.get(n))
+        if t:
+            return n, t
+    return None, ""
+
+
+def _at_price_field(fields):
+    """(kind, field, value): 'price' = the bundle's own price, 'percent' / 'amount' = discount; None = not found."""
+    nums = {k: _at_number(v) for k, v in fields.items()}
+    low = {k: k.lower() for k in fields}
+    for k, n in nums.items():                               # bundle / offer / sale price (not compare / total / regular)
+        if n and n > 0 and "price" in low[k] and any(w in low[k] for w in ("bundle", "offer", "sale", "final", "special")) \
+                and not any(w in low[k] for w in ("compare", "total", "regular", "original", "before")):
+            return "price", k, n
+    for k, n in nums.items():
+        if n is not None and n >= 0 and "discount" in low[k] and ("%" in low[k] or "percent" in low[k]):
+            return "percent", k, (n * 100 if 0 < n < 1 else n)    # Airtable percent fields come as 0.1 = 10 %
+    for k, n in nums.items():
+        if n is not None and n >= 0 and "discount" in low[k]:
+            return "amount", k, n
+    return None, None, None
+
+
+def at_build(rec, known, by_sku):
+    """One Airtable record -> (bundle dict, None) or (None, why skipped). known = our fi ids, by_sku = SKU -> fi."""
+    f = rec.get("fields") or {}
+    fis, used = [], []
+    for k in sorted(f, key=lambda x: [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", x)]):
+        v = f[k]
+        if isinstance(v, list) and v and all(isinstance(x, str) and x.startswith("rec") for x in v):
+            ours = [x for x in v if x in known]
+            if ours:
+                fis += ours
+                used.append(k)
+    title_f, title = _at_first(f, AT_TITLE_FIELDS)
+    sku_f, at_sku = _at_first(f, AT_SKU_FIELDS)
+    if not fis and at_sku:                                  # no linked products -> SKUs inside 'Bundle SKU'
+        fis = [by_sku[x] for x in AT_SKU_RE.findall(at_sku.upper()) if x in by_sku]
+        used = [f"{sku_f} (SKUs)"] if fis else []
+    if not fis:
+        return None, "no product of ours found (no linked products, no known SKU in the Bundle SKU)"
+    qty = {}
+    for fi in fis:                                          # same product twice = quantity 2 (order kept)
+        qty[fi] = qty.get(fi, 0) + 1
+    return {"airtable_id": rec.get("id"), "title": title, "title_field": title_f, "at_sku": at_sku,
+            "description": _at_first(f, AT_DESC_FIELDS)[1], "items": list(qty.items()), "product_fields": used,
+            "price": _at_price_field(f)}, None
+
+
+def at_read():
+    """All Airtable 'Bundle offers' records + our products (fi ids, SKU -> fi)."""
+    if not _hooks.get("read_airtable"):
+        raise RuntimeError("Airtable reading not linked (app.py bundle.init read_airtable)")
+    recs = _hooks["read_airtable"](AT_BUNDLE_TABLE, {"pageSize": 100})
+    log(f"[BUNDLE-AT] Airtable 'Bundle offers': {len(recs)} records read")
+    conn = _hooks["connect"]()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT fi_record_id, UPPER(TRIM(sku)) FROM item_master")
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    known = {r[0] for r in rows}
+    by_sku = {r[1]: r[0] for r in rows if r[1]}
+    return recs, known, by_sku
+
+
+def at_make(cur, b):
+    """Built Airtable bundle -> row values from OUR products (names / SKUs / UAE prices / pictures), + warnings."""
+    rows = {r["fi"]: r for r in product_rows(cur, " WHERE im.fi_record_id = ANY(%s)", [[fi for fi, _ in b["items"]]],
+                                             limit=50)}
+    items, warn = [], []
+    for fi, q in b["items"]:
+        r = rows.get(fi)
+        if not r:
+            continue
+        if r["price"] is None:
+            warn.append(f"{r['name']}: no UAE price")
+        items.append({"fi": fi, "sku": r["sku"], "name": r["name"], "qty": q, "price": r["price"] or 0.0,
+                      "image": r["image"]})
+    total = sum(money(it["price"]) * it["qty"] for it in items)
+    kind, field, val = b["price"]
+    dtype, dval, disc = "amount", Decimal("0"), Decimal("0")
+    if kind == "price":
+        disc = max(Decimal("0"), total - val)
+        dval = disc
+        if val > total:
+            warn.append(f"Airtable price {val} above our total {total} -> no discount")
+    elif kind == "percent":
+        dtype, dval = "percent", min(Decimal("100"), val)
+        disc = money(total * dval / 100)
+    elif kind == "amount":
+        dval = disc = min(val, total)
+    sku = b["at_sku"] or SKU_JOIN.join((it["sku"] or "").upper() for it in items)
+    title = re.sub(r"\s+", " ", b["title"] or " + ".join(it["name"] for it in items)).strip()[:300]
+    return {"title": title, "sku": sku, "items": items, "total": total, "dtype": dtype, "dval": dval, "disc": disc,
+            "price": total - disc, "description": b["description"]}, warn
+
+
+@bundle_bp.get("/bundle/airtable/preview")
+def bundle_airtable_preview():
+    """Admins: what 'Load bundles from Airtable' WOULD do - field names, how fields are used, first rows. Saves nothing."""
+    if not is_admin():
+        return jsonify({"ok": False, "error": "admins only"}), 403
+    try:
+        recs, known, by_sku = at_read()
+    except Exception as ex:
+        log(f"[BUNDLE-AT] preview failed: {ex}")
+        return jsonify({"ok": False, "error": str(ex)[:300]}), 502
+    fields = sorted({k for r in recs for k in (r.get("fields") or {})})
+    out, skipped = [], []
+    conn = _hooks["connect"]()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        for rec in recs:
+            b, why = at_build(rec, known, by_sku)
+            if not b:
+                skipped.append({"airtable": _at_first(rec.get("fields") or {}, AT_TITLE_FIELDS)[1] or rec.get("id"),
+                                "why": why})
+                continue
+            if len(out) < 5:
+                v, warn = at_make(cur, b)
+                out.append({"title": v["title"], "sku": v["sku"], "products": [f"{i['qty']} x {i['sku']} {i['name']}"
+                                                                          for i in v["items"]],
+                            "products_from": b["product_fields"], "price_from": b["price"][1],
+                            "our_total": float(v["total"]), "discount_aed": float(v["disc"]),
+                            "bundle_price": float(v["price"]), "warnings": warn})
+    finally:
+        conn.close()
+    log(f"[BUNDLE-AT] preview by {g.get('user')}: {len(recs)} read, {len(skipped)} would be skipped")
+    return jsonify({"ok": True, "saved": "NOTHING (preview)", "airtable_records": len(recs), "airtable_fields": fields,
+                    "would_load": len(recs) - len(skipped), "would_skip": len(skipped), "skipped": skipped[:30],
+                    "first_bundles": out,
+                    "raw_first_record": (recs[0].get("fields") if recs else None)})
+
+
+@bundle_bp.post("/bundle/airtable/load")
+def bundle_airtable_load():
+    """Admins: every Airtable 'Bundle offers' row -> table bundles (added, or updated when loaded before)."""
+    if not is_admin():
+        return jsonify({"ok": False, "error": "admins only"}), 403
+    try:
+        recs, known, by_sku = at_read()
+    except Exception as ex:
+        log(f"[BUNDLE-AT] load failed: {ex}")
+        return jsonify({"ok": False, "error": str(ex)[:300]}), 502
+    added = updated = 0
+    skipped, warnings = [], []
+    conn = _hooks["connect"]()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(BUNDLES_CREATE)
+        for rec in recs:
+            b, why = at_build(rec, known, by_sku)
+            name = _at_first(rec.get("fields") or {}, AT_TITLE_FIELDS)[1] or rec.get("id")
+            if not b:
+                skipped.append(f"{name}: {why}")
+                continue
+            v, warn = at_make(cur, b)
+            if not v["items"]:
+                skipped.append(f"{name}: products not found in Item Master")
+                continue
+            warnings += [f"{v['sku']}: {w}" for w in warn]
+            vals = (v["title"], v["sku"], json.dumps(v["items"]), v["total"], v["dtype"], v["dval"], v["disc"],
+                    v["price"], v["description"])
+            cur.execute("SELECT id FROM bundles WHERE airtable_id = %s", (b["airtable_id"],))
+            row = cur.fetchone()
+            if not row:                                     # a form bundle with the same SKU -> take it over
+                cur.execute("SELECT id FROM bundles WHERE airtable_id IS NULL AND UPPER(sku) = UPPER(%s) "
+                            "ORDER BY id LIMIT 1", (v["sku"],))
+                row = cur.fetchone()
+            if row:
+                cur.execute("""UPDATE bundles SET title = %s, sku = %s, items = %s, total_price = %s, discount_type = %s,
+                                   discount_value = %s, discount_aed = %s, bundle_price = %s, description = %s,
+                                   airtable_id = %s, updated_by = %s, updated_at = NOW() WHERE id = %s""",
+                            vals + (b["airtable_id"], f"{AT_BY} ({g.get('user')})", row["id"]))
+                updated += 1
+            else:
+                cur.execute("""INSERT INTO bundles (title, sku, items, total_price, discount_type, discount_value,
+                                   discount_aed, bundle_price, description, airtable_id, created_by)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            vals + (b["airtable_id"], f"{AT_BY} ({g.get('user')})"))
+                added += 1
+        conn.commit()
+    except Exception as ex:
+        conn.rollback()
+        log(f"[BUNDLE-AT] load ERROR, nothing saved: {ex}")
+        return jsonify({"ok": False, "error": f"nothing saved: {str(ex)[:200]}"}), 500
+    finally:
+        conn.close()
+    log(f"[BUNDLE-AT] load by {g.get('user')}: {len(recs)} read, {added} added, {updated} updated, "
+        f"{len(skipped)} skipped {skipped[:5]}, {len(warnings)} warnings {warnings[:5]}")
+    return jsonify({"ok": True, "read": len(recs), "added": added, "updated": updated, "skipped": skipped,
+                    "warnings": warnings})
