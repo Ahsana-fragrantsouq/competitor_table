@@ -868,6 +868,11 @@ AT_BUNDLE_TABLE = "tblrLoQBAs143vvDn"                     # Airtable 'Bundle off
 AT_TITLE_FIELDS = ["Bundle name", "Bundle Name", "Name", "Title"]
 AT_SKU_FIELDS = ["Bundle SKU", "SKU"]
 AT_DESC_FIELDS = ["Description", "Shopify Description"]
+# Live preview 2026-11-19: Airtable 'UAE Price' (221) = the BUNDLE's selling price, 'Bundle Compare price' (255) = sum of
+# the products' UAE prices (= our total) -> discount = our total - UAE Price; compare price only CHECKED (warning when
+# it differs from our total, i.e. a product price changed since the bundle was made in Airtable)
+AT_PRICE_FIELDS = ["UAE Price"]
+AT_COMPARE_FIELDS = ["Bundle Compare price"]
 AT_SKU_RE = re.compile(r"[A-Z]{2,5}\d{3,5}")               # one product SKU inside 'Bundle SKU' (RYN1042)
 AT_BY = "Airtable import"                                  # created_by / updated_by of imported bundles
 
@@ -902,6 +907,10 @@ def _at_first(fields, names):
 
 def _at_price_field(fields):
     """(kind, field, value): 'price' = the bundle's own price, 'percent' / 'amount' = discount; None = not found."""
+    for k in AT_PRICE_FIELDS:                               # named price field first (Airtable 'UAE Price')
+        n = _at_number(fields.get(k))
+        if n and n > 0:
+            return "price", k, n
     nums = {k: _at_number(v) for k, v in fields.items()}
     low = {k: k.lower() for k in fields}
     for k, n in nums.items():                               # bundle / offer / sale price (not compare / total / regular)
@@ -923,7 +932,7 @@ def at_build(rec, known, by_sku):
     fis, used = [], []
     for k in sorted(f, key=lambda x: [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", x)]):
         v = f[k]
-        if isinstance(v, list) and v and all(isinstance(x, str) and x.startswith("rec") for x in v):
+        if isinstance(v, list) and v and all(isinstance(x, str) for x in v):   # linked records = lists of ids
             ours = [x for x in v if x in known]
             if ours:
                 fis += ours
@@ -940,7 +949,8 @@ def at_build(rec, known, by_sku):
         qty[fi] = qty.get(fi, 0) + 1
     return {"airtable_id": rec.get("id"), "title": title, "title_field": title_f, "at_sku": at_sku,
             "description": _at_first(f, AT_DESC_FIELDS)[1], "items": list(qty.items()), "product_fields": used,
-            "price": _at_price_field(f)}, None
+            "price": _at_price_field(f),
+            "compare": next((n for n in (_at_number(f.get(k)) for k in AT_COMPARE_FIELDS) if n), None)}, None
 
 
 def at_read():
@@ -975,6 +985,8 @@ def at_make(cur, b):
         items.append({"fi": fi, "sku": r["sku"], "name": r["name"], "qty": q, "price": r["price"] or 0.0,
                       "image": r["image"]})
     total = sum(money(it["price"]) * it["qty"] for it in items)
+    if b.get("compare") and b["compare"] != total:          # product price changed since Airtable made the bundle
+        warn.append(f"Airtable compare price {b['compare']} but our total now {total}")
     kind, field, val = b["price"]
     dtype, dval, disc = "amount", Decimal("0"), Decimal("0")
     if kind == "price":
