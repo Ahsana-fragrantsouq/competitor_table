@@ -646,7 +646,7 @@ HTML = """
  .prices{align-items:flex-end}
  /* "Out of stock" above OUR product link (shown only when our product is out of stock on fragrantsouq.com).
     Small text so it doesn't compete with the prices. Colour comes from .out (red). */
- .ourstock{font-size:13px;font-weight:500;margin-bottom:3px}
+ .ourstock{font-size:13px;font-weight:500;margin-bottom:3px} .ourstock[hidden]{display:none}
  .ourlink{margin-left:auto;text-align:right;max-width:65%;align-self:flex-end}
  .topbar{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
  .who{color:var(--muted);font-size:14px} .who b{color:var(--text)} .who a{color:var(--gold)}
@@ -1026,7 +1026,9 @@ HTML = """
              our_stock = false -> "Out of stock" (small, red)
              our_stock = true  -> nothing shown (in stock is normal)
              our_stock = none  -> nothing shown (not on fragrantsouq.com / links not loaded yet) #}
-        {% if r.our_link and r.our_stock == false %}<div class="out ourstock">Out of stock</div>{% endif %}
+        {# always there for products on our site (id ourstock-<fi>), hidden when in stock -> the stock Edit (stock_edit.py)
+           shows / hides it at once after Save (2026-11-20: it kept 'Out of stock' after the stock was set to 2) #}
+        {% if r.our_link %}<div class="out ourstock" id="ourstock-{{ r.fi }}"{% if r.our_stock != false %} hidden{% endif %}>Out of stock</div>{% endif %}
         {% if r.our_link %}<a class="link" href="{{ r.our_link }}" target="_blank" title="Open on fragrantsouq.com">{{ r.our_title or r.name }}</a>
         {% else %}<span class="gtin">Not on fragrantsouq.com</span>{% endif %}
         {% if r.barcode %}<div class="bcode">Barcode {{ r.barcode }}</div>{% endif %}

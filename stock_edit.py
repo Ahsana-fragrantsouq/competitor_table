@@ -87,6 +87,8 @@ STOCK_JS = """  // ---- Edit our stock (admins only, stock_edit.py): Shopify fir
       var d = await r.json().catch(function () { return {ok: false, error: "HTTP " + r.status}; });
       if (!d.ok) throw new Error(d.error || ("HTTP " + r.status));
       document.getElementById("stk-" + fi).textContent = "Stock " + d.qty;
+      var out = document.getElementById("ourstock-" + fi);         // red 'Out of stock' on the card follows at once
+      if (out) out.hidden = d.qty > 0;
       stockClose(fi);
       msg.className = "stk-msg ok"; msg.textContent = "Updated in Shopify: " + d.qty;
       console.log("[STOCK-EDIT] " + fi + ": stock " + d.qty);
