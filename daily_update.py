@@ -68,7 +68,14 @@ except ImportError as _ex:
 #       schtasks /Change /TN "Competitor daily update" /ST 10:00
 #   (or Task Scheduler -> Competitor daily update -> Triggers -> Edit -> Start time).
 #   The time written on the website is only text: competitors_page.py, search for "START TIME".
-SITE = os.environ.get("CT_SITE", "https://competitor-table.onrender.com")   # Render app
+# The website's own address (Run 2 / Manual sync call its download routes). On Render: THIS website itself
+# (RENDER_EXTERNAL_URL, set by Render) -> the TEST site never starts downloads on production (2026-11-12).
+# On the PC (no RENDER_EXTERNAL_URL): production, unless CT_SITE says otherwise.
+PRODUCTION_SITE = "https://competitor-table.onrender.com"
+SITE = (os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("CT_SITE") or PRODUCTION_SITE).rstrip("/")
+TEST_SITE = os.environ.get("TEST_SITE", "off").lower() in ("on", "1", "true", "yes")
+if TEST_SITE and SITE == PRODUCTION_SITE:      # test website must never call production -> refuse (render_get)
+    print(f"[TEST-SITE] SITE = {SITE} = PRODUCTION -> calls to the website are BLOCKED on the test site", flush=True)
 CDP_URL = "http://localhost:9222"                                           # your Chrome (remote debugging)
 CHROME_EXE = os.environ.get("CHROME_EXE", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
 CHROME_PROFILE = os.environ.get("CHROME_PROFILE", r"C:\ff-scraper\chrome-profile")
@@ -541,6 +548,9 @@ def render_get(path, tries=6):
     secret = os.environ.get("RUN_SECRET", "")
     if not secret:
         log(f"[RENDER] RUN_SECRET not set -> cannot open {path}")
+        return None
+    if TEST_SITE and SITE == PRODUCTION_SITE:
+        log(f"[TEST-SITE] {path} NOT opened: the test site would call PRODUCTION ({SITE})")
         return None
     for attempt in range(1, tries + 1):
         try:
@@ -1123,7 +1133,9 @@ def run_pc_lists(state, force=False):
         before_id = max_row_id(table)                    # everything above this after the download = new products
         if RUN2_ONLY_PRICE_STOCK:
             keep_details(table, label)                   # names / brands / links are put back afterwards
-            p = subprocess.run([sys.executable, path], cwd=HERE, env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+        # PYTHONIOENCODING=utf-8 (2026-11-16): output captured on Windows = cp1252 -> a product name with an
+        # Arabic / special character made print() crash the scraper (Oud Elite: UnicodeEncodeError charmap_encode)
+        p = subprocess.run([sys.executable, path], cwd=HERE, env=dict(os.environ, PYTHONIOENCODING="utf-8"),
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         tail = [ln for ln in (p.stdout or "").splitlines() if ln.strip()][-3:]
         for ln in tail:
@@ -1166,17 +1178,40 @@ def clean_old_run2(state):
         log(f"[RUN] Old PC full-list results removed from RUN 1 progress: {', '.join(gone) or '-'}")
 
 
+def brands_by_letters(groups, letters):
+    """Brands (alphabetical) whose name starts with one of the letters: "A-F", "G-M,0-9", "" = all brands.
+    Anything that is not a letter (digits, '&', ...) belongs to "0-9"."""
+    allowed = set()
+    for part in [x.strip().upper() for x in letters.split(",") if x.strip()]:
+        a, _, b = part.partition("-")
+        b = b or a
+        allowed |= {chr(c) for c in range(ord(a[0]), ord(b[0]) + 1)}
+    def first(b):
+        c = (b.strip()[:1] or "#").upper()
+        return c if "A" <= c <= "Z" else "0"
+    picked = [b for b in sorted(groups, key=str.lower) if not allowed or first(b) in allowed]
+    return picked
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--test", action="store_true", help="3 products per shop, print only, nothing saved")
     ap.add_argument("--force", action="store_true", help="run today's brands again")
     ap.add_argument("--brands", default="", help='only these brands, e.g. "Dior,Chanel" (daily position unchanged)')
-    ap.add_argument("--shop", default="", choices=[""] + list(DAILY_SHOPS), help="daily part for one shop only")
+    ap.add_argument("--shop", default="", help="only these shops: ff, bp, es or e.g. bp,es (daily position not moved)")
+    # ALL PRODUCTS (2026-11-20, user: "price update of French Fragrance, Branded Perfume and Essenzi for all products,
+    # from 2 PCs"): --all = every brand, --letters = brands starting with these letters (split the work over PCs/days)
+    ap.add_argument("--all", action="store_true", help="ALL brands (every product) - daily position not moved")
+    ap.add_argument("--letters", default="", help='brands starting with these letters, e.g. "A-F" or "G-M,0-9"')
     ap.add_argument("--ounass", action="store_true",
                     help="PC whole lists now (Ounass, Al Injaz, Niche Gallerie), even when not due yet")
     ap.add_argument("--full-lists", action="store_true",
                     help="RUN 2 by hand: today's shop (normally the website runs it at RUN2_TIME); add --force")
     args = ap.parse_args()
+    shops = [x.strip().lower() for x in args.shop.split(",") if x.strip()]
+    bad = [x for x in shops if x not in DAILY_SHOPS]
+    if bad:
+        raise SystemExit(f"--shop: unknown {bad} - use ff, bp, es (e.g. --shop bp,es)")
     if args.full_lists:
         return render_full_lists(args)
     # where the page readers (bp_scraper.py, es_scraper.py) are: the folder of this file
@@ -1184,7 +1219,8 @@ def main():
     log("=" * 70)
     log(f"[RUN] Started {datetime.now():%d %b %Y %H:%M}" + (" (TEST - nothing saved)" if args.test else ""))
     log(f"[RUN] Options: {vars(args)} | folder {HERE} | Render {SITE}")
-    if date.today().weekday() not in WORK_DAYS and not (args.force or args.test or args.brands or args.shop or args.ounass):
+    if date.today().weekday() not in WORK_DAYS and not (args.force or args.test or args.brands or args.shop or args.ounass
+                                                        or args.all or args.letters):
         log(f"[RUN] Today is {DAYS[date.today().weekday()]} - no update on Saturday / Sunday "
             f"(use --force to run anyway)")
         return
@@ -1199,9 +1235,14 @@ def main():
         per_day = DEFAULT_PER_DAY
     groups = ff_brand_groups(cur)                         # French Fragrance products grouped by brand
     # by hand (--brands / --shop / --test): the daily position and results on the website are NOT changed
-    by_hand = bool(args.brands or args.shop or args.test)
+    by_hand = bool(args.brands or args.shop or args.test or args.all or args.letters)
     log(f"[RUN] {per_day} brands per day | {'run by hand - daily position not moved' if by_hand else 'normal daily run'}")
-    if args.brands:
+    if args.all or args.letters:
+        brands = brands_by_letters(groups, "" if args.all else args.letters)
+        n = sum(len(groups[b]) for b in brands)
+        log(f"[DAILY] {'ALL brands' if args.all else 'Brands ' + args.letters}: {len(brands)} brands, {n} French Fragrance "
+            f"products ({brands[0] if brands else '-'} ... {brands[-1] if brands else '-'}) - daily position not changed")
+    elif args.brands:
         wanted = {b.strip().lower() for b in args.brands.split(",") if b.strip()}
         brands = [b for b in groups if b.lower() in wanted]
         log(f"[DAILY] Brands from --brands: {', '.join(brands) or 'none found'} (daily position not changed)")
@@ -1213,7 +1254,7 @@ def main():
 
     # ---------------- daily part: French Fragrance, Branded Perfume, Essenzi
     today = date.today().isoformat()
-    ff_new_due = (FF_NEW_PRODUCTS and not args.brands and not args.shop
+    ff_new_due = (FF_NEW_PRODUCTS and not args.brands and not args.shop and not args.all and not args.letters
                   and (args.test or args.force or state.get("ff_new_date") != today))   # once a working day
     log(f"[FF-NEW] New French Fragrance products: {'check today' if ff_new_due else 'already checked today / off'}")
     ff_new_added = 0
@@ -1250,7 +1291,7 @@ def main():
                     holder["opened"].add(site)
                 return holder["page"]
 
-            for key in (([args.shop] if args.shop else list(DAILY_SHOPS)) if brands else []):
+            for key in ((shops or list(DAILY_SHOPS)) if brands else []):
                 try:
                     results[DAILY_SHOPS[key]["label"]] = run_daily_shop(key, ids, args.test, get_page)
                 except Exception as ex:                  # one shop failing must not stop the others
@@ -1289,7 +1330,7 @@ def main():
 
     # ---------------- whole lists on the PC (Ounass, Al Injaz, Niche Gallerie), once every PC_LIST_DAYS days
     pc_ran = False
-    if not args.brands and not args.shop:
+    if not args.brands and not args.shop and not args.all and not args.letters:
         pc_ran = run_pc_lists(state, force=args.ounass)
 
     # ---------------- least price + suggested price + automatic brands (Branded Perfume / Essenzi prices too)
