@@ -386,7 +386,8 @@ else:
 #      Competitors, but matching gives NO link / suggestion -> never on the Competitor table cards, never in least
 #      price / suggested price / AUTO. ct_match_shop + unlink_shop (SECTION matching), cleared at every start.
 #      To link Brands Perfume again: remove "br" here, then /competitor/match-br?secret= .
-UNLINKED_SHOPS = {"br"}
+# 2026-11-21 (user: "remove perfume dubai from competitor table but stay as competitor"): Perfume Dubai ("pd") too.
+UNLINKED_SHOPS = {"br", "pd"}
 # Brands Perfume DAILY QUICK CHECK (brandsperfume.py SECTION 6): only pages linked to our products re-read every day
 # at BR_QUICK_TIME (06:15 India) -> fresh price + stock. Render env BR_QUICK_CHECK=off switches it off.
 # Brands Perfume not linked (UNLINKED_SHOPS) -> nothing to check -> not started.
@@ -1965,15 +1966,21 @@ def ct_match_shop(shop_key, only_brands=None, least=True):
 
         p = shop["prefix"]
         # links confirmed with "OK" (kept) and links refused with "Not OK" (never suggested again)
-        cur.execute(f"SELECT fi_record_id, {p}_link, {p}_rejected, {p}_confirmed FROM competitor_table")
-        confirmed, rejected = {}, {}
-        for fid, link, rej, conf in cur.fetchall():
+        cur.execute(f"SELECT fi_record_id, {p}_link, {p}_rejected, {p}_confirmed, {p}_method FROM competitor_table")
+        confirmed, rejected, removed = {}, {}, {}
+        for fid, link, rej, conf, meth in cur.fetchall():
             if conf and link:
                 confirmed[fid] = link
+            elif (meth or "").startswith("removed by"):
+                # "Remove link" by an admin (link_edit.py) -> this product stays EMPTY for this shop on every later
+                # sync / refresh (2026-11-21, user: corrected items are never touched again). Only "Edit link -> Save"
+                # by an admin links it again (that makes it confirmed).
+                removed[fid] = meth
             if rej:
-                rejected[fid] = rej
+                rejected[fid] = {u.strip() for u in rej.split("\n") if u.strip()}   # every refused link
         by_url = {e["url"]: e for e in entries}
-        log(f"[{tag}] {len(confirmed)} confirmed links kept, {len(rejected)} refused suggestions remembered")
+        log(f"[{tag}] {len(confirmed)} confirmed links kept, {len(removed)} removed links kept empty, "
+            f"{len(rejected)} products with refused links remembered")
 
         # our SIZE: from the product name ("... 100 ml EDP ..."), else Item Master's Size field (item_master.size)
         cur.execute("SELECT to_regclass('item_master') IS NOT NULL")
@@ -2044,9 +2051,13 @@ def ct_match_shop(shop_key, only_brands=None, least=True):
                         updates.append((fid, confirmed[fid], None, False, None, "confirmed", None, None))
                     summary["kept_confirmed"] = summary.get("kept_confirmed", 0) + 1
                     continue
+                if fid in removed:
+                    updates.append((fid, None, None, False, None, removed[fid][:200], None, None))
+                    summary["kept_removed"] = summary.get("kept_removed", 0) + 1
+                    continue
                 e, method, score, guess = match_one(fields, brand, brand_entries, by_barcode,
                                                     trust_barcode=shop["trust_barcode"])
-                if e and e["url"] == rejected.get(fid):
+                if e and e["url"] in rejected.get(fid, ()):
                     # an admin removed this exact link ("Edit link" -> Remove, link_edit.py) -> never put it back
                     log(f"[{tag}-REFUSED] {pname} -> {e['title']} was removed by an admin -> no match")
                     e, method, guess = None, "removed by admin", None
@@ -2065,7 +2076,7 @@ def ct_match_shop(shop_key, only_brands=None, least=True):
                 else:
                     summary["unmatched"] += 1
                     suggestion = guess["url"] if guess is not None and score >= 0.5 else None
-                    if suggestion and suggestion == rejected.get(fid):
+                    if suggestion and suggestion in rejected.get(fid, ()):
                         suggestion = None                 # team said "Not OK" to this link before
                     if suggestion:
                         summary["with_suggestion"] += 1
@@ -2853,8 +2864,13 @@ def ct_suggestion_route():
 
         if action == "notok":
             # remove the suggestion and remember it, so the next match run does not suggest it again
-            cur.execute(f"UPDATE competitor_table SET {shop}_suggestion = NULL, {shop}_rejected = %s, "
-                        f"updated_at = NOW() WHERE fi_record_id = %s", (url, fid))
+            # ALL refused links are kept, one per line (2026-11-21, user: corrected items must never come back;
+            # before, only the LAST refused link was remembered and an older one could be suggested again)
+            cur.execute(f"""UPDATE competitor_table SET {shop}_suggestion = NULL, {shop}_rejected = CASE
+                               WHEN COALESCE({shop}_rejected, '') = '' THEN %s
+                               WHEN %s = ANY(string_to_array({shop}_rejected, E'\\n')) THEN {shop}_rejected
+                               ELSE {shop}_rejected || E'\\n' || %s END,
+                            updated_at = NOW() WHERE fi_record_id = %s""", (url, url, url, fid))
             conn.commit()
             log(f"[SUGGEST] NOT OK: {fid} {label} {url}")
             return jsonify({"ok": True, "action": "notok"})

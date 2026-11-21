@@ -65,7 +65,8 @@ SOURCES = [
      # shops shown on each card: (label, column prefix in competitor_table). Add V Perfumes here later.
      "shops": [("Samawa", "samawa"), ("French Fragrance", "ff"), ("Branded Perfume", "bp"), ("Essenzi", "es"),
                ("V Perfumes", "vp"), ("Al Injaz", "aj"),
-               ("Ounass", "on"), ("Amberiya", "am"), ("Niche Gallerie", "ng"), ("Perfume Dubai", "pd"),
+               ("Ounass", "on"), ("Amberiya", "am"), ("Niche Gallerie", "ng"),
+               # Perfume Dubai ("pd") NOT on the cards (2026-11-21): competitor tab only, see app.UNLINKED_SHOPS
                ("MHG Boutique", "mh"), ("Emirates Pride", "ep"),
                ("Anfasic", "an"), ("Khaltat", "kh"), ("Oud Elite", "oe"),
                # Brands Perfume ("br") NOT on the cards (2026-11-13): competitor tab only, see app.UNLINKED_SHOPS

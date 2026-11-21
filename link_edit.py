@@ -25,6 +25,8 @@ Where things are (change them here):
   SECTION 4  hooks         -> init(): functions from app.py (database, French Fragrance sisters, recalculation)
 """
 
+from urllib.parse import urlparse, parse_qs
+
 from flask import Blueprint, request, jsonify, g
 
 link_bp = Blueprint("link_edit", __name__)
@@ -303,8 +305,12 @@ def link_save():
             # removed + remembered as refused -> the next match run will not put it back
             cur.execute(f"""UPDATE competitor_table SET {shop}_link = NULL, {shop}_title = NULL, {shop}_price = NULL,
                                {shop}_stock = FALSE, {shop}_suggestion = NULL, {shop}_confirmed = FALSE,
-                               {shop}_rejected = %s, {shop}_method = 'removed by ' || %s, updated_at = NOW()
-                            WHERE fi_record_id = %s""", (old, user, fid))
+                               {shop}_rejected = CASE
+                                   WHEN COALESCE({shop}_rejected, '') = '' THEN %s
+                                   WHEN %s = ANY(string_to_array({shop}_rejected, E'\n')) THEN {shop}_rejected
+                                   ELSE {shop}_rejected || E'\n' || %s END,      -- ALL refused links kept (2026-11-21)
+                               {shop}_method = 'removed by ' || %s, updated_at = NOW()
+                            WHERE fi_record_id = %s""", (old, old, old, user, fid))
             name, price, stock = None, None, None
         else:
             # the new link must be in the shop's saved product list (a '/' at the end does not matter)
@@ -312,9 +318,21 @@ def link_save():
                             WHERE rtrim({link_col}, '/') = rtrim(%s, '/') LIMIT 1""", (url,))
             item = cur.fetchone()
             if not item:
+                # 2026-11-21 (test site, Perfume Dubai): products with several sizes are saved WITH "?variant=...",
+                # some links have "www." or tracking text -> compare without those; one size -> saved,
+                # several sizes -> the admin is told which sizes exist (choose the size, then copy the link)
+                item, sizes = find_loose(cur, table, link_col, name_sql, price_sql, stock_col, url)
+                if sizes:
+                    log(f"[LINK-EDIT] {user}: {url} has {len(sizes)} sizes in {table}")
+                    return jsonify({"ok": False, "error": f"This {label} product has {len(sizes)} sizes: "
+                                    + "; ".join(sizes[:8]) + f". Open it on {label}, CHOOSE THE SIZE, then copy the "
+                                    f"link from the address bar (it then ends with ?variant=...)."}), 400
+            if not item:
                 log(f"[LINK-EDIT] {user}: {url} not in {table}")
                 return jsonify({"ok": False, "error": f"This link is not in the saved {label} product list. Open the "
-                                                      f"product on {label} and copy the link from the address bar."}), 400
+                                                      f"product on {label} and copy the link from the address bar "
+                                                      f"(a product page, not a category / collection page). New "
+                                                      f"product? Run Manual sync for {label} first."}), 400
             link, name, price, stock = item
             set_link(cur, fid, shop, link, name, price, stock, user, recalc=False)
         if shop == "ff":
@@ -330,11 +348,39 @@ def link_save():
                     "price": float(price) if price is not None else None})
 
 
+def _loose(u):
+    """Link compared without http(s), www., '/' at the end and extra text after '?' (only ?variant= counts)."""
+    pu = urlparse((u or "").strip())
+    host = pu.netloc.lower().removeprefix("www.")
+    variant = (parse_qs(pu.query).get("variant") or [""])[0]
+    return f"{host}{pu.path.rstrip('/').lower()}", variant
+
+
+def find_loose(cur, table, link_col, name_sql, price_sql, stock_col, url):
+    """Saved product for a link written a little differently. Returns (item or None, [sizes] when it must be chosen)."""
+    base, variant = _loose(url)
+    path = urlparse(url.strip()).path.rstrip("/")
+    if len(path) < 3:
+        return None, []
+    like = "%" + path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    cur.execute(f"""SELECT {link_col}, {name_sql}, {price_sql}, {stock_col} FROM {table}
+                    WHERE {link_col} ILIKE %s LIMIT 50""", (like,))
+    same = [r for r in cur.fetchall() if _loose(r[0])[0] == base]
+    if variant:
+        same = [r for r in same if _loose(r[0])[1] == variant]
+    if len(same) == 1:
+        return same[0], []
+    if len(same) > 1:
+        return None, [f"{r[1]} (AED {r[2]})" for r in same]
+    return None, []
+
+
 def set_link(cur, fid, shop, link, name, price, stock, user, recalc=True):
     """Put ONE competitor product on OUR product (competitor_table <shop>_*), CONFIRMED so matching keeps it.
     Also used by new_link.py ("Add new link"). recalc=True: FF sisters + least / suggested price at once (no commit)."""
     sister = shop in ("bp", "es")                     # no suggestion / method / score columns
-    extra = "" if sister else f", {shop}_suggestion = NULL, {shop}_method = 'set by ' || %s, {shop}_score = NULL, {shop}_rejected = NULL"
+    # {shop}_rejected is KEPT (2026-11-21): links refused earlier stay refused even after a link is set by hand
+    extra = "" if sister else f", {shop}_suggestion = NULL, {shop}_method = 'set by ' || %s, {shop}_score = NULL"
     cur.execute(f"""UPDATE competitor_table SET {shop}_link = %s, {shop}_title = %s, {shop}_price = %s,
                        {shop}_stock = %s, {shop}_confirmed = TRUE{extra}, updated_at = NOW()
                     WHERE fi_record_id = %s""",
