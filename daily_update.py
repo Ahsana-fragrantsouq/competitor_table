@@ -443,8 +443,15 @@ def save_one(cur, key, rid, url, r):
     return changed
 
 
-def run_daily_shop(key, ids, test, get_page):
-    """Open every product page of today's brands in ONE shop and save price + stock."""
+def progress_file(key):
+    """--all runs: the last product row done for this shop, kept on THIS PC (2026-11-20, user: "how to continue
+    without the brand letter"). Same command again -> continues after it. Deleted when the shop is finished."""
+    return os.path.join(HERE, f"all_progress_{key}.txt")
+
+
+def run_daily_shop(key, ids, test, get_page, resume=False, skip=0):
+    """Open every product page of today's brands in ONE shop and save price + stock.
+    resume=True (--all): rows already done in an earlier, stopped --all run of this shop are skipped."""
     s = DAILY_SHOPS[key]
     st = {"checked": 0, "changed": 0, "gone": 0, "errors": 0}
     conn = db()
@@ -456,6 +463,22 @@ def run_daily_shop(key, ids, test, get_page):
                         f"ALTER TABLE {s['table']} ADD COLUMN IF NOT EXISTS {key}_size TEXT")
             conn.commit()
         todo = todo_for(cur, key, ids)
+        if skip:                                          # --skip N: the first N products were done in a stopped run
+            log(f"[{key.upper()}] --skip {skip}: products 1-{min(skip, len(todo))} of {len(todo)} already done -> "
+                f"continuing at {skip + 1}")
+            todo = todo[skip:]
+        if resume and not test and os.path.exists(progress_file(key)):
+            try:
+                last_done = int(open(progress_file(key)).read().strip() or 0)
+            except (OSError, ValueError):
+                last_done = 0
+            before = len(todo)
+            todo = [(rid, url) for rid, url in todo if rid > last_done]
+            log(f"[{key.upper()}] CONTINUING the stopped --all run: {before - len(todo)} products already done, "
+                f"{len(todo)} left (start from the beginning: delete {os.path.basename(progress_file(key))})")
+            if not todo:
+                os.remove(progress_file(key))
+                log(f"[{key.upper()}] nothing left - this shop was already finished; progress file removed")
         if test:
             todo = todo[:3]
         log(f"\n[{key.upper()}] {s['label']}: {len(todo)} products of today's brands")
@@ -493,6 +516,7 @@ def run_daily_shop(key, ids, test, get_page):
                     if errors_in_row >= 10:
                         log(f"[{key.upper()}] 10 errors in a row - probably blocked. Stopping this shop for today.")
                         blocked = True
+                        st["blocked"] = True                  # --all: progress kept, the same command continues later
                         break
                     time.sleep(DELAY)
                     continue
@@ -511,6 +535,12 @@ def run_daily_shop(key, ids, test, get_page):
                         else:
                             changed = save_one(cur, key, rid, url, r2)
                             conn.commit()                    # saved one by one: a stop never loses checked products
+                            if resume and rnd == 1:
+                                try:
+                                    with open(progress_file(key), "w") as f:
+                                        f.write(str(rid))    # how far this --all run got (rows are in id order)
+                                except OSError:
+                                    pass
                             st["changed"] += changed
                             log(f"[{key.upper()}] {i}/{len(todo)} {(r2.get('title') or url)[:50]} | "
                                 f"AED {r2.get('price_inc_tax') or '-'} | {r2['stock']}{'  <- CHANGED' if changed else ''}")
@@ -537,6 +567,12 @@ def run_daily_shop(key, ids, test, get_page):
             cur.close()
             conn.close()
         except Exception:
+            pass
+    if resume and not test and not st.get("blocked") and os.path.exists(progress_file(key)):
+        try:
+            os.remove(progress_file(key))                    # shop finished -> the next --all starts at the beginning
+            log(f"[{key.upper()}] --all finished for this shop - progress file removed")
+        except OSError:
             pass
     log(f"[{key.upper()} DONE] {st}")
     return st
@@ -1202,6 +1238,8 @@ def main():
     # ALL PRODUCTS (2026-11-20, user: "price update of French Fragrance, Branded Perfume and Essenzi for all products,
     # from 2 PCs"): --all = every brand, --letters = brands starting with these letters (split the work over PCs/days)
     ap.add_argument("--all", action="store_true", help="ALL brands (every product) - daily position not moved")
+    ap.add_argument("--skip", type=int, default=0,
+                    help="continue a stopped run: skip the first N products (the screen showed N/total)")
     ap.add_argument("--letters", default="", help='brands starting with these letters, e.g. "A-F" or "G-M,0-9"')
     ap.add_argument("--ounass", action="store_true",
                     help="PC whole lists now (Ounass, Al Injaz, Niche Gallerie), even when not due yet")
@@ -1293,7 +1331,8 @@ def main():
 
             for key in ((shops or list(DAILY_SHOPS)) if brands else []):
                 try:
-                    results[DAILY_SHOPS[key]["label"]] = run_daily_shop(key, ids, args.test, get_page)
+                    results[DAILY_SHOPS[key]["label"]] = run_daily_shop(key, ids, args.test, get_page,
+                                                                         resume=args.all, skip=args.skip)
                 except Exception as ex:                  # one shop failing must not stop the others
                     log(f"[{key.upper()}] FAILED: {ex}")
                     results[DAILY_SHOPS[key]["label"]] = {"error": str(ex)[:200]}
