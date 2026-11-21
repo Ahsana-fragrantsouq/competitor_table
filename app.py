@@ -144,6 +144,7 @@ from barcode_edit import barcode_bp                # POST /competitor/barcode
 import stock_edit                                  # admins: edit OUR stock -> Shopify (stock_edit.py)
 from stock_edit import stock_bp                    # POST /stock/edit
 import stock_sync                                  # admins: 'Sync the stock' on Brands Store tabs (stock_sync.py)
+import mcp_server                                  # MCP endpoint /mcp/<key>, READ ONLY (mcp_server.py, 2026-11-20)
 try:                                               # menu Bundle (bundle.py) - OPTIONAL: missing -> no Bundle pages
     import bundle
 except ImportError:
@@ -246,6 +247,8 @@ HSTS = "max-age=31536000"                            # 1 year; only sent over ht
 def csrf_origin_check():
     if request.method not in UNSAFE_METHODS:
         return None
+    if request.path == "/mcp" or request.path.startswith("/mcp/"):   # MCP: secret key, never the login cookie
+        return None
     origin = request.headers.get("Origin")
     src = origin if origin and origin != "null" else request.headers.get("Referer") or ""
     if not src:
@@ -285,6 +288,7 @@ app.register_blueprint(shopify_prices.shopify_prices_bp)   # Item Master: Load p
 app.register_blueprint(barcode_bp)                 # 'Edit' our barcode for admins (barcode_edit.py)
 app.register_blueprint(stock_bp)                   # 'Edit' our stock for admins -> Shopify (stock_edit.py)
 app.register_blueprint(stock_sync_bp)              # 'Sync the stock' popup on Brands Store tabs (stock_sync.py)
+app.register_blueprint(mcp_server.mcp_bp)          # MCP endpoint for claude.ai / Claude Desktop (read only)
 if bundle:
     app.register_blueprint(bundle.bundle_bp)       # menu Bundle -> /bundle/new (bundle.py)
 app.register_blueprint(item_master_bp)             # Item Master page (item_master.py)
@@ -3429,6 +3433,7 @@ link_edit.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Edit link' for
 barcode_edit.init(connect=pg_conn, airtable_barcode=airtable_set_barcode)   # 'Edit' our barcode (barcode_edit.py)
 stock_edit.init(connect=pg_conn)                                             # 'Edit' our stock -> Shopify (stock_edit.py)
 stock_sync.init(connect=pg_conn)                                             # 'Sync the stock' list (stock_sync.py)
+mcp_server.init(connect=pg_conn)                                             # MCP endpoint, read only (mcp_server.py)
 if bundle:
     bundle.init(connect=pg_conn, read_airtable=at_list)                      # Bundle menu + Airtable import (bundle.py)
 shopify_prices.init(connect=pg_conn)                                         # Item Master: prices FROM Shopify (shopify_prices.py)

@@ -299,6 +299,8 @@ def init_auth(app):
                 session["role"] = g.role
         if request.path in OPEN_PATHS:
             return None
+        if request.path == "/mcp" or request.path.startswith("/mcp/"):   # MCP endpoint: own secret key (mcp_server.py)
+            return None
         # ONLY run / status / test links work with the right secret (?secret=... or header X-Run-Secret)
         run_secret = os.environ.get("RUN_SECRET", "")
         given = request.args.get("secret") or request.headers.get("X-Run-Secret") or ""
