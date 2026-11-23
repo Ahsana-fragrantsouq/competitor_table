@@ -10,7 +10,9 @@ What is saved (one row per Airtable record, key = fi_record_id = the Airtable re
   shopify_id, image_urls (one link per line), gift_items (one per line), desc_created_at
   -> everything the Item Master buttons need is in OUR database, they never read Airtable
      (so Airtable can be removed later; "Load from Airtable" is then only an import)
-  + airtable_fields  = EVERY field of the record exactly as Airtable gave it (JSON) -> nothing is ever lost
+  + brand_airtable_id = the Airtable record id of the linked Brand (used by brand_sku.py when a brand was renamed)
+  (DATABASE REDESIGN step 1a, 2026-11-19: the raw JSON copy 'airtable_fields' of every record was REMOVED - its values
+   are already in the normal columns. Backup of the old table: item_master_backup_20261119, see REDESIGN_1A_SQL)
                        (except DROP_FIELDS, e.g. "Item ID": never saved anywhere)
 The page SHOWS the 5 prices (UAE / Asia / Kuwait / America / Qatar, admins can Edit them -> Shopify, item_edit.py).
 The page SHOWS each price's comparison price under it (editable, 2026-11-03).
@@ -147,7 +149,7 @@ SETTING_KEY = "item_master"                 # app_settings row with the last loa
 IM_CREATE = ("""
 CREATE TABLE IF NOT EXISTS item_master (
     fi_record_id     TEXT PRIMARY KEY,          -- Airtable French Inventories record id (rec...)
-    airtable_fields  JSONB,                     -- every Airtable field of this record, as Airtable gave it
+    brand_airtable_id TEXT,                     -- Airtable record id of the linked Brand (brand_sku.py)
     loaded_at        TIMESTAMP DEFAULT NOW()    -- when this row was last copied from Airtable
 );
 """ + "".join(f"ALTER TABLE item_master ADD COLUMN IF NOT EXISTS {c} {t};\n" for c, t, _, _ in FIELDS)
@@ -159,9 +161,30 @@ CREATE TABLE IF NOT EXISTS item_master (
     # 'website' = made with Item Master -> Create a new item (item_create.py) -> Load from Airtable never deletes it
     + "ALTER TABLE item_master ADD COLUMN IF NOT EXISTS source TEXT;\n"
     # {column: who} of fields an admin changed with 'Edit' (item_edit.py) -> Load from Airtable keeps them
-    + item_edit.EDIT_SQL + "\n"
-    + "".join(f"UPDATE item_master SET airtable_fields = airtable_fields - '{n}' WHERE airtable_fields ? '{n}';\n"
-              for n in DROP_FIELDS))
+    + item_edit.EDIT_SQL + "\n")
+
+# ---- DATABASE REDESIGN step 1a (2026-11-19, user: "reduce data redundancy, one field once in the database"):
+# item_master.airtable_fields (raw JSON copy of every Airtable field = the same values as the normal columns) is removed.
+# Runs ONCE (only while the column still exists): 1 full backup table item_master_backup_20261119 (undo = copy back),
+# 2 the only value used from it (linked Brand record id, brand_sku.py) -> own column brand_airtable_id, 3 column dropped.
+REDESIGN_1A_SQL = """
+ALTER TABLE item_master ADD COLUMN IF NOT EXISTS brand_airtable_id TEXT;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name = 'item_master' AND column_name = 'airtable_fields') THEN
+    IF to_regclass('item_master_backup_20261119') IS NULL THEN
+      CREATE TABLE item_master_backup_20261119 AS SELECT * FROM item_master;
+      RAISE NOTICE '[REDESIGN-1A] backup item_master_backup_20261119 made';
+    END IF;
+    UPDATE item_master SET brand_airtable_id = airtable_fields->'Brand'->>0
+     WHERE brand_airtable_id IS NULL AND jsonb_typeof(airtable_fields->'Brand') = 'array';
+    ALTER TABLE item_master DROP COLUMN airtable_fields;
+    RAISE NOTICE '[REDESIGN-1A] item_master.airtable_fields removed (brand record id kept in brand_airtable_id)';
+  END IF;
+END $$;
+"""
+IM_CREATE += REDESIGN_1A_SQL
 
 SETTINGS_CREATE = """
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -337,12 +360,13 @@ def load_all(by="auto", only_brands=None):
                     linked_warned.add(col)
                     log(f"[ITEM-MASTER] '{found[col]}' is a linked field -> record ids saved, not names")
                 vals.append(to_number(v) if col in NUMBER_COLS else to_text(v))
-            raw = {k: v for k, v in f.items() if k not in DROP_FIELDS}       # "Item ID" is never saved
-            rows.append((rec["id"], json.dumps(raw), *vals))
+            b = f.get("Brand")                            # linked Brand record id (brand_sku.py), no raw copy
+            brand_rec = b[0] if isinstance(b, list) and b and is_record_id(b[0]) else None
+            rows.append((rec["id"], brand_rec, *vals))
 
         if only_brands:                               # Brands page -> Refresh one brand: only its products
             wanted = {b.strip().lower() for b in only_brands}
-            bi = 2 + cols.index("brand")                 # row = (record id, raw json, *columns)
+            bi = 2 + cols.index("brand")                 # row = (record id, brand record id, *columns)
             rows = [r for r in rows if (r[bi] or "").strip().lower() in wanted]
             log(f"[ITEM-MASTER] Only brands {sorted(wanted)}: {len(rows)} products to save")
         conn = h["connect"]()
@@ -357,8 +381,8 @@ def load_all(by="auto", only_brands=None):
                 rows = [r for r in rows if r[0] not in gone]
                 log(f"[ITEM-MASTER] {before - len(rows)} products skipped: deleted on the Item Master page")
             conn.commit()
-            sql = (f"INSERT INTO item_master (fi_record_id, airtable_fields, {', '.join(cols)}, loaded_at) VALUES %s "
-                   f"ON CONFLICT (fi_record_id) DO UPDATE SET airtable_fields = EXCLUDED.airtable_fields, "
+            sql = (f"INSERT INTO item_master (fi_record_id, brand_airtable_id, {', '.join(cols)}, loaded_at) VALUES %s "
+                   f"ON CONFLICT (fi_record_id) DO UPDATE SET brand_airtable_id = EXCLUDED.brand_airtable_id, "
                    + ", ".join(f"{c} = {WEBSITE_COLS_SQL.get(c, 'EXCLUDED.' + c)}" for c in cols) + ", loaded_at = NOW()")
             template = "(" + ", ".join(["%s"] * (len(cols) + 2)) + ", NOW())"
             for i in range(0, len(rows), 500):
@@ -628,10 +652,16 @@ def item_master_page():
         if q:
             # EVERY typed word must be somewhere in SKU / brand / names / barcode, any order (2026-11-04: the whole
             # sentence had to match exactly -> 'Abdul Samad Al Qurashi Body Oud Berries' missed the 30 ml CPO product)
-            words = q.split()[:8]
-            allcols = "CONCAT_WS(' ', " + ", ".join(f"im.{c}" for c in SEARCH_COLS) + ")"
-            where = "WHERE " + " AND ".join(f"{allcols} ILIKE %s" for _ in words)
-            params = [f"%{w}%" for w in words]
+            terms = competitors_page.multi_terms(q)
+            if terms:                                      # "SKU1, SKU2, ..." -> any of them (2026-11-23)
+                w_sql, params = competitors_page.multi_where(terms, SEARCH_COLS, prefix="im.")
+                where = "WHERE " + w_sql
+                print(f"[ITEM-MASTER] search: {len(terms)} SKUs / words separated by commas", flush=True)
+            else:
+                words = q.split()[:8]
+                allcols = "CONCAT_WS(' ', " + ", ".join(f"im.{c}" for c in SEARCH_COLS) + ")"
+                where = "WHERE " + " AND ".join(f"{allcols} ILIKE %s" for _ in words)
+                params = [f"%{w}%" for w in words]
         cur.execute(f"SELECT COUNT(*) AS n FROM item_master im {where}", params)
         total = cur.fetchone()["n"]
         # our fragrantsouq.com link comes from competitor_table (same product = same Airtable record id)
