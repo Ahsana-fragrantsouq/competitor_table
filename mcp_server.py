@@ -53,7 +53,7 @@ def log(*a):
 # ============================================================ SECTION 1: settings
 MCP_TOKEN = os.environ.get("MCP_TOKEN", "")
 MCP_WRITE = os.environ.get("MCP_WRITE", "off").strip().lower() in ("on", "1", "true", "yes")   # change tools on/off
-MCP_USER = os.environ.get("MCP_USER", "claude").strip() or "claude"       # website user the changes are made as
+MCP_USER = os.environ.get("MCP_USER", "claude").strip().lower() or "claude"   # usernames are lower case       # website user the changes are made as
 MAX_ROWS = 50                                    # most rows one tool answer gives back
 PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]   # MCP versions we answer (first = newest)
 SERVER_INFO = {"name": "fragrant-souq-competitor-table", "title": "Fragrant Souq competitor table", "version": "1.0"}
@@ -349,6 +349,15 @@ def _fi_of(a):
 
 def _call(path, body, what):
     """POST the website's own route AS MCP_USER (same checks / Shopify / logs as the button) -> answer dict."""
+    import auth                                             # 2026-11-23 live: 'session expired' = user not accepted
+    u = auth.db_user(MCP_USER)                              # -> say exactly why, before anything is tried
+    why = (f"website user '{MCP_USER}' does not exist - create it in Settings -> User management (role Admin)"
+           if not u else f"website user '{MCP_USER}' is disabled - enable it in Settings -> User management"
+           if not u.get("active") else f"website user '{MCP_USER}' has role '{u.get('role')}' - it must be Admin"
+           if u.get("role") != "admin" else None)
+    if why:
+        log(f"[MCP-WRITE] {what} -> NOT done: {why}")
+        return {"ok": False, "error": why, "done_as_user": MCP_USER}
     client = current_app.test_client()
     with client.session_transaction() as sess:              # logged in as user 'claude' (must exist, admin, active)
         sess["user"] = MCP_USER
