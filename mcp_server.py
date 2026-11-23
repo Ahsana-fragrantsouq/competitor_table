@@ -1,5 +1,5 @@
 """
-MCP endpoint (Model Context Protocol) - READ ONLY  (2026-11-20)
+MCP endpoint (Model Context Protocol) - READ + CHANGES  (2026-11-20, changes added 2026-11-23)
 ================================================================
 User: "required MCP endpoint for our competitor table system (live)". Choices: READ ONLY for now (changes later if
 needed), client = claude.ai / Claude Desktop (custom connector), login = SECRET KEY, straight to live.
@@ -10,7 +10,15 @@ claude.ai custom connectors cannot send a header, so the secret key is the LAST 
 Other apps may instead call /mcp with the header  Authorization: Bearer <MCP_TOKEN>.
 Render -> Environment: MCP_TOKEN = a long random text (not set = endpoint OFF). New value = old address stops at once.
 
-Safety: every question runs in a READ-ONLY database session (the database itself refuses any change), results are
+CHANGES (2026-11-23, user: "change read only to read + all changes"; choices: prices + stock, LOP / MOP + Skip auto,
+competitor links, bundles + Item Master; done AS user 'claude'; ask before every change):
+  Render env MCP_WRITE=on (anything else / not set = change tools NOT offered, read only as before) and a website user
+  MCP_USER (default 'claude', role ADMIN, made in Settings -> User management). Every change tool calls the SAME route as
+  the website button (Update price, stock Edit, LOP/MOP Save, Skip automatic price, OK / Not OK, Edit / Remove link,
+  Add new link, Bundles, Item Master Edit) as that user -> same checks, Shopify / Airtable steps and logs ([MCP-WRITE]).
+  Disable user 'claude' or set MCP_WRITE=off = no more changes at once. Change tools are marked readOnlyHint false +
+  destructiveHint true -> claude.ai asks the person before each call (keep 'Ask' in the connector's Permissions tab).
+Safety (reading): every question runs in a READ-ONLY database session (the database itself refuses any change), results are
 capped (MAX_ROWS), the token is compared in constant time and never written to our log (log tag [MCP]).
 Transport: MCP "Streamable HTTP", plain JSON answers (no SSE stream): POST JSON-RPC -> initialize, tools/list,
 tools/call, ping; notifications -> 202. GET -> 405 (no server-sent events).
@@ -32,7 +40,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 import psycopg2.extras
-from flask import Blueprint, request, jsonify, Response
+from flask import Blueprint, request, jsonify, Response, current_app
 
 mcp_bp = Blueprint("mcp_server", __name__)
 
@@ -44,6 +52,8 @@ def log(*a):
 
 # ============================================================ SECTION 1: settings
 MCP_TOKEN = os.environ.get("MCP_TOKEN", "")
+MCP_WRITE = os.environ.get("MCP_WRITE", "off").strip().lower() in ("on", "1", "true", "yes")   # change tools on/off
+MCP_USER = os.environ.get("MCP_USER", "claude").strip() or "claude"       # website user the changes are made as
 MAX_ROWS = 50                                    # most rows one tool answer gives back
 PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]   # MCP versions we answer (first = newest)
 SERVER_INFO = {"name": "fragrant-souq-competitor-table", "title": "Fragrant Souq competitor table", "version": "1.0"}
@@ -51,7 +61,11 @@ INSTRUCTIONS = ("Read-only access to Fragrant Souq's competitor price tracker (p
                 "Our products: search_products / get_product (our UAE price, least competitor price, suggested "
                 "price, LOP/MOP, stock, competitor prices per shop). price_gaps = where we are more expensive or "
                 "cheapest. list_shops / search_shop = competitor and brand-store product lists. list_bundles, "
-                "run_status. Nothing can be changed through this connector.")
+                "run_status." + (" CHANGE tools (update_price, set_stock, set_lop_mop, set_skip_auto, "
+                "answer_suggestion, set_link, remove_link, add_new_link, create_bundle, update_bundle, delete_bundle, "
+                "edit_item) do exactly what the website buttons do - prices / stock change in the LIVE Shopify store. "
+                "Always show the person what will change and get their OK first." if MCP_WRITE else
+                " Nothing can be changed through this connector."))
 _hooks = {}
 
 
@@ -313,6 +327,179 @@ TOOLS = {
 }
 
 
+# ============================================================ SECTION 3b: CHANGE tools (MCP_WRITE=on)
+def _fi_of(a):
+    """Our product's fi_record_id from sku / barcode / fi_record_id (read-only lookup) -> (fi, name) or (None, error)."""
+    key = str(a.get("sku") or a.get("barcode") or a.get("fi_record_id") or "").strip()
+    if not key:
+        return None, "give sku (or barcode / fi_record_id) of OUR product"
+    conn, cur = ro_cursor()
+    try:
+        cur.execute("SELECT fi_record_id, product_name FROM competitor_table WHERE UPPER(sku) = UPPER(%s) "
+                    "OR barcode = %s OR fi_record_id = %s LIMIT 2", (key, key, key))
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return None, f"no product with SKU / barcode / id '{key}'"
+    if len(rows) > 1:
+        return None, f"'{key}' matches more than one product - use the sku"
+    return rows[0]["fi_record_id"], rows[0]["product_name"]
+
+
+def _call(path, body, what):
+    """POST the website's own route AS MCP_USER (same checks / Shopify / logs as the button) -> answer dict."""
+    client = current_app.test_client()
+    with client.session_transaction() as sess:              # logged in as user 'claude' (must exist, admin, active)
+        sess["user"] = MCP_USER
+        sess.permanent = False
+    r = client.post(path, json=body)
+    try:
+        data = r.get_json(silent=True)
+    except Exception:
+        data = None
+    if data is None:                                        # login page / HTML error
+        data = {"ok": False, "error": f"HTTP {r.status_code}" + (f" - website user '{MCP_USER}' missing, disabled "
+                "or not an admin (Settings -> User management)" if r.status_code in (302, 401, 403) else "")}
+    if r.status_code in (401, 403) and isinstance(data, dict) and not data.get("ok"):
+        data["error"] = f"{data.get('error')} (acting as website user '{MCP_USER}' - must exist, be active and admin)"
+    log(f"[MCP-WRITE] {what} -> HTTP {r.status_code} ok={data.get('ok') if isinstance(data, dict) else '?'}")
+    return {"http_status": r.status_code, "done_as_user": MCP_USER, **(data if isinstance(data, dict) else {"answer": data})}
+
+
+def _with_fi(a, path, body, what):
+    fi, info = _fi_of(a)
+    if not fi:
+        return {"error": info}
+    return {"product": info, **_call(path, {"fi_record_id": fi, **body}, f"{what} {a.get('sku') or fi}")}
+
+
+def w_update_price(a):
+    return _with_fi(a, "/competitor/update-price", {"price": a.get("price")}, f"update_price {a.get('price')}")
+
+
+def w_set_stock(a):
+    return _with_fi(a, "/stock/edit", {"qty": a.get("qty")}, f"set_stock {a.get('qty')}")
+
+
+def w_set_lop_mop(a):
+    return _with_fi(a, "/competitor/limits", {"lop": a.get("lop"), "mop": a.get("mop")},
+                    f"set_lop_mop {a.get('lop')}/{a.get('mop')}")
+
+
+def w_set_skip_auto(a):
+    return _with_fi(a, "/competitor/no-auto", {"no_auto": a.get("skip") is True}, f"set_skip_auto {a.get('skip')}")
+
+
+def w_answer_suggestion(a):
+    return _with_fi(a, "/competitor/suggestion", {"shop": a.get("shop"), "action": "ok" if a.get("accept") else "notok"},
+                    f"answer_suggestion {a.get('shop')} {'OK' if a.get('accept') else 'Not OK'}")
+
+
+def w_set_link(a):
+    return _with_fi(a, "/competitor/link", {"shop": a.get("shop"), "action": "save", "url": a.get("url")},
+                    f"set_link {a.get('shop')}")
+
+
+def w_remove_link(a):
+    return _with_fi(a, "/competitor/link", {"shop": a.get("shop"), "action": "remove"}, f"remove_link {a.get('shop')}")
+
+
+def w_add_new_link(a):
+    body = {"url": a.get("url"), "shop": a.get("shop") or None}
+    if a.get("name") or a.get("price") is not None:        # site blocks reading -> name / price / stock typed
+        body["manual"] = {"name": a.get("name"), "price": a.get("price"), "in_stock": a.get("in_stock", True)}
+    return _with_fi(a, "/competitor/new-link", body, "add_new_link")
+
+
+def _bundle_body(a):
+    items, problems = [], []
+    for it in a.get("items") or []:
+        fi, info = _fi_of({"sku": (it or {}).get("sku")})
+        if not fi:
+            problems.append(info)
+        items.append({"fi": fi, "qty": (it or {}).get("qty") or 1})
+    body = {"items": items, "title": a.get("title") or "", "discount_type": a.get("discount_type") or "amount",
+            "discount_value": a.get("discount_value") or 0, "active_until": a.get("active_until") or ""}
+    return body, problems
+
+
+def w_create_bundle(a):
+    body, problems = _bundle_body(a)
+    return {"error": "; ".join(problems)} if problems else _call("/bundle/create", body, "create_bundle")
+
+
+def w_update_bundle(a):
+    body, problems = _bundle_body(a)
+    if problems:
+        return {"error": "; ".join(problems)}
+    return _call("/bundle/update", {"id": a.get("id"), **body}, f"update_bundle #{a.get('id')}")
+
+
+def w_delete_bundle(a):
+    return _call("/bundle/delete", {"id": a.get("id")}, f"delete_bundle #{a.get('id')}")
+
+
+def w_edit_item(a):
+    import item_edit
+    fields = a.get("fields") or {}
+    bad = [k for k in fields if k not in item_edit.EDITABLE]
+    if bad:
+        return {"error": f"cannot edit {bad}; allowed: {item_edit.EDITABLE}"}
+    return _with_fi(a, "/item-master/edit", {"fields": fields, "to_shopify": a.get("update_shopify", True) is not False},
+                    f"edit_item {sorted(fields)}")
+
+
+PRODUCT = {"sku": {"type": "string", "description": "SKU of OUR product (or give barcode / fi_record_id)"},
+           "barcode": {"type": "string"}, "fi_record_id": {"type": "string"}}
+SHOP = {"type": "string", "description": "shop prefix: samawa, ff, vp, aj, on, am, ng, pd, mh, ep, an, kh, oe, aq, ao, "
+                                         "jz, jm, ah, rf (bp / es follow ff)"}
+BUNDLE = {"items": {"type": "array", "description": "2-5 products", "items": {"type": "object", "properties": {
+              "sku": {"type": "string"}, "qty": {"type": "integer", "minimum": 1, "maximum": 20}}, "required": ["sku"]}},
+          "title": {"type": "string", "description": "empty = product names joined with +"},
+          "discount_type": {"type": "string", "enum": ["amount", "percent"]},
+          "discount_value": {"type": "number"},
+          "active_until": {"type": "string", "description": "YYYY-MM-DD last day, empty = no end date"}}
+WRITE_TOOLS = {
+    "update_price": ("CHANGES LIVE SHOPIFY: set OUR UAE price (= 'Update price' button: Shopify variant price + UAE "
+                     "price list, then our database + least price).",
+                     _schema({**PRODUCT, "price": {"type": "number", "description": "new UAE price in AED"}}, ["price"]),
+                     w_update_price),
+    "set_stock": ("CHANGES LIVE SHOPIFY: set OUR stock quantity (= stock 'Edit' on the card).",
+                  _schema({**PRODUCT, "qty": {"type": "integer", "minimum": 0}}, ["qty"]), w_set_stock),
+    "set_lop_mop": ("Set LOP / MOP (lowest / highest allowed price) of OUR product (= LOP/MOP Save). Empty = clear.",
+                    _schema({**PRODUCT, "lop": {"type": ["number", "null"]}, "mop": {"type": ["number", "null"]}}),
+                    w_set_lop_mop),
+    "set_skip_auto": ("Tick (skip=true) / untick 'Skip automatic price' of OUR product.",
+                      _schema({**PRODUCT, "skip": {"type": "boolean"}}, ["skip"]), w_set_skip_auto),
+    "answer_suggestion": ("OK (accept=true: suggestion becomes the CONFIRMED link) / Not OK (accept=false: never "
+                          "suggested again) for a competitor suggestion on OUR product.",
+                          _schema({**PRODUCT, "shop": SHOP, "accept": {"type": "boolean"}}, ["shop", "accept"]),
+                          w_answer_suggestion),
+    "set_link": ("Edit link: link OUR product to this competitor product URL (must be in that shop's list).",
+                 _schema({**PRODUCT, "shop": SHOP, "url": {"type": "string"}}, ["shop", "url"]), w_set_link),
+    "remove_link": ("Remove link: take this competitor's link off OUR product (kept out of the next matching).",
+                    _schema({**PRODUCT, "shop": SHOP}, ["shop"]), w_remove_link),
+    "add_new_link": ("Add new link: paste a competitor product URL for OUR product (shop found from the URL). If the "
+                     "site blocks reading, give name + price (+ in_stock).",
+                     _schema({**PRODUCT, "url": {"type": "string"}, "shop": SHOP, "name": {"type": "string"},
+                              "price": {"type": "number"}, "in_stock": {"type": "boolean"}}, ["url"]), w_add_new_link),
+    "create_bundle": ("Create a bundle (= Create bundle form; every product needs enough LIVE Shopify stock).",
+                      _schema(BUNDLE, ["items"]), w_create_bundle),
+    "update_bundle": ("Change a bundle (id from list_bundles): send the FULL new product list + discount.",
+                      _schema({"id": {"type": "integer"}, **BUNDLE}, ["id", "items"]), w_update_bundle),
+    "delete_bundle": ("Remove a bundle (our list only, Shopify not touched).",
+                      _schema({"id": {"type": "integer"}}, ["id"]), w_delete_bundle),
+    "edit_item": ("Item Master Edit of OUR product: fields like barcode, perfume_name, size, uae_price, "
+                  "uae_comparison_price ... (product name is rebuilt). update_shopify (default true) also sends changed "
+                  "barcode / name / prices to LIVE Shopify; Airtable is updated like the website Edit.",
+                  _schema({**PRODUCT, "fields": {"type": "object", "description": "column -> new value"},
+                           "update_shopify": {"type": "boolean"}}, ["fields"]), w_edit_item),
+}
+if MCP_WRITE:
+    TOOLS.update(WRITE_TOOLS)
+
+
 # ============================================================ SECTION 4: JSON-RPC over HTTP (Streamable HTTP, JSON only)
 def _authorized(path_token):
     """Token from the address (/mcp/<token>) or the Authorization: Bearer header. Endpoint OFF when not set."""
@@ -350,7 +537,10 @@ def _handle(msg):
         return _result(mid, {})
     if method == "tools/list":
         return _result(mid, {"tools": [{"name": n, "description": d, "inputSchema": s,
-                                        "annotations": {"readOnlyHint": True, "openWorldHint": False}}
+                                        "annotations": ({"readOnlyHint": False, "destructiveHint": True,
+                                                         "idempotentHint": False, "openWorldHint": True}
+                                                        if n in WRITE_TOOLS else
+                                                        {"readOnlyHint": True, "openWorldHint": False})}
                                        for n, (d, s, _) in TOOLS.items()]})
     if method == "tools/call":
         name, args = params.get("name"), params.get("arguments") or {}
@@ -358,7 +548,7 @@ def _handle(msg):
             return _error(mid, -32602, f"Unknown tool: {name}")
         try:
             out = TOOLS[name][2](args)
-            err = isinstance(out, dict) and "error" in out and len(out) == 1
+            err = isinstance(out, dict) and (("error" in out and len(out) == 1) or out.get("ok") is False)
             log(f"[MCP] {name} {json.dumps(args)[:150]} -> {'ERROR ' + out['error'] if err else 'ok'}")
         except Exception as ex:                       # tool failure = MCP tool error (not a protocol error)
             log(f"[MCP] {name} FAILED: {ex}")
@@ -390,5 +580,6 @@ def mcp_endpoint(token=None):
 def init(connect):
     """connect() -> new Postgres connection (app.pg_conn)."""
     _hooks["connect"] = connect
-    log(f"[MCP] endpoint /mcp/<key> {'ON (read only)' if MCP_TOKEN else 'OFF - set MCP_TOKEN in Render -> Environment'}"
-        f", {len(TOOLS)} tools")
+    state = ("OFF - set MCP_TOKEN in Render -> Environment" if not MCP_TOKEN else
+             f"ON (read + CHANGES as user '{MCP_USER}')" if MCP_WRITE else "ON (read only)")
+    log(f"[MCP] endpoint /mcp/<key> {state}, {len(TOOLS)} tools")
