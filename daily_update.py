@@ -1240,6 +1240,8 @@ def main():
     ap.add_argument("--all", action="store_true", help="ALL brands (every product) - daily position not moved")
     ap.add_argument("--skip", type=int, default=0,
                     help="continue a stopped run: skip the first N products (the screen showed N/total)")
+    ap.add_argument("--no-match", action="store_true", help="--all run: do NOT start the matching at the end")
+    ap.add_argument("--match", action="store_true", help="--all run: start the matching at the end (also without git)")
     ap.add_argument("--letters", default="", help='brands starting with these letters, e.g. "A-F" or "G-M,0-9"')
     ap.add_argument("--ounass", action="store_true",
                     help="PC whole lists now (Ounass, Al Injaz, Niche Gallerie), even when not due yet")
@@ -1257,6 +1259,12 @@ def main():
     log("=" * 70)
     log(f"[RUN] Started {datetime.now():%d %b %Y %H:%M}" + (" (TEST - nothing saved)" if args.test else ""))
     log(f"[RUN] Options: {vars(args)} | folder {HERE} | Render {SITE}")
+    if args.all or args.letters:
+        _git = os.path.isdir(os.path.join(HERE, ".git"))
+        _m = (args.match or _git) and not args.no_match
+        log(f"[RUN] Matching after this --all run: {'YES' if _m else 'NO'} on this PC "
+            f"({'GitHub folder' if _git else 'not the GitHub folder'}"
+            f"{', --match' if args.match else ''}{', --no-match' if args.no_match else ''})")
     if date.today().weekday() not in WORK_DAYS and not (args.force or args.test or args.brands or args.shop or args.ounass
                                                         or args.all or args.letters):
         log(f"[RUN] Today is {DAYS[date.today().weekday()]} - no update on Saturday / Sunday "
@@ -1375,7 +1383,24 @@ def main():
     # ---------------- least price + suggested price + automatic brands (Branded Perfume / Essenzi prices too)
     if not brands and not ff_new_added and not pc_ran:
         log("[RUN] No daily brands / new products today -> update-least not needed")
-    if (brands or ff_new_added or pc_ran) and not args.test:
+    # Only the PC whose folder is the GitHub copy (has .git) starts the matching (2026-11-23, user: "only run
+    # matching in github connected pc"); --match / --no-match decide by hand.
+    git_pc = os.path.isdir(os.path.join(HERE, ".git"))
+    match_here = (args.match or git_pc) and not args.no_match
+    if (args.all or args.letters) and brands and not args.test and not match_here:
+        log("[RUN] --all run finished - matching NOT started on this PC (not the GitHub PC / --no-match). "
+            "The GitHub PC starts it when its run finishes.")
+    if (args.all or args.letters) and brands and not args.test and match_here:
+        # ALL PRODUCTS run finished (2026-11-23, user: "make match start automatically after --all run"):
+        # French Fragrance match on Render = French Fragrance + Branded Perfume + Essenzi links (BP / ES follow FF),
+        # manual corrections kept; it ends with least + suggested price (+ automatic brands) -> no update-least needed.
+        # Two PCs: each starts it when it finishes; one already running -> render_get waits (409) and starts it again.
+        log("[RUN] --all run finished -> matching French Fragrance + Branded Perfume + Essenzi on Render")
+        res = start_and_wait("/competitor/match-ff", "/samawa/status", "French Fragrance match")
+        log(f"[RUN] Match result: matched barcode {res.get('matched_barcode', '?')}, name {res.get('matched_fuzzy', '?')}, "
+            f"kept your links {res.get('kept_confirmed', 0)}, kept removed {res.get('kept_removed', 0)}"
+            + (f" | ERROR {res['error']}" if res.get("error") else ""))
+    elif (brands or ff_new_added or pc_ran) and not args.test:      # (not the GitHub PC: prices only, no matching)
         r = render_get("/competitor/update-least")
         state["recalc"] = (f"HTTP {r.status_code}" if r is not None else "not started")
         log(f"[RENDER] update-least -> {state['recalc']}")
