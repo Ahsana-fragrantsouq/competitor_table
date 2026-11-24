@@ -168,6 +168,29 @@ def to_number(s):
     return round(float(m.group(0).replace(",", "")), 2) if m else None
 
 
+
+# ---- price "inc tax" read from the PAGE (2026-11-24, user: Branded Perfume / Essenzi prices in the table differ from
+# their site, e.g. Gritti Puro table 474 vs site 525 (551 inc tax)). Their pages now show the NEW DIRHAM SYMBOL (or an
+# icon) instead of "AED" -> the old pattern "AED ... inc tax" found nothing and the price came from the page's hidden
+# Google data (out of date). Now: "(<any sign> 551 inc tax)" is found whatever stands before the number.
+INC_TAX_RE = re.compile(r"\(\s*(?:AED|Dhs?\.?|\u062f\.\u0625|[^\d\s(),.]{1,3})?\s*([\d,]+(?:\.\d+)?)\s*inc\.?\s*tax", re.I)
+
+
+def page_inc_tax(text):
+    """First '(<sign> 551 inc tax)' on the product page -> 551.0, or None."""
+    m = INC_TAX_RE.search(text or "")
+    return to_number(m.group(1)) if m else None
+
+
+def trust_page_price(price, price_inc, url, tag):
+    """Google-data price (no VAT) vs the price SHOWN on the page (inc tax): more than 2 % apart -> the page wins."""
+    if price and price_inc and abs(price * 1.05 - price_inc) > price_inc * 0.02:
+        log(f"   [PRICE-FIX] {tag} {url}: page {price_inc} inc tax, hidden Google data {price} (+VAT "
+            f"{round(price * 1.05, 2)}) -> page price used")
+        price = round(price_inc / 1.05, 2)
+    return price
+
+
 def scrape_product(page, url):
     """Open one Branded Perfume page -> dict with status ok / not_found (+ price, stock, size ...)."""
     try:
@@ -207,8 +230,9 @@ def scrape_product(page, url):
     if price is None:
         m = re.search(r"AED\W*([\d,]+(?:\.\d+)?)", text)
         price = to_number(m.group(1)) if m else None
-    m = re.search(r"AED\W*([\d,]+(?:\.\d+)?)\W*inc\.?\s*tax", text, re.I)
-    price_inc = to_number(m.group(1)) if m else (round(price * 1.05, 2) if price else None)
+    page_inc = page_inc_tax(text)                         # shown on the page, any currency sign (2026-11-24)
+    price = trust_page_price(price, page_inc, url, "BP/FF")
+    price_inc = page_inc or (round(price * 1.05, 2) if price else None)
 
     # stock: the product's own data first (page text can mention OTHER products' stock)
     avail = str(offers.get("availability") or inner.get("availability") or "").lower()

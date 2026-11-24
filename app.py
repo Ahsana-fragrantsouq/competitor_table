@@ -386,8 +386,7 @@ else:
 #      Competitors, but matching gives NO link / suggestion -> never on the Competitor table cards, never in least
 #      price / suggested price / AUTO. ct_match_shop + unlink_shop (SECTION matching), cleared at every start.
 #      To link Brands Perfume again: remove "br" here, then /competitor/match-br?secret= .
-# 2026-11-21 (user: "remove perfume dubai from competitor table but stay as competitor"): Perfume Dubai ("pd") too.
-UNLINKED_SHOPS = {"br", "pd"}
+UNLINKED_SHOPS = {"br"}
 # Brands Perfume DAILY QUICK CHECK (brandsperfume.py SECTION 6): only pages linked to our products re-read every day
 # at BR_QUICK_TIME (06:15 India) -> fresh price + stock. Render env BR_QUICK_CHECK=off switches it off.
 # Brands Perfume not linked (UNLINKED_SHOPS) -> nothing to check -> not started.
@@ -1966,21 +1965,15 @@ def ct_match_shop(shop_key, only_brands=None, least=True):
 
         p = shop["prefix"]
         # links confirmed with "OK" (kept) and links refused with "Not OK" (never suggested again)
-        cur.execute(f"SELECT fi_record_id, {p}_link, {p}_rejected, {p}_confirmed, {p}_method FROM competitor_table")
-        confirmed, rejected, removed = {}, {}, {}
-        for fid, link, rej, conf, meth in cur.fetchall():
+        cur.execute(f"SELECT fi_record_id, {p}_link, {p}_rejected, {p}_confirmed FROM competitor_table")
+        confirmed, rejected = {}, {}
+        for fid, link, rej, conf in cur.fetchall():
             if conf and link:
                 confirmed[fid] = link
-            elif (meth or "").startswith("removed by"):
-                # "Remove link" by an admin (link_edit.py) -> this product stays EMPTY for this shop on every later
-                # sync / refresh (2026-11-21, user: corrected items are never touched again). Only "Edit link -> Save"
-                # by an admin links it again (that makes it confirmed).
-                removed[fid] = meth
             if rej:
-                rejected[fid] = {u.strip() for u in rej.split("\n") if u.strip()}   # every refused link
+                rejected[fid] = rej
         by_url = {e["url"]: e for e in entries}
-        log(f"[{tag}] {len(confirmed)} confirmed links kept, {len(removed)} removed links kept empty, "
-            f"{len(rejected)} products with refused links remembered")
+        log(f"[{tag}] {len(confirmed)} confirmed links kept, {len(rejected)} refused suggestions remembered")
 
         # our SIZE: from the product name ("... 100 ml EDP ..."), else Item Master's Size field (item_master.size)
         cur.execute("SELECT to_regclass('item_master') IS NOT NULL")
@@ -2051,13 +2044,9 @@ def ct_match_shop(shop_key, only_brands=None, least=True):
                         updates.append((fid, confirmed[fid], None, False, None, "confirmed", None, None))
                     summary["kept_confirmed"] = summary.get("kept_confirmed", 0) + 1
                     continue
-                if fid in removed:
-                    updates.append((fid, None, None, False, None, removed[fid][:200], None, None))
-                    summary["kept_removed"] = summary.get("kept_removed", 0) + 1
-                    continue
                 e, method, score, guess = match_one(fields, brand, brand_entries, by_barcode,
                                                     trust_barcode=shop["trust_barcode"])
-                if e and e["url"] in rejected.get(fid, ()):
+                if e and e["url"] == rejected.get(fid):
                     # an admin removed this exact link ("Edit link" -> Remove, link_edit.py) -> never put it back
                     log(f"[{tag}-REFUSED] {pname} -> {e['title']} was removed by an admin -> no match")
                     e, method, guess = None, "removed by admin", None
@@ -2076,7 +2065,7 @@ def ct_match_shop(shop_key, only_brands=None, least=True):
                 else:
                     summary["unmatched"] += 1
                     suggestion = guess["url"] if guess is not None and score >= 0.5 else None
-                    if suggestion and suggestion in rejected.get(fid, ()):
+                    if suggestion and suggestion == rejected.get(fid):
                         suggestion = None                 # team said "Not OK" to this link before
                     if suggestion:
                         summary["with_suggestion"] += 1
@@ -2864,13 +2853,8 @@ def ct_suggestion_route():
 
         if action == "notok":
             # remove the suggestion and remember it, so the next match run does not suggest it again
-            # ALL refused links are kept, one per line (2026-11-21, user: corrected items must never come back;
-            # before, only the LAST refused link was remembered and an older one could be suggested again)
-            cur.execute(f"""UPDATE competitor_table SET {shop}_suggestion = NULL, {shop}_rejected = CASE
-                               WHEN COALESCE({shop}_rejected, '') = '' THEN %s
-                               WHEN %s = ANY(string_to_array({shop}_rejected, E'\\n')) THEN {shop}_rejected
-                               ELSE {shop}_rejected || E'\\n' || %s END,
-                            updated_at = NOW() WHERE fi_record_id = %s""", (url, url, url, fid))
+            cur.execute(f"UPDATE competitor_table SET {shop}_suggestion = NULL, {shop}_rejected = %s, "
+                        f"updated_at = NOW() WHERE fi_record_id = %s", (url, fid))
             conn.commit()
             log(f"[SUGGEST] NOT OK: {fid} {label} {url}")
             return jsonify({"ok": True, "action": "notok"})
@@ -3135,6 +3119,7 @@ def our_stock_numbers():
     url = f"https://{shop}/admin/api/{ver}/products.json"
     params = {"limit": 250, "fields": "id,variants"}
     qty, pages = {}, 0
+    LAST_SHOPIFY["variant_price"] = vprice = {}             # SKU -> variant price (read in the same pass, 2026-11-24)
     while url and pages < 200:
         try:
             r = requests.get(url, params=params, headers={"X-Shopify-Access-Token": token}, timeout=60)
@@ -3152,12 +3137,78 @@ def our_stock_numbers():
                 sku = (v.get("sku") or "").strip().upper()
                 if sku and v.get("inventory_quantity") is not None:
                     qty[sku] = qty.get(sku, 0) + int(v["inventory_quantity"])   # same SKU twice -> added up
+                if sku and v.get("price") not in (None, "") and sku not in vprice:
+                    vprice[sku] = round(float(v["price"]), 2)
         pages += 1
         nxt = re.search(r'<([^>]+)>;\s*rel="next"', r.headers.get("Link", ""))  # Shopify pages: Link header
         url, params = (nxt.group(1), None) if nxt else (None, None)
         time.sleep(0.5)
     log(f"[OUR-QTY] {len(qty)} SKUs with a stock number ({pages} pages read from Shopify admin)")
     return qty
+
+
+# ---- OUR UAE PRICE FROM SHOPIFY (2026-11-24, user: "the price shown as our price is completely different from our
+# website price" - AMF1085 table 80, fragrantsouq.com 120; choice: "Read it from Shopify"). The price a UAE customer
+# pays = the Shopify "United Arab Emirates" PRICE LIST price (same list the Update price button writes), else the
+# variant price. Read in load-our-links (with the stock numbers) -> competitor_table.uae_price (+ uae_price_website so
+# Load from Airtable keeps it) for every SKU whose price differs, then least + suggested price of those products.
+# Daily by our_shopify_scheduler (OUR_SYNC_TIME India); Render env OUR_SHOPIFY_SYNC=off = no daily run. Log [OUR-PRICE].
+LAST_SHOPIFY = {}
+UAE_PRICE_QUERY = """query($id: ID!, $after: String) { priceList(id: $id) { currency
+  prices(first: 250, after: $after, originType: FIXED) { pageInfo { hasNextPage endCursor }
+    edges { node { price { amount } variant { sku } } } } } }"""
+
+
+def uae_price_list():
+    """{SKU: fixed UAE price} from the Shopify 'United Arab Emirates' price list ({} when it cannot be read)."""
+    import shopify_create as sc
+    out, after, pages = {}, None, 0
+    try:
+        while pages < 200:
+            res = sc.shopify_graphql(UAE_PRICE_QUERY, {"id": sc.PRICE_LIST_IDS["UAE"], "after": after})
+            pl = (res.get("data") or {}).get("priceList") or {}
+            if res.get("errors") or not pl:
+                log(f"[OUR-PRICE] UAE price list not read: {str(res.get('errors'))[:200]}")
+                break
+            prices = pl.get("prices") or {}
+            for e in prices.get("edges") or []:
+                n = e.get("node") or {}
+                sku = ((n.get("variant") or {}).get("sku") or "").strip().upper()
+                amt = (n.get("price") or {}).get("amount")
+                if sku and amt not in (None, "") and sku not in out:
+                    out[sku] = round(float(amt), 2)
+            pages += 1
+            info = prices.get("pageInfo") or {}
+            if not info.get("hasNextPage"):
+                break
+            after = info.get("endCursor")
+            time.sleep(0.3)
+    except Exception as ex:
+        log(f"[OUR-PRICE] UAE price list not read: {ex}")
+    log(f"[OUR-PRICE] UAE price list: {len(out)} SKUs with a fixed price ({pages} pages)")
+    return out
+
+
+def save_our_shopify_prices(cur, wanted=None):
+    """Shopify UAE price (price list, else variant price) -> competitor_table.uae_price where it differs.
+    Uses the variant prices of the last our_stock_numbers() pass. Returns how many products changed."""
+    vprice = LAST_SHOPIFY.get("variant_price") or {}
+    if not vprice:
+        log("[OUR-PRICE] no Shopify variant prices read -> our prices not changed")
+        return 0
+    prices = {**vprice, **uae_price_list()}                 # price list wins over the variant price
+    sql = """UPDATE competitor_table c SET uae_price = v.price, uae_price_website = TRUE, updated_at = NOW()
+               FROM (VALUES %s) AS v(sku, price)
+              WHERE UPPER(TRIM(c.sku)) = v.sku AND c.uae_price IS DISTINCT FROM v.price"""
+    if wanted:
+        sql += cur.mogrify(" AND LOWER(c.brand) = ANY(%s)", [wanted]).decode().replace("%", "%%")
+    rows = execute_values(cur, sql + " RETURNING c.fi_record_id, c.sku", [(k, v) for k, v in prices.items()],
+                          template="(%s, %s::numeric)", page_size=1000, fetch=True)
+    for fid, _ in rows:                                      # least + suggested price of the changed products
+        price_triggers.recalc_product(cur, fid, "OUR-PRICE")
+    log(f"[OUR-PRICE] {len(rows)} products got their Shopify UAE price"
+        + (f" (e.g. {', '.join(r[1] for r in rows[:8])})" if rows else ""))
+    return len(rows)
 
 
 def ct_load_our_links(only_brands=None):
@@ -3236,6 +3287,7 @@ def ct_load_our_links(only_brands=None):
                 qsql += cur.mogrify(brand_sql, [wanted]).decode().replace("%", "%%")
             execute_values(cur, qsql, list(qty.items()), page_size=1000)
             summary["stock_numbers"] = len(qty)
+            summary["our_prices_changed"] = save_our_shopify_prices(cur, wanted)   # our UAE price = Shopify
             out = sum(1 for _, _, st in by_sku.values() if not st)
             log(f"[OUR] {out} of {len(by_sku)} SKUs are OUT OF STOCK on fragrantsouq.com")
         cur.execute("SELECT COUNT(*), COUNT(our_link) FROM competitor_table")
@@ -3511,6 +3563,58 @@ def start_jobs():
 
 
 threading.Thread(target=start_jobs, daemon=True).start()
+
+
+# ---- DAILY "our links + stock + UAE price from Shopify" (2026-11-24, see save_our_shopify_prices): once a day at
+# OUR_SYNC_TIME India (before Run 2 at 07:00) = ct_load_our_links (our_link, stock numbers, OUR UAE PRICE). Waits while
+# another job holds run_lock. Saved day in app_settings 'our_shopify_sync' (a restart does not run it twice).
+# Render env OUR_SHOPIFY_SYNC=off = off (test site: off unless OUR_SHOPIFY_SYNC=on). Log [OUR-SYNC].
+OUR_SYNC_TIME = "06:30"
+
+
+def our_shopify_scheduler():
+    import json                                              # (app.py has no module-level json import)
+    import daily_update as du
+    time.sleep(90)                                           # let the website start first
+    while True:
+        try:
+            now = du.india_now()
+            today = now.date().isoformat()
+            if now.strftime("%H:%M") >= OUR_SYNC_TIME:
+                c = pg_conn()
+                try:
+                    done = du.read_setting(c.cursor(), "our_shopify_sync")
+                    c.commit()
+                finally:
+                    c.close()
+                if done != today and run_lock.acquire(blocking=False):
+                    try:
+                        log(f"[OUR-SYNC] {today}: our links + stock + UAE price from Shopify")
+                        res = ct_load_our_links()
+                        log(f"[OUR-SYNC] done: {json.dumps(res, default=str)[:300]}")
+                        c = pg_conn()
+                        try:
+                            cur = c.cursor()
+                            cur.execute("""INSERT INTO app_settings (key, value, updated_by) VALUES ('our_shopify_sync', %s,
+                                           'our_shopify_scheduler') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value,
+                                           updated_at = NOW()""", (today,))
+                            c.commit()
+                        finally:
+                            c.close()
+                    finally:
+                        run_lock.release()
+                elif done != today:
+                    log("[OUR-SYNC] another job is running -> trying again in a minute")
+        except Exception as ex:
+            log(f"[OUR-SYNC] ERROR {ex}")
+        time.sleep(60)
+
+
+if os.environ.get("OUR_SHOPIFY_SYNC", "off" if TEST_SITE else "on").lower() == "on":
+    threading.Thread(target=our_shopify_scheduler, daemon=True, name="our-shopify-sync").start()
+    log(f"[OUR-SYNC] daily our links + stock + UAE price from Shopify at {OUR_SYNC_TIME} India")
+else:
+    log("[OUR-SYNC] daily Shopify price / stock read is OFF (OUR_SHOPIFY_SYNC)")
 
 
 @app.get("/competitor/update-least")
