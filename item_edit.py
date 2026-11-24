@@ -595,6 +595,35 @@ def shopify_set_uae_price(conn, fid, price):
 
 
 
+def shopify_set_barcode(conn, fid, barcode):
+    """AIRTABLE=off: barcode 'Edit' on /competitors -> Shopify variant barcode (found like Update price: shopify_id,
+    else exact SKU). Returns {"ok": True, "answer": ...} or {"ok": False, "error": ...}."""
+    import shopify_create as sc
+    if not (sc.SHOP and sc.TOKEN):
+        return {"ok": False, "error": "SHOPIFY_SHOP / SHOPIFY_API_TOKEN are not set in Render -> Environment"}
+    cur = conn.cursor()
+    cur.execute("SELECT COALESCE(NULLIF(TRIM(im.sku), ''), ct.sku), im.shopify_id FROM competitor_table ct "
+                "LEFT JOIN item_master im ON im.fi_record_id = ct.fi_record_id WHERE ct.fi_record_id = %s", (fid,))
+    row = cur.fetchone()
+    conn.commit()
+    sku = ((row or [None])[0] or "").strip().upper()
+    if not sku:
+        return {"ok": False, "error": "product has no SKU"}
+    try:
+        found = _find_in_shopify(sc, sku, ((row[1] or "") if row else "").strip())
+        if not found:
+            return {"ok": False, "error": f"SKU {sku} not found in Shopify"}
+        pid, vid, _ = found
+        r = sc.shopify_rest("PUT", f"variants/{vid}.json", {"variant": {"id": vid, "barcode": str(barcode)}})
+        if not r.ok:
+            return {"ok": False, "error": f"Shopify barcode not changed ({r.status_code}): {r.text[:150]}"}
+    except Exception as ex:
+        log(f"[BARCODE-SHOPIFY] {fid}: ERROR {ex}")
+        return {"ok": False, "error": f"Shopify error: {str(ex)[:150]}"}
+    log(f"[BARCODE-SHOPIFY] {fid}: SKU {sku} variant {vid} barcode = {barcode}")
+    return {"ok": True, "answer": f"Shopify product {pid} barcode {barcode}"}
+
+
 # ============================================================ SECTION 7: ALSO UPDATE AIRTABLE (2026-11-06, user's choice)
 # User: "when update in item master will that update in airtable" -> "yes also update in airtable".
 # After every Item Master Save the CHANGED fields (+ the rebuilt Product Name) are written to Airtable French

@@ -439,6 +439,16 @@ SUGGESTIONS = os.environ.get("SUGGESTIONS", "") == "1"   # turn on only after cr
 # Airtable API address + login header, and a normal browser "User-Agent" so Samawa answers like to a browser
 AT_URL = f"https://api.airtable.com/v0/{BASE_ID}"
 AT_HEADERS = {"Authorization": f"Bearer {AIRTABLE_TOKEN}", "Content-Type": "application/json"}
+# AIRTABLE SWITCH (2026-11-24, user: "remove all connection with Airtable ... update suggested price, barcode, stock
+# directly in Shopify"). OFF (default): the website NEVER reads or writes Airtable:
+#   - our products come from Item Master (our database) -> Competitor table (ct_load_fi)
+#   - Update all / automatic brands -> UAE price straight into Shopify (same as the Update price button)
+#   - Barcode edit -> Shopify; Item Master Save -> Shopify + our database only
+#   - Load from Airtable buttons (Item Master, Brands SKU, Bundles) say "Airtable is switched off"
+# Render -> Environment AIRTABLE=on brings the old Airtable behaviour back.
+AIRTABLE_ON = os.environ.get("AIRTABLE", "off").strip().lower() in ("on", "1", "true", "yes")
+print(f"[AIRTABLE] {'ON - Airtable is read and written' if AIRTABLE_ON else 'OFF - no Airtable at all (Item Master = our product list, prices / barcodes to Shopify)'}",
+      flush=True)
 SAMAWA_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
 
 # run_lock: only ONE long job (samawa run / load-fi / match-samawa) can run at a time
@@ -762,6 +772,9 @@ def samawa_fields(e):
 # ---------------------------------------------------------------- Airtable
 # Airtable is only READ now (French Inventories + brands). Nothing is written back.
 def at_list(table, params):
+    if not AIRTABLE_ON:
+        log(f"[AIRTABLE] OFF -> {table} not read")
+        raise RuntimeError("Airtable is switched off (AIRTABLE=off): Item Master in our database is the product list")
     """READ all records of an Airtable table (100 per page, follows 'offset' until the end).
     Waits 30s and retries when Airtable says too many requests (429)."""
     records, offset = [], None
@@ -1449,6 +1462,8 @@ def ct_load_fi(only_brands=None, least=True):
     started = time.time()
     summary = {"step": "load-fi", "products": 0, "without_brand": 0, "bad_price": []}
     state["last_summary"] = summary
+    if not AIRTABLE_ON:
+        return ct_load_from_item_master(summary, started, only_brands, least)
 
     # brand record id -> brand name (Brand in French Inventories is a linked field)
     brand_names = {}
@@ -1517,6 +1532,45 @@ def ct_load_fi(only_brands=None, least=True):
     log(f"[CT-LOAD DONE] {summary}")
     if least:
         summary["least"] = ct_update_least()      # our UAE prices may have changed -> recalculate least price
+    return summary
+
+
+def ct_load_from_item_master(summary, started, only_brands=None, least=True):
+    """AIRTABLE=off: our products come from ITEM MASTER (our database) instead of Airtable - same columns, same
+    rules (edited fields kept, deleted products not loaded again). french_inventory_code = 'SKU/Product name'."""
+    conn = pg_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(CT_CREATE)
+        conn.commit()
+        cur.execute("SELECT fi_record_id, sku, product_name, uae_price, brand, barcode, perfume_name FROM item_master")
+        rows = []
+        for fid, sku, pname, price, brand, barcode, perfume in cur.fetchall():
+            if not brand:
+                summary["without_brand"] += 1
+            code = "/".join(x for x in ((sku or "").strip(), (pname or "").strip()) if x) or None
+            rows.append((fid, code, sku, pname, price, brand, barcode, perfume))
+        if only_brands:
+            wanted = {b.strip().lower() for b in only_brands}
+            rows = [r for r in rows if (r[5] or "").strip().lower() in wanted]
+        cur.execute("SELECT to_regclass('item_master_deleted') IS NOT NULL")
+        if cur.fetchone()[0]:
+            cur.execute("SELECT fi_record_id FROM item_master_deleted")
+            gone = {r[0] for r in cur.fetchall()}
+            rows = [r for r in rows if r[0] not in gone]
+        for i in range(0, len(rows), 500):
+            execute_values(cur, CT_UPSERT_FI, rows[i:i + 500])
+            conn.commit()
+            summary["products"] = min(i + 500, len(rows))
+        log(f"[CT-LOAD] Airtable OFF -> {len(rows)} products from Item Master into competitor_table")
+    finally:
+        cur.close()
+        conn.close()
+    summary["source"] = "item_master"
+    summary["seconds"] = round(time.time() - started, 1)
+    log(f"[CT-LOAD DONE] {summary}")
+    if least:
+        summary["least"] = ct_update_least()
     return summary
 
 
@@ -2902,7 +2956,10 @@ OWN_ID_PREFIXES = ("rec", "new")             # ids a route accepts: rec = from A
 
 def in_airtable(fid):
     """True for products that exist in Airtable (record id rec...). Every Airtable WRITE checks this first.
-    TEST SITE (TEST_SITE=on) -> always False = nothing is ever written to the real Airtable."""
+    TEST SITE (TEST_SITE=on) -> always False = nothing is ever written to the real Airtable.
+    AIRTABLE=off -> always False = nothing is written to Airtable."""
+    if not AIRTABLE_ON:
+        return False
     if TEST_SITE:
         return False
     return str(fid).startswith("rec")
@@ -2912,6 +2969,8 @@ def airtable_set_prices(good, tag="PRICES"):
     """Write UAE Price to Airtable for many products ({fi_record_id: price}), 10 per request (Airtable limit),
     then save our new price + least price in Postgres. Returns (done_ids, failed {id: error}).
     Products not in Airtable (new...) skip the Airtable part - only our database is updated."""
+    if not AIRTABLE_ON:
+        return shopify_set_prices(good, tag)
     local = [f for f in good if not in_airtable(f)]
     if local:
         log(f"[{tag}] {len(local)} product(s) made on our website (not in Airtable) -> price saved in our database only")
@@ -2950,6 +3009,59 @@ def airtable_set_prices(good, tag="PRICES"):
         cur.close()
         conn.close()
     return done, failed
+
+
+def shopify_set_prices(good, tag="PRICES"):
+    """AIRTABLE=off: UAE price of many products ({fi_record_id: price}) straight into SHOPIFY, one by one - exactly
+    what the 'Update price' button does (item_edit.shopify_set_uae_price: variant price + UAE price list), then our
+    database: competitor_table + item_master UAE price, least / suggested price. Returns (done_ids, failed {id: error})."""
+    done, failed = [], {}
+    for i, fid in enumerate(good, 1):
+        price = round(float(good[fid]), 2)
+        conn = pg_conn()
+        cur = conn.cursor()
+        try:
+            res = item_edit.shopify_set_uae_price(conn, fid, price)
+            if not res.get("ok"):
+                failed[fid] = res.get("error") or "Shopify error"
+                log(f"[{tag}] {i}/{len(good)} {fid}: NOT updated - {failed[fid]}")
+                continue
+            cur.execute("UPDATE competitor_table SET uae_price = %s, uae_price_website = TRUE, updated_at = NOW() "
+                        "WHERE fi_record_id = %s", (price, fid))
+            least_for(cur, fid)
+            cur.execute("SELECT to_regclass('item_master') IS NOT NULL")
+            if cur.fetchone()[0]:
+                cur.execute("UPDATE item_master SET uae_price = %s WHERE fi_record_id = %s", (price, fid))
+            conn.commit()
+            done.append(fid)
+            log(f"[{tag}] {i}/{len(good)} {fid}: Shopify + our database AED {price}")
+        except Exception as ex:
+            conn.rollback()
+            failed[fid] = str(ex)[:150]
+            log(f"[{tag}] {i}/{len(good)} {fid}: ERROR {failed[fid]}")
+        finally:
+            cur.close()
+            conn.close()
+        time.sleep(0.6)                                # Shopify allows ~2 requests per second
+    log(f"[{tag}] Shopify: {len(done)} prices updated, {len(failed)} failed")
+    return done, failed
+
+
+def shopify_set_barcode_hook(fid, barcode):
+    """AIRTABLE=off: barcode_edit.py 'Edit' barcode -> Shopify variant barcode + item_master (instead of Airtable)."""
+    conn = pg_conn()
+    try:
+        res = item_edit.shopify_set_barcode(conn, fid, barcode)
+        if not res.get("ok"):
+            return False, res.get("error")
+        cur = conn.cursor()
+        cur.execute("SELECT to_regclass('item_master') IS NOT NULL")
+        if cur.fetchone()[0]:
+            cur.execute("UPDATE item_master SET barcode = %s WHERE fi_record_id = %s", (barcode, fid))
+        conn.commit()
+        return True, None
+    finally:
+        conn.close()
 
 
 def airtable_set_barcode(fid, barcode):
@@ -3517,7 +3629,8 @@ skip_auto.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Skip automatic
                automatic_brands=auto_brands, push_prices=airtable_set_prices)
 link_edit.init(connect=pg_conn, create_sql=CT_CREATE,          # 'Edit link' for admins (link_edit.py)
                link_sisters=link_sisters_for, recalc_one=least_for)
-barcode_edit.init(connect=pg_conn, airtable_barcode=airtable_set_barcode)   # 'Edit' our barcode (barcode_edit.py)
+item_edit.AIRTABLE_ON = item_edit.AIRTABLE_ON and AIRTABLE_ON      # AIRTABLE=off -> Item Master Save: Shopify + database only
+barcode_edit.init(connect=pg_conn, airtable_barcode=airtable_set_barcode if AIRTABLE_ON else shopify_set_barcode_hook)   # 'Edit' our barcode (barcode_edit.py)
 stock_edit.init(connect=pg_conn)                                             # 'Edit' our stock -> Shopify (stock_edit.py)
 stock_sync.init(connect=pg_conn)                                             # 'Sync the stock' list (stock_sync.py)
 mcp_server.init(connect=pg_conn)                                             # MCP endpoint, read only (mcp_server.py)
@@ -3531,6 +3644,8 @@ item_master.init(connect=pg_conn, read_airtable=at_list,       # Item Master: Ai
 
 def at_find_brand(name):
     """Airtable brands record id of a brand name (any capitals) - Item Master Save writes Brand (a LINKED field)."""
+    if not AIRTABLE_ON:
+        return None
     safe = str(name).replace("\\", "").replace("'", "\\'").strip().lower()
     recs = at_list(BRANDS_TABLE, {"filterByFormula": f"LOWER(TRIM({{{BRANDS_NAME_FIELD}}}))='{safe}'",
                                   "fields[]": BRANDS_NAME_FIELD, "pageSize": 5})
@@ -3547,7 +3662,8 @@ shopify_create.init(connect=pg_conn)                           # 'Create in webs
 run_history.init(connect=pg_conn)                              # Run history of the buttons (run_history.py)
 item_create.init(connect=pg_conn)                              # Create a new item (item_create.py)
 brand_refresh.init(run_lock=run_lock, load_fi=ct_load_fi,       # Brands page -> Refresh (brand_refresh.py)
-                   load_item_master=item_master.load_all, load_our_links=ct_load_our_links,
+                   load_item_master=item_master.load_all if AIRTABLE_ON else (lambda *a, **k: {"skipped": "Airtable is switched off"}),
+                   load_our_links=ct_load_our_links,
                    match_shop=ct_match_shop, shops=[(k, s["label"]) for k, s in SHOPS.items()],
                    update_least=ct_update_least)
 brand_sku.init(connect=pg_conn, read_airtable=at_list,          # SKU Prefix + Next SKU number (brand_sku.py)

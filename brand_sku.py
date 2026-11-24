@@ -80,7 +80,11 @@ def load_from_airtable():
     """Copy SKU Prefix + Next sku number of every Airtable brand into brand_sku. Returns a summary dict."""
     started = time.time()
     name_f = _hooks["brands_name_field"]
-    recs = _hooks["read_airtable"](_hooks["brands_table"], {"fields[]": [name_f, F_PREFIX, F_NEXT]})
+    try:
+        recs = _hooks["read_airtable"](_hooks["brands_table"], {"fields[]": [name_f, F_PREFIX, F_NEXT]})
+    except Exception as ex:                       # AIRTABLE=off (2026-11-24): brand_sku in our database is the list
+        log(f"[BRAND-SKU] not loaded from Airtable: {ex}")
+        return {"error": str(ex)[:200]}
     rows, seen = [], set()
     for r in recs:
         f = r.get("fields", {})

@@ -125,8 +125,8 @@ def barcode_save():
         # 1. Airtable first - if it refuses, nothing is changed anywhere
         ok, err = HOOKS["airtable_barcode"](fid, bc)
         if not ok:
-            log(f"[BARCODE-EDIT] {user} {sku or fid}: Airtable refused {bc}: {err}")
-            return jsonify({"ok": False, "error": f"Airtable: {err}"}), 502
+            log(f"[BARCODE-EDIT] {user} {sku or fid}: refused {bc}: {err}")
+            return jsonify({"ok": False, "error": f"Not saved: {err}"}), 502
         # 2. then our table
         cur.execute("UPDATE competitor_table SET barcode = %s, updated_at = NOW() WHERE fi_record_id = %s", (bc, fid))
         conn.commit()

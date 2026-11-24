@@ -62,7 +62,7 @@ def _step(name, fn):
 def run_refresh(brand):
     """brand = one brand name, or None = ALL brands. Runs in a background thread while holding the app's run_lock."""
     h, only = _hooks, ([brand] if brand else None)
-    steps = [("Our products from Airtable (competitor table)", lambda: h["load_fi"](only_brands=only, least=False)),
+    steps = [("Our products (competitor table)", lambda: h["load_fi"](only_brands=only, least=False)),
              ("Our products from Airtable (Item Master)", lambda: h["load_item_master"]("refresh " + (brand or "all"),
                                                                                         only_brands=only)),
              ("Our fragrantsouq.com links + stock", lambda: h["load_our_links"](only_brands=only))]
