@@ -1139,6 +1139,21 @@ ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS uae_price NUMERIC(10,2);
 -- TRUE = our UAE price was set by OUR website straight in Shopify ('Update price' / Item Master Edit), not in
 -- Airtable -> loading from Airtable (CT_UPSERT_FI) keeps it. Back to FALSE when a price is written to Airtable.
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS uae_price_website BOOLEAN DEFAULT FALSE;
+-- AUTO price last SENT TO AIRTABLE (2026-11-24, user: "now only do the price correction in competitor table"):
+-- uae_price = the REAL Shopify price (save_our_shopify_prices) and AUTO no longer overwrites it; AUTO compares the
+-- suggested price with this column instead (else it would resend the same ~700 products after every run).
+-- First time: filled with the suggested price of the automatic brands (today's AUTO run had sent exactly that).
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name = 'competitor_table' AND column_name = 'auto_sent_price') THEN
+    ALTER TABLE competitor_table ADD COLUMN auto_sent_price NUMERIC(10,2);
+    IF to_regclass('brand_automation') IS NOT NULL THEN
+      UPDATE competitor_table SET auto_sent_price = suggested_price
+       WHERE suggested_price IS NOT NULL
+         AND LOWER(brand) IN (SELECT LOWER(brand) FROM brand_automation WHERE auto);
+    END IF;
+  END IF;
+END $$;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS website_edits JSONB;   -- Item Master Edit: fields kept on Airtable load (item_edit.py)
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS brand TEXT;
 ALTER TABLE competitor_table ADD COLUMN IF NOT EXISTS barcode TEXT;
@@ -2923,8 +2938,12 @@ def airtable_set_prices(good, tag="PRICES"):
     cur = conn.cursor()
     try:
         for f in done:
-            cur.execute("UPDATE competitor_table SET uae_price = %s, uae_price_website = FALSE, updated_at = NOW() "
-                        "WHERE fi_record_id = %s", (good[f], f))     # written to Airtable -> Airtable is right again
+            if tag == "AUTO":                          # AUTO: Airtable only - our price stays the REAL Shopify price
+                cur.execute("UPDATE competitor_table SET auto_sent_price = %s, updated_at = NOW() "
+                            "WHERE fi_record_id = %s", (good[f], f))
+                continue
+            cur.execute("UPDATE competitor_table SET uae_price = %s, uae_price_website = FALSE, auto_sent_price = %s, "
+                        "updated_at = NOW() WHERE fi_record_id = %s", (good[f], good[f], f))   # Airtable is right again
             least_for(cur, f)                          # least price / suggested price for this product
         conn.commit()
     finally:
@@ -3019,7 +3038,7 @@ def auto_apply(brands=None, reason=""):
                 return {"brands": 0, "products": 0, "updated": 0, "failed": 0}
             cur.execute("""SELECT fi_record_id, suggested_price FROM competitor_table
                            WHERE LOWER(brand) = ANY(%s) AND suggested_price > 0
-                             AND uae_price IS DISTINCT FROM suggested_price
+                             AND auto_sent_price IS DISTINCT FROM suggested_price   -- not uae_price (= Shopify)
                              AND """ + skip_auto.NOT_SKIPPED_SQL, (wanted,))      # 'Skip automatic price' ticked -> left out
             good = {fid: float(p) for fid, p in cur.fetchall()}
             cur.execute("SELECT COUNT(*) FROM competitor_table WHERE LOWER(brand) = ANY(%s) AND no_auto", (wanted,))
@@ -3057,7 +3076,7 @@ def automate_save_route():
                                ON CONFLICT (brand) DO UPDATE SET auto = EXCLUDED.auto,
                                    updated_by = EXCLUDED.updated_by, updated_at = NOW()""", rows)
         cur.execute("""SELECT COUNT(*) FROM competitor_table WHERE LOWER(brand) = ANY(%s) AND suggested_price > 0
-                         AND uae_price IS DISTINCT FROM suggested_price AND """ + skip_auto.NOT_SKIPPED_SQL,
+                         AND auto_sent_price IS DISTINCT FROM suggested_price AND """ + skip_auto.NOT_SKIPPED_SQL,
                     ([b.lower() for b in auto],))
         to_update = cur.fetchone()[0]
         conn.commit()
