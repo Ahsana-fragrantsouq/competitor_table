@@ -339,12 +339,28 @@ def todays_brands(cur, groups, state, per_day, force):
 
 
 # ---------------------------------------------------------------- one daily shop
+LINKED = False      # --linked: every product linked to OUR products (all brands), skipping ones checked in the last 20 h
+
+
 def todo_for(cur, key, ids):
     """Rows to open for one shop: (row id, link) of the French Fragrance products of today's brands."""
     t = DAILY_SHOPS[key]["table"]
     if not table_exists(cur, t):
         log(f"[{key.upper()}] table {t} does not exist -> skipped")
         return []
+    if LINKED:
+        # only links one of OUR products uses; checked in the last 20 hours = done -> a stopped run carries on
+        col, ours, done = (("product_url", "ff_link", "updated_at") if key == "ff"
+                           else (f"{key}_url", f"{key}_link", "checked_at"))
+        if key != "ff":
+            cur.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS checked_at TIMESTAMP")
+        cur.execute(f"SELECT id, {col} FROM {t} WHERE {col} IS NOT NULL "
+                    f"AND rtrim({col}, '/') IN (SELECT rtrim({ours}, '/') FROM competitor_table "
+                    f"WHERE {ours} IS NOT NULL AND {ours} <> '') "
+                    f"AND ({done} IS NULL OR {done} < NOW() - INTERVAL '20 hours') ORDER BY id")
+        rows = cur.fetchall()
+        log(f"[{key.upper()}] --linked: {len(rows)} products linked to ours still to check in {t}")
+        return rows
     if key == "ff":
         cur.execute("SELECT id, product_url FROM french_fragrance_catalog WHERE id = ANY(%s) AND product_url IS NOT NULL "
                     "ORDER BY id", (ids,))
@@ -1205,6 +1221,9 @@ def main():
     ap.add_argument("--test", action="store_true", help="3 products per shop, print only, nothing saved")
     ap.add_argument("--force", action="store_true", help="run today's brands again")
     ap.add_argument("--brands", default="", help='only these brands, e.g. "Dior,Chanel" (daily position unchanged)')
+    ap.add_argument("--linked", action="store_true",
+                    help="ALL products linked to ours (not just today's brands), FF + BP + ES or --shop; "
+                         "run again after a stop, it carries on")
     ap.add_argument("--shop", default="", choices=[""] + list(DAILY_SHOPS), help="daily part for one shop only")
     ap.add_argument("--ounass", action="store_true",
                     help="ONLY the PC whole lists now (no French Fragrance / Branded Perfume / Essenzi), even when not due yet")
@@ -1218,7 +1237,8 @@ def main():
     log("=" * 70)
     log(f"[RUN] Started {datetime.now():%d %b %Y %H:%M}" + (" (TEST - nothing saved)" if args.test else ""))
     log(f"[RUN] Options: {vars(args)} | folder {HERE} | Render {SITE}")
-    if date.today().weekday() not in WORK_DAYS and not (args.force or args.test or args.brands or args.shop or args.ounass):
+    if date.today().weekday() not in WORK_DAYS and not (args.force or args.test or args.brands or args.shop or args.ounass
+                                                        or args.linked):
         log(f"[RUN] Today is {DAYS[date.today().weekday()]} - no update on Saturday / Sunday "
             f"(use --force to run anyway)")
         return
@@ -1233,7 +1253,7 @@ def main():
         per_day = DEFAULT_PER_DAY
     groups = ff_brand_groups(cur)                         # French Fragrance products grouped by brand
     # by hand (--brands / --shop / --test): the daily position and results on the website are NOT changed
-    by_hand = bool(args.brands or args.shop or args.test)
+    by_hand = bool(args.brands or args.shop or args.test or args.linked)
     log(f"[RUN] {per_day} brands per day | {'run by hand - daily position not moved' if by_hand else 'normal daily run'}")
     if args.ounass:
         # --ounass = ONLY the PC lists now (2026-11-24, user: "why ff running" - it used to run today's French Fragrance /
@@ -1241,6 +1261,12 @@ def main():
         brands = []
         log("[RUN] --ounass: only the PC lists (Ounass, Al Injaz, Niche Gallerie, Emirates Pride, Oud Elite, Reef) - "
             "French Fragrance / Branded Perfume / Essenzi left for the normal daily run")
+    elif args.linked:
+        global LINKED
+        LINKED = True
+        brands = list(groups)                             # every brand; todo_for picks only the linked products
+        log("[RUN] --linked: every product linked to ours (all brands); products checked in the last 20 hours "
+            "are skipped, so running again carries on")
     elif not RUN1_FF_BP_ES and not (args.brands or args.shop or args.test):
         brands = []                                       # FF / BP / ES switched off for the scheduled run
         log("[RUN] French Fragrance / Branded Perfume / Essenzi are OFF (RUN1_FF_BP_ES = False) - only the PC lists")
@@ -1257,6 +1283,7 @@ def main():
     # ---------------- daily part: French Fragrance, Branded Perfume, Essenzi
     today = date.today().isoformat()
     ff_new_due = (FF_NEW_PRODUCTS and RUN1_FF_BP_ES and not args.brands and not args.shop and not args.ounass
+                  and not args.linked
                   and (args.test or args.force or state.get("ff_new_date") != today))   # once a working day
     log(f"[FF-NEW] New French Fragrance products: {'check today' if ff_new_due else 'already checked today / off'}")
     ff_new_added = 0
@@ -1273,7 +1300,8 @@ def main():
                 log(f"[DAILY] Brand '{b}' has no French Fragrance products now - skipped")
             ids += found
         if brands:
-            log(f"[DAILY] Today's {len(brands)} brands ({len(ids)} French Fragrance products): {', '.join(brands)}")
+            log(f"[DAILY] Today's {len(brands)} brands ({len(ids)} French Fragrance products): "
+                + (', '.join(brands) if len(brands) <= 30 else ', '.join(brands[:30]) + ' ...'))
         if brands and not by_hand:
             state["started"] = datetime.now().isoformat(timespec="minutes")
             write_state(state)
@@ -1345,7 +1373,7 @@ def main():
 
     # ---------------- whole lists on the PC (Ounass, Al Injaz, Niche Gallerie), once every PC_LIST_DAYS days
     pc_ran = False
-    if not args.brands and not args.shop:
+    if not args.brands and not args.shop and not args.linked:
         pc_ran = run_pc_lists(state, force=args.ounass)
 
     # ---------------- least price + suggested price + automatic brands (Branded Perfume / Essenzi prices too)

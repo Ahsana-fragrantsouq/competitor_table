@@ -386,7 +386,7 @@ else:
 #      Competitors, but matching gives NO link / suggestion -> never on the Competitor table cards, never in least
 #      price / suggested price / AUTO. ct_match_shop + unlink_shop (SECTION matching), cleared at every start.
 #      To link Brands Perfume again: remove "br" here, then /competitor/match-br?secret= .
-UNLINKED_SHOPS = {"br"}
+UNLINKED_SHOPS = {"br","pd"}
 # Brands Perfume DAILY QUICK CHECK (brandsperfume.py SECTION 6): only pages linked to our products re-read every day
 # at BR_QUICK_TIME (06:15 India) -> fresh price + stock. Render env BR_QUICK_CHECK=off switches it off.
 # Brands Perfume not linked (UNLINKED_SHOPS) -> nothing to check -> not started.
