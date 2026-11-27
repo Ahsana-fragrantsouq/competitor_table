@@ -226,6 +226,73 @@ def create_brand(conn, name, prefix, user):
     return {"brand": name, "sku_prefix": prefix, "next_sku_number": FIRST_SKU_NUMBER}, None
 
 
+def _prefix_taken(cur, prefix, has_item_master):
+    """True when the prefix belongs to a brand in brand_sku, or SKUs like PREFIX1234 are already used in item_master."""
+    cur.execute("SELECT 1 FROM brand_sku WHERE UPPER(TRIM(sku_prefix)) = %s LIMIT 1", (prefix,))
+    if cur.fetchone():
+        return True
+    if has_item_master:
+        cur.execute("SELECT 1 FROM item_master WHERE UPPER(TRIM(sku)) ~ %s LIMIT 1", (f"^{prefix}[0-9]+$",))
+        if cur.fetchone():
+            return True
+    return False
+
+
+def _prefix_candidates(name):
+    """Prefix ideas for a brand name, best first. 1st = first 3 letters in capitals (Afnan -> AFN), then
+    first 2 letters + a later letter (AFA ...), first letter + 2 later letters, then first 2 letters + a digit."""
+    chars = re.sub(r"[^A-Z0-9]", "", (name or "").upper())
+    if len(chars) < 2:
+        return []
+    seen, out = set(), []
+
+    def add(p):
+        if p not in seen and re.fullmatch(r"[A-Z0-9]{2,10}", p):
+            seen.add(p)
+            out.append(p)
+
+    add(chars[:3])
+    for c in chars[2:]:
+        add(chars[:2] + c)
+    for i in range(1, len(chars)):
+        for j in range(i + 1, len(chars)):
+            add(chars[0] + chars[i] + chars[j])
+    for d in "123456789":
+        add(chars[:2] + d)
+    for d in range(1, 100):
+        add(chars[:3] + str(d))
+    return out
+
+
+def suggest_prefix(conn, name):
+    """First unused prefix for this brand name ('' when the name has fewer than 2 letters / digits)."""
+    ensure_table(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT to_regclass('item_master') IS NOT NULL")
+    has_im = cur.fetchone()[0]
+    for p in _prefix_candidates(name):
+        if not _prefix_taken(cur, p, has_im):
+            return p
+    return ""
+
+
+@brand_sku_bp.get("/brand-sku/suggest-prefix")
+def brand_sku_suggest_prefix():
+    """Item Master -> Brands -> Create new: ?brand=Afnan -> {"prefix": "AFN"} (a prefix that is not used yet)."""
+    if not is_admin():
+        return jsonify({"ok": False, "error": "admins only"}), 403
+    name = request.args.get("brand", "")
+    conn = _hooks["connect"]()
+    try:
+        p = suggest_prefix(conn, name)
+    except Exception as ex:
+        log(f"[BRAND-SKU] Suggest prefix ERROR: {ex}")
+        return jsonify({"ok": False, "error": str(ex)[:200]}), 500
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "prefix": p})
+
+
 @brand_sku_bp.post("/brand-sku/create")
 def brand_sku_create():
     """Item Master -> Brands -> Create new (admins). Body: {brand, sku_prefix}."""

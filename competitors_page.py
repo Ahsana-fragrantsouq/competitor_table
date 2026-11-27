@@ -1897,8 +1897,8 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
 @@RF_JS@@
 <form class="newbrand" id="nbform" hidden onsubmit="nbSave(this); return false;">
   <div class="nbrow">
-    <label>Brand name *<input name="brand" required maxlength="100" autocomplete="off"></label>
-    <label>SKU prefix *<input name="sku_prefix" required maxlength="10" pattern="[A-Za-z0-9]{2,10}" title="2-10 letters / digits" autocomplete="off"></label>
+    <label>Brand name *<input name="brand" required maxlength="100" autocomplete="off" oninput="nbBrandTyped(this.form)"></label>
+    <label>SKU prefix *<input name="sku_prefix" required maxlength="10" pattern="[A-Za-z0-9]{2,10}" title="2-10 letters / digits - filled in from the brand name, you can change it" autocomplete="off" oninput="nbPrefixTyped(this.form)"></label>
     <button type="submit" class="nbsave">Save</button>
     <button type="button" class="nbcancel" onclick="nbClose()">Cancel</button>
   </div>
@@ -1909,8 +1909,35 @@ SETTINGS_HTML = """<!doctype html><html><head><title>Settings - Competitors</tit
     document.getElementById("nbform").hidden = false; document.getElementById("nbopen").hidden = true;
     document.querySelector("#nbform [name=brand]").focus();
   }
+  // SKU prefix = first 3 letters of the brand in capitals (Afnan -> AFN); the website gives the next free one when
+  // that is already used. Typing in the prefix box yourself stops the auto-fill (clear the box to turn it back on).
+  var nbPrefixManual = false, nbTimer = null, nbReq = 0;
+  function nbBrandTyped(f) {
+    if (nbPrefixManual) return;
+    clearTimeout(nbTimer);
+    var brand = f.brand.value.trim();
+    if (!brand) { f.sku_prefix.value = ""; return; }
+    nbTimer = setTimeout(async function () {
+      var id = ++nbReq;
+      try {
+        var r = await fetch("/brand-sku/suggest-prefix?brand=" + encodeURIComponent(brand));
+        var d = await r.json();
+        if (id !== nbReq || nbPrefixManual || !d.ok) return;
+        f.sku_prefix.value = d.prefix || "";
+        var m = document.getElementById("nbmsg"); m.className = "nbmsg";
+        m.textContent = d.prefix ? "SKU prefix " + d.prefix + " is free (first SKU " + d.prefix + "1001). You can change it."
+                                 : "Type a SKU prefix (2-10 letters / digits).";
+      } catch (e) { console.log("[BRANDS] Suggest prefix failed: " + e.message); }
+    }, 300);
+  }
+  function nbPrefixTyped(f) {
+    f.sku_prefix.value = f.sku_prefix.value.toUpperCase();
+    nbPrefixManual = f.sku_prefix.value.trim() !== "";
+    if (!nbPrefixManual) nbBrandTyped(f);
+  }
   function nbClose() {
     var f = document.getElementById("nbform"); f.reset(); f.hidden = true;
+    nbPrefixManual = false; clearTimeout(nbTimer); nbReq++;
     document.getElementById("nbopen").hidden = false;
     var m = document.getElementById("nbmsg"); m.className = "nbmsg";
     m.textContent = "Both must be new: a brand name or SKU prefix that already exists is not saved.";
